@@ -1,0 +1,14 @@
+{
+  "functions": {
+    "api/grade.js": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/grade",
+      "destination": "/api/grade.js"
+    }
+  ]
+}
