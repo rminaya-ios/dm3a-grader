@@ -97,8 +97,9 @@ async function splitPDF(file, pagesPerChunk) {
 }
 
 // ── PDF REPORT GENERATOR ─────────────────────────────────────────────────────
-function generateStudentPDF(student, assignment, subject, instructor) {
-  const t = TIERS.find(x => x.id === student.overallTier) || TIERS[3];
+function generateStudentPDF(student, assignment, subject, instructor, overrideTier) {
+  const displayTier = overrideTier || student.overallTier;
+  const t = TIERS.find(x => x.id === displayTier) || TIERS[3];
   const date = new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
 
   const problemRows = (student.problems || []).map(p => {
@@ -172,7 +173,7 @@ function generateStudentPDF(student, assignment, subject, instructor) {
   </div>
   <div style="text-align:center;">
     <div style="font-size:11px;color:#888;margin-bottom:4px;">OVERALL</div>
-    <div style="background:${t.bg};color:${t.color};font-family:'DM Mono',monospace;font-size:28px;font-weight:600;padding:8px 20px;border-radius:10px;border:1px solid ${t.color}33;">${student.overallTier}</div>
+    <div style="background:${t.bg};color:${t.color};font-family:'DM Mono',monospace;font-size:28px;font-weight:600;padding:8px 20px;border-radius:10px;border:1px solid ${t.color}33;">${displayTier}</div>
     <div style="font-size:11px;color:${t.color};margin-top:4px;">${t.desc}</div>
   </div>
 </div>
@@ -543,8 +544,9 @@ function FileCard({ file, status, result, onRemove }) {
 
   );
 }
-function StudentCard({ student, assignment, subject, instructor, idx }) {
-  const tier = TIERS.find(t => t.id === student.overallTier) || TIERS[3];
+function StudentCard({ student, assignment, subject, instructor, idx, onViewReport, overrideTier }) {
+  const displayLevel = overrideTier || student.overallTier;
+  const tier = TIERS.find(t => t.id === displayLevel) || TIERS[3];
   return (
     <div style={{ background:"#fff", border:"1px solid #E8E6E1", borderRadius:12, padding:20, textAlign:"left" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
@@ -552,10 +554,160 @@ function StudentCard({ student, assignment, subject, instructor, idx }) {
           <div style={{ fontWeight:700, fontSize:15, color:"#1A3A2A" }}>{student.studentName || `Student ${idx+1}`}</div>
           <div style={{ fontSize:12, color:"#5F5E5A" }}>{subject} · {assignment}</div>
         </div>
-        <div style={{ background:tier.bg, color:tier.color, fontWeight:700, fontSize:18, borderRadius:8, padding:"6px 14px" }}>{tier.id}</div>
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          {overrideTier && <span style={{ fontSize:11, color:"#854F0B" }}>✎</span>}
+          <div style={{ background:tier.bg, color:tier.color, fontWeight:700, fontSize:18, borderRadius:8, padding:"6px 14px" }}>{tier.id}</div>
+        </div>
       </div>
       {student.feedback && <p style={{ fontSize:13, color:"#444", margin:"0 0 10px" }}>{student.feedback}</p>}
-      {student.growthNote && <p style={{ fontSize:12, color:"#666", fontStyle:"italic", margin:0 }}>Next step: {student.growthNote}</p>}
+      {student.growthNote && <p style={{ fontSize:12, color:"#666", fontStyle:"italic", margin:"0 0 12px" }}>Next step: {student.growthNote}</p>}
+      <div style={{ textAlign:"right" }}>
+        <button
+          onClick={onViewReport}
+          style={{ background:"none", border:"1px solid #D3D1C7", borderRadius:6, padding:"5px 12px", fontSize:12, color:"#5F5E5A", cursor:"pointer", fontWeight:500 }}
+        >
+          View Report →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StudentDetailView({ student, assignment, subject, instructor, gradeOverrides, setGradeOverrides, setSelectedStudent }) {
+  const override = gradeOverrides[student.studentName];
+  const displayLevel = override || student.overallTier;
+  const t = TIERS.find(x => x.id === displayLevel) || TIERS[3];
+  const date = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
+
+  function setOverride(level) {
+    setGradeOverrides(prev => ({ ...prev, [student.studentName]: level }));
+  }
+
+  const correctCount = (student.problems || []).filter(p => p.correct === true).length;
+  const wrongCount   = (student.problems || []).filter(p => p.correct !== true).length;
+
+  return (
+    <div>
+      <button
+        onClick={() => setSelectedStudent(null)}
+        style={{ background:"none", border:"none", cursor:"pointer", color:"#0F6E56", fontSize:13, fontWeight:600, padding:"0 0 20px", display:"flex", alignItems:"center", gap:6 }}
+      >
+        ← Back to Summary
+      </button>
+
+      <div style={{ background:"#F9F8F5", borderRadius:12, padding:"20px 24px", marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div>
+          <div style={{ fontSize:22, fontWeight:700, color:"#1A3A2A", marginBottom:4 }}>{student.studentName || "Unknown"}</div>
+          <div style={{ fontSize:13, color:"#5F5E5A" }}>{subject} · {assignment} · {date}</div>
+        </div>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:11, color:"#888", marginBottom:4, textTransform:"uppercase", letterSpacing:"0.05em" }}>Overall</div>
+          <div style={{ background:t.bg, color:t.color, fontFamily:"'DM Mono',monospace", fontSize:26, fontWeight:700, padding:"8px 20px", borderRadius:10, border:`1px solid ${t.color}33` }}>{displayLevel}</div>
+          <div style={{ fontSize:11, color:t.color, marginTop:4 }}>{t.desc}</div>
+        </div>
+      </div>
+
+      <div style={{ marginBottom:20, padding:"16px 20px", background:"#fff", border:"1px solid #E8E6E1", borderRadius:10 }}>
+        <div style={{ fontSize:11, fontWeight:600, color:"#5F5E5A", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:10 }}>Override Grade</div>
+        <div style={{ display:"flex", gap:8, marginBottom: override ? 10 : 0 }}>
+          {[...TIERS].reverse().map(tier => (
+            <button
+              key={tier.id}
+              onClick={() => setOverride(tier.id)}
+              style={{
+                flex:1, padding:"8px 4px", borderRadius:8, cursor:"pointer",
+                fontFamily:"'DM Mono',monospace", fontSize:13, fontWeight:600,
+                background: displayLevel === tier.id ? tier.bg : "#F9F8F5",
+                color: displayLevel === tier.id ? tier.color : "#888",
+                border: displayLevel === tier.id ? `1.5px solid ${tier.color}` : "1px solid #D3D1C7",
+              }}
+            >
+              {tier.id}
+            </button>
+          ))}
+        </div>
+        {override && (
+          <div style={{ fontSize:12, color:t.color, fontWeight:500 }}>
+            Override: {override} ({t.desc})
+          </div>
+        )}
+      </div>
+
+      {student.criteria?.length > 0 && (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:"#1A3A2A", marginBottom:10, paddingBottom:6, borderBottom:"1px solid #E2E0D8" }}>Criteria Breakdown</div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10 }}>
+            {student.criteria.map((c, i) => {
+              const ct = TIERS.find(x => x.id === c.tier) || TIERS[3];
+              return (
+                <div key={i} style={{ background:ct.bg, borderRadius:8, padding:"12px 14px", border:`1px solid ${ct.color}22` }}>
+                  <div style={{ fontSize:10, color:ct.color, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>{c.name}</div>
+                  <div style={{ fontFamily:"'DM Mono',monospace", fontSize:20, fontWeight:700, color:ct.color }}>{c.tier}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {student.feedback && (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:"#1A3A2A", marginBottom:10, paddingBottom:6, borderBottom:"1px solid #E2E0D8" }}>Mastery Feedback</div>
+          <div style={{ background:"#F0FAF5", borderLeft:"3px solid #0F6E56", borderRadius:4, padding:"14px 16px", fontSize:13, lineHeight:1.7, color:"#1a1a18" }}>
+            {student.feedback}
+          </div>
+        </div>
+      )}
+
+      {student.problems?.length > 0 && (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:"#1A3A2A", marginBottom:6, paddingBottom:6, borderBottom:"1px solid #E2E0D8" }}>Problem-by-Problem Results</div>
+          <div style={{ display:"flex", gap:16, marginBottom:10 }}>
+            <span style={{ fontSize:12 }}><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, color:"#0F6E56" }}>Correct:</span> {correctCount}</span>
+            <span style={{ fontSize:12 }}><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, color:"#A32D2D" }}>Wrong:</span> {wrongCount}</span>
+          </div>
+          <div style={{ overflowX:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+              <thead>
+                <tr>
+                  {["#","Correct Answer","Student Answer","Grade","Feedback"].map(h => (
+                    <th key={h} style={{ textAlign:"left", fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em", color:"#888", padding:"8px 10px", borderBottom:"2px solid #E2E0D8", fontFamily:"'DM Mono',monospace", whiteSpace:"nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {student.problems.map((p, i) => (
+                  <tr key={i} style={{ borderBottom:"1px solid #F0EEE8" }}>
+                    <td style={{ padding:"8px 10px", fontFamily:"'DM Mono',monospace", color:"#555" }}>{p.number || i+1}</td>
+                    <td style={{ padding:"8px 10px" }}>{p.correctAnswer || ""}</td>
+                    <td style={{ padding:"8px 10px", fontFamily:"'DM Mono',monospace", color:"#333" }}>{p.studentAnswer || "—"}</td>
+                    <td style={{ padding:"8px 10px" }}>
+                      <span style={{
+                        background: p.correct ? "#E1F5EE" : "#FCEBEB",
+                        color: p.correct ? "#0F6E56" : "#A32D2D",
+                        fontSize:11, fontWeight:600, padding:"2px 8px", borderRadius:10,
+                        fontFamily:"'DM Mono',monospace", whiteSpace:"nowrap"
+                      }}>
+                        {p.correct ? "Correct" : "Wrong"}
+                      </span>
+                    </td>
+                    <td style={{ padding:"8px 10px", color:"#444", lineHeight:1.5 }}>{p.feedback || ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop:8 }}>
+        <button
+          onClick={() => generateStudentPDF(student, assignment, subject, instructor, override)}
+          style={{ padding:"10px 20px", borderRadius:8, border:"none", background:"#0F6E56", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer" }}
+        >
+          ↓ Download PDF
+        </button>
+      </div>
     </div>
   );
 }
@@ -588,6 +740,8 @@ function DM3AApp() {
     return !sessionStorage.getItem('dm3a_disclaimer_accepted');
   });
   const fileRef = useRef();
+  const [selectedStudent, setSelectedStudent] = useState(null);
+  const [gradeOverrides, setGradeOverrides]   = useState({});
 
   const allStudents = Object.values(fileResults).flat();
   const tierCounts  = TIERS.map(t => ({ ...t, count: allStudents.filter(s => s.overallTier === t.id).length }));
@@ -780,7 +934,7 @@ function DM3AApp() {
     Object.entries(snapshot).forEach(([fname, students]) => {
       students.forEach(s => {
         const critTiers = criteria.map(c => s.criteria?.find(x=>x.name===c)?.tier || "");
-        rows.push([s.studentName||"—", fname, s.overallTier, ...critTiers, s.feedback||"", s.growthNote||"", s.reflectionPrompt||""]);
+        rows.push([s.studentName||"—", fname, gradeOverrides[s.studentName] ?? s.overallTier, ...critTiers, s.feedback||"", s.growthNote||"", s.reflectionPrompt||""]);
       });
     });
     const csv  = rows.map(r => r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
@@ -797,7 +951,7 @@ function DM3AApp() {
 
   function downloadAllPDFs() {
     allStudents.forEach((s, i) => {
-      setTimeout(() => generateStudentPDF(s, assignment, subject, instructor), i * 400);
+      setTimeout(() => generateStudentPDF(s, assignment, subject, instructor, gradeOverrides[s.studentName]), i * 400);
     });
   }
 
@@ -1006,6 +1160,17 @@ function DM3AApp() {
 
       {/* RESULTS */}
       {step === "results" && (
+        selectedStudent ? (
+          <StudentDetailView
+            student={selectedStudent}
+            assignment={assignment}
+            subject={subject}
+            instructor={instructor}
+            gradeOverrides={gradeOverrides}
+            setGradeOverrides={setGradeOverrides}
+            setSelectedStudent={setSelectedStudent}
+          />
+        ) : (
         <div>
           {gradingErrors.length > 0 && (
             <div style={{ background:"#FCEBEB", border:"1px solid #A32D2D", borderRadius:8, padding:"12px 16px", marginBottom:16 }}>
@@ -1045,7 +1210,10 @@ function DM3AApp() {
           {/* Student cards */}
           <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
             {allStudents.map((s,i) => (
-              <StudentCard key={i} student={s} assignment={assignment} subject={subject} instructor={instructor} idx={i}/>
+              <StudentCard key={i} student={s} assignment={assignment} subject={subject} instructor={instructor} idx={i}
+                onViewReport={() => setSelectedStudent(s)}
+                overrideTier={gradeOverrides[s.studentName]}
+              />
             ))}
           </div>
 
@@ -1053,6 +1221,7 @@ function DM3AApp() {
             {allStudents.length} student{allStudents.length!==1?"s":""} graded · DM3A Mastery Scale · {instructor}
           </p>
         </div>
+        )
       )}
 
       {showDisclaimerModal && (
