@@ -1260,6 +1260,10 @@ function DM3AApp() {
             <p style={{ fontSize:13, color:"#444", lineHeight:1.75, margin:"0 0 14px" }}>
               Research consistently shows that AI-assisted grading works best as a first-pass tool, not a final authority. Instructors should review all results before releasing grades to students.
             </p>
+            <p style={{ fontSize:13, color:"#444", lineHeight:1.75, margin:"0 0 14px" }}>
+              <strong>Data &amp; Privacy</strong><br/>
+              Student submissions are processed by Anthropic's Claude AI to generate mastery-level feedback. Submissions are sent securely and are not used to train AI models. Do not upload personally identifiable information beyond what is necessary for grading. By proceeding, you acknowledge this data handling.
+            </p>
             <div style={{ background:"#E1F5EE", border:"1px solid #A8D5BA", borderRadius:8, padding:"12px 16px", marginBottom:24 }}>
               <p style={{ margin:0, fontSize:13, color:"#1A5C38", lineHeight:1.7, fontWeight:500 }}>
                 By proceeding, you acknowledge that you will review AI-generated grades before distributing them to students.
