@@ -578,6 +578,8 @@ function StudentDetailView({ student, assignment, subject, instructor, gradeOver
   const displayLevel = override || student.overallTier;
   const t = TIERS.find(x => x.id === displayLevel) || TIERS[3];
   const date = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
+  const [editedName, setEditedName] = useState(student.studentName || "");
+  const [editingName, setEditingName] = useState(false);
 
   function setOverride(level) {
     setGradeOverrides(prev => ({ ...prev, [student.studentName]: level }));
@@ -597,7 +599,27 @@ function StudentDetailView({ student, assignment, subject, instructor, gradeOver
 
       <div style={{ background:"#F9F8F5", borderRadius:12, padding:"20px 24px", marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div>
-          <div style={{ fontSize:22, fontWeight:700, color:"#1A3A2A", marginBottom:4 }}>{student.studentName || "Unknown"}</div>
+          <div style={{ marginBottom:4 }}>
+              {editingName ? (
+                <input
+                  autoFocus
+                  value={editedName}
+                  onChange={e => setEditedName(e.target.value)}
+                  onBlur={() => setEditingName(false)}
+                  onKeyDown={e => { if (e.key === "Enter") setEditingName(false); }}
+                  style={{ fontSize:22, fontWeight:700, color:"#1A3A2A", border:"none", borderBottom:"2px solid #0F6E56", background:"transparent", outline:"none", width:"100%", fontFamily:"inherit", padding:0 }}
+                />
+              ) : (
+                <span
+                  onClick={() => setEditingName(true)}
+                  style={{ fontSize:22, fontWeight:700, color:"#1A3A2A", cursor:"pointer", display:"inline-flex", alignItems:"center", gap:8 }}
+                >
+                  {editedName || "Unknown"}
+                  <span style={{ fontSize:14, color:"#B4B2A9" }}>✏️</span>
+                </span>
+              )}
+              <div style={{ fontSize:11, color:"#B4B2A9", marginTop:2 }}>Name edits only affect the downloaded PDF</div>
+            </div>
           <div style={{ fontSize:13, color:"#5F5E5A" }}>{subject} · {assignment} · {date}</div>
         </div>
         <div style={{ textAlign:"center" }}>
@@ -702,7 +724,7 @@ function StudentDetailView({ student, assignment, subject, instructor, gradeOver
 
       <div style={{ marginTop:8 }}>
         <button
-          onClick={() => generateStudentPDF(student, assignment, subject, instructor, override)}
+          onClick={() => generateStudentPDF({ ...student, studentName: editedName }, assignment, subject, instructor, override)}
           style={{ padding:"10px 20px", borderRadius:8, border:"none", background:"#0F6E56", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer" }}
         >
           ↓ Download PDF
