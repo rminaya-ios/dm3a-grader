@@ -6,9 +6,7 @@
     }
   },
   "rewrites": [
-    {
-      "source": "/api/grade",
-      "destination": "/api/grade.js"
-    }
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

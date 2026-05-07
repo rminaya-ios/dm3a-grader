@@ -477,14 +477,10 @@ CRITICAL: Output ONLY the JSON object. Zero text before {. Zero text after }. No
     ? { type: "image", source: { type: "base64", media_type: finalMimeType, data: b64 } }
     : { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } };
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/grade", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": import.meta.env.VITE_ANTHROPIC_KEY,
-      "anthropic-version": "2023-06-01",
-      "anthropic-beta": "pdfs-2024-09-25",
-      "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
