@@ -20,22 +20,21 @@ app.post('/upload-pdf', (req, res) => {
 
 app.post('/grade', async (req, res) => {
   try {
-    console.log('Received body keys:', Object.keys(req.body));
-    const { contentBlocks: clientBlocks, systemPrompt, userPrompt } = req.body;
-    console.log('contentBlocks count:', clientBlocks?.length, 'first block type:', clientBlocks?.[0]?.type);
-    let contentBlocks = [];
-    if (clientBlocks && clientBlocks.length > 0) {
-      contentBlocks = userPrompt
-        ? [...clientBlocks, { type: 'text', text: userPrompt }]
-        : clientBlocks;
-    }
-    console.log(`Grading — blocks: ${contentBlocks.length}`);
-    console.log('Final blocks being sent:', JSON.stringify(contentBlocks).slice(0, 200));
+    const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
+    const systemPrompt = req.body.systemPrompt || '';
+    const userPrompt = req.body.userPrompt || '';
+
+    console.log('GRADE HIT - blocks received:', clientBlocks.length, 'system:', systemPrompt.slice(0, 50));
+
+    const finalBlocks = clientBlocks.length > 0
+      ? [...clientBlocks, { type: 'text', text: userPrompt }]
+      : [{ type: 'text', text: userPrompt || 'No content provided' }];
+
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 8000,
       system: systemPrompt,
-      messages: [{ role: 'user', content: contentBlocks }],
+      messages: [{ role: 'user', content: finalBlocks }],
     });
     const text = response.content?.[0]?.text ?? '';
     res.json({ result: text });
