@@ -20,7 +20,9 @@ app.post('/upload-pdf', (req, res) => {
 
 app.post('/grade', async (req, res) => {
   try {
+    console.log('Received body keys:', Object.keys(req.body));
     const { contentBlocks: clientBlocks, systemPrompt, userPrompt } = req.body;
+    console.log('contentBlocks count:', clientBlocks?.length, 'first block type:', clientBlocks?.[0]?.type);
     let contentBlocks = [];
     if (clientBlocks && clientBlocks.length > 0) {
       contentBlocks = userPrompt
@@ -28,6 +30,7 @@ app.post('/grade', async (req, res) => {
         : clientBlocks;
     }
     console.log(`Grading — blocks: ${contentBlocks.length}`);
+    console.log('Final blocks being sent:', JSON.stringify(contentBlocks).slice(0, 200));
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 8000,
