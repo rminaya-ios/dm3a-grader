@@ -399,32 +399,37 @@ export default function DM3AGraderV5() {
   }
 
   async function pdfToImages(file, maxPages = 16, maxDimension = 400, quality = 0.3) {
-    const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    console.log(`[pdfToImages] pdf.numPages=${pdf.numPages} maxPages=${maxPages}`);
-    if (pdf.numPages > 20) console.warn(`[pdfToImages] PDF.js may be misreading page count — pdf.numPages=${pdf.numPages} seems too high`);
-    const images = [];
-    // Use try-catch per page rather than trusting pdf.numPages, which can misreport
-    for (let pageNum = 1; pageNum <= Math.min(pdf.numPages, maxPages); pageNum++) {
-      let page;
-      try {
-        page = await pdf.getPage(pageNum);
-      } catch {
-        break; // no more pages in the actual page tree
+    try {
+      const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      console.log(`[pdfToImages] pdf.numPages=${pdf.numPages} maxPages=${maxPages}`);
+      if (pdf.numPages > 20) console.warn(`[pdfToImages] PDF.js may be misreading page count — pdf.numPages=${pdf.numPages} seems too high`);
+      const images = [];
+      // Use try-catch per page rather than trusting pdf.numPages, which can misreport
+      for (let pageNum = 1; pageNum <= Math.min(pdf.numPages, maxPages); pageNum++) {
+        let page;
+        try {
+          page = await pdf.getPage(pageNum);
+        } catch {
+          break; // no more pages in the actual page tree
+        }
+        const viewport = page.getViewport({ scale: 1 });
+        const scale = Math.min(maxDimension / viewport.width, maxDimension / viewport.height, 1);
+        const scaledViewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = scaledViewport.width;
+        canvas.height = scaledViewport.height;
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport: scaledViewport }).promise;
+        images.push(canvas.toDataURL("image/jpeg", quality).split(",")[1]);
       }
-      const viewport = page.getViewport({ scale: 1 });
-      const scale = Math.min(maxDimension / viewport.width, maxDimension / viewport.height, 1);
-      const scaledViewport = page.getViewport({ scale });
-      const canvas = document.createElement("canvas");
-      canvas.width = scaledViewport.width;
-      canvas.height = scaledViewport.height;
-      await page.render({ canvasContext: canvas.getContext("2d"), viewport: scaledViewport }).promise;
-      images.push(canvas.toDataURL("image/jpeg", quality).split(",")[1]);
+      console.log(`[pdfToImages] produced ${images.length} images`);
+      return images;
+    } catch (err) {
+      console.error(`[pdfToImages] failed for file "${file?.name}":`, err);
+      throw err;
     }
-    console.log(`[pdfToImages] produced ${images.length} images`);
-    return images;
   }
 
   async function uploadPDF(base64) {
@@ -478,9 +483,13 @@ export default function DM3AGraderV5() {
     if (isTrueBatch) {
       setLoadingMsg("Reading batch PDF and identifying students...");
       try {
+        console.log(`[grading] batch PDF — file: "${file.name}", size: ${(file.size / 1024).toFixed(1)} KB`);
         setLoadingMsg("Converting batch PDF pages to images...");
         const batchPageImages = await pdfToImages(file, 16, 1200, 0.75);
         console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
+        if (!batchPageImages || batchPageImages.length === 0) {
+          throw new Error("Could not convert PDF to images — please try a different file");
+        }
         const contentBlocks = [];
 
         if (assignmentFile) {
@@ -680,9 +689,13 @@ Return a JSON array with exactly ONE student object covering only the problems o
           let pdfPageImages = null;
           console.log(`[ROUTING] file: ${f.name}, size: ${fileSize}, isPDF: ${isPDF}`);
           if (isPDF) {
+            console.log(`[grading] individual PDF — file: "${f.name}", size: ${(f.size / 1024).toFixed(1)} KB`);
             setLoadingMsg(`Converting ${f.name} to images...`);
             pdfPageImages = await pdfToImages(f, 8, 1200, 0.75);
             console.log(`[PDF→images] ${f.name}: ${pdfPageImages.length} pages`);
+            if (!pdfPageImages || pdfPageImages.length === 0) {
+              throw new Error("Could not convert PDF to images — please try a different file");
+            }
           } else {
             studentB64 = await compressImage(f);
           }
@@ -746,7 +759,7 @@ Return a JSON array with one object per student found in the submission.`;
             error: err.message,
             dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
             problems: [],
-            feedback: "Error processing this file.",
+            feedback: err.message || "Error processing this file.",
             strengths: [],
             growthAreas: []
           });
@@ -1146,6 +1159,11 @@ Return a JSON array with one object per student found in the submission.`;
                         </ul>
                     }
                   </div>
+                  <button
+                    onClick={() => { setStudentFiles([]); setFileSizeWarnings([]); setIsBatchPDF(false); setBatchMode("auto"); }}
+                    style={{ ...styles.btnOutline, marginTop: 12 }}>
+                    ← Back to Setup
+                  </button>
                 </div>
               </div>
             </div>
