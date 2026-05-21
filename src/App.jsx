@@ -398,7 +398,7 @@ export default function DM3AGraderV5() {
     });
   }
 
-  async function pdfToImages(file, maxPages = 16, maxDimension = 400, quality = 0.3) {
+  async function pdfToImages(file, maxPages = 16, maxDimension = 1200, quality = 0.75) {
     try {
       const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs");
       pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
