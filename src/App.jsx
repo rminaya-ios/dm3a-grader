@@ -478,7 +478,9 @@ export default function DM3AGraderV5() {
     if (isTrueBatch) {
       setLoadingMsg("Reading batch PDF and identifying students...");
       try {
-        const studentB64 = await fileToBase64(file);
+        setLoadingMsg("Converting batch PDF pages to images...");
+        const batchPageImages = await pdfToImages(file, 16, 1200, 0.75);
+        console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
         const contentBlocks = [];
 
         if (assignmentFile) {
@@ -501,10 +503,9 @@ export default function DM3AGraderV5() {
           contentBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
 
-        contentBlocks.push({
-          type: "document",
-          source: { type: "base64", media_type: "application/pdf", data: studentB64 },
-          title: "BATCH STUDENT SUBMISSIONS"
+        batchPageImages.forEach((b64, i) => {
+          contentBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+          contentBlocks.push({ type: "text", text: `Page ${i + 1}` });
         });
 
         const batchInstruction = batchMode === "auto"
@@ -673,22 +674,17 @@ Return a JSON array with exactly ONE student object covering only the problems o
         try {
           const isPDF = f.type === "application/pdf";
           const fileSize = f.size;
-          const isLargePDF = fileSize > 5 * 1024 * 1024; // only convert to images if over 5MB
-
-          // PDFs over 5MB: convert to images to avoid body size limits; smaller PDFs sent as raw document
+          // All PDFs: convert pages to JPEG images so Claude can read handwritten/scanned content.
+          // Image files: compress directly.
           let studentB64 = null;
           let pdfPageImages = null;
-          let studentFileId = null;
-          console.log(`[ROUTING] fileSize=${fileSize}, isLargePDF=${isLargePDF}, using ${isLargePDF ? 'image path' : 'document path'}`);
-          if (isLargePDF) {
-            setLoadingMsg(`Converting ${f.name} to images for processing...`);
-            pdfPageImages = await pdfToImages(f, 16, 400, 0.3);
-            console.log(`PDF→images: ${pdfPageImages.length} pages`, pdfPageImages.map((b, i) => `p${i + 1}: ${Math.round(b.length * 0.75 / 1024)}KB`).join(', '));
+          console.log(`[ROUTING] file: ${f.name}, size: ${fileSize}, isPDF: ${isPDF}`);
+          if (isPDF) {
+            setLoadingMsg(`Converting ${f.name} to images...`);
+            pdfPageImages = await pdfToImages(f, 8, 1200, 0.75);
+            console.log(`[PDF→images] ${f.name}: ${pdfPageImages.length} pages`);
           } else {
-            studentB64 = isImage(f) ? await compressImage(f) : await fileToBase64(f);
-            if (isPDF) {
-              studentFileId = await uploadPDF(studentB64);
-            }
+            studentB64 = await compressImage(f);
           }
           const studentMediaType = isImage(f) ? "image/jpeg" : f.type;
 
@@ -705,7 +701,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
           }
           if (answerKeyFile) {
             const keyB64 = isImage(answerKeyFile) ? await compressImage(answerKeyFile) : await fileToBase64(answerKeyFile);
-            const studentBytes = isLargePDF
+            const studentBytes = isPDF
               ? pdfPageImages.reduce((s, b64) => s + b64.length * 0.75, 0)
               : studentB64.length * 0.75;
             const keyBytes = keyB64.length * 0.75;
@@ -735,66 +731,14 @@ INSTRUCTIONS:
 
 Return a JSON array with one object per student found in the submission.`;
 
-          if (isLargePDF) {
-            const TIER_ORDER = ["P1", "P2", "P3", "P4"];
-            const DIMENSION_KEYS = ["conceptualUnderstanding", "problemSolving", "workShown", "accuracy"];
-
-            const fetchChunk = async (pages, part, of_) => {
-              const contentBlocks = [
-                ...sharedBlocks,
-                ...pages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }))
-              ];
-              const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
-              const cleaned = raw.replace(/```json|```/g, "").trim();
-              const parsed = JSON.parse(cleaned);
-              return Array.isArray(parsed) ? parsed[0] : parsed;
-            };
-
-            let s1, s2;
-            if (pdfPageImages.length > 8) {
-              setLoadingMsg(`Grading ${f.name} — part 1 of 2...`);
-              s1 = await fetchChunk(pdfPageImages.slice(0, 8), 1, 2);
-              setLoadingMsg(`Grading ${f.name} — part 2 of 2...`);
-              s2 = await fetchChunk(pdfPageImages.slice(8), 2, 2);
-            } else {
-              setLoadingMsg(`Grading ${f.name}...`);
-              s1 = await fetchChunk(pdfPageImages, 1, 1);
-            }
-
-            const results = [s1, s2].filter(Boolean);
-            if (!results.length) throw new Error("No valid results from any chunk");
-
-            const dimensionBests = Object.fromEntries(DIMENSION_KEYS.map(k => [k, "P1"]));
-            results.forEach(s => {
-              DIMENSION_KEYS.forEach(k => {
-                const val = s.dimensions?.[k];
-                if (val && TIER_ORDER.indexOf(val) > TIER_ORDER.indexOf(dimensionBests[k])) {
-                  dimensionBests[k] = val;
-                }
-              });
-            });
-            const avgIdx = Math.round(
-              DIMENSION_KEYS.reduce((s, k) => s + TIER_ORDER.indexOf(dimensionBests[k]), 0) / DIMENSION_KEYS.length
-            );
-            allResults.push({
-              ...results[0],
-              overallTier: TIER_ORDER[Math.min(avgIdx, 3)],
-              dimensions: dimensionBests,
-              feedback: results.map(s => s.feedback).filter(Boolean).join(" "),
-              problems: results.flatMap(s => s.problems || []),
-            });
-
-          } else {
-            // Small PDF or image — single API call
-            const studentBlock = isPDF
-              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: studentB64 } }
-              : { type: "image", source: { type: "base64", media_type: studentMediaType, data: studentB64 } };
-            const contentBlocks = [...sharedBlocks, studentBlock];
-            const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
-            const cleaned = raw.replace(/```json|```/g, "").trim();
-            const parsed = JSON.parse(cleaned);
-            allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
-          }
+          const pageBlocks = isPDF
+            ? pdfPageImages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }))
+            : [{ type: "image", source: { type: "base64", media_type: studentMediaType, data: studentB64 } }];
+          const contentBlocks = [...sharedBlocks, ...pageBlocks];
+          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+          const cleaned = raw.replace(/```json|```/g, "").trim();
+          const parsed = JSON.parse(cleaned);
+          allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
         } catch (err) {
           allResults.push({
             studentName: f.name,
