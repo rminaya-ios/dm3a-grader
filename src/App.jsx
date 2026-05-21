@@ -1,1308 +1,1526 @@
-import { useState, useRef, useCallback } from "react";
-import { PDFDocument } from "pdf-lib";
+import { useState, useRef } from "react";
 
-function extractJSON(raw) {
-  if (!raw || typeof raw !== 'string') throw new Error('extractJSON: received empty or non-string input');
-  let cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const start = cleaned.indexOf('{');
-  const end   = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error(`extractJSON: no valid JSON object found.\nRaw (first 300 chars): ${raw.slice(0, 300)}`);
+// ─── COURSE KNOWLEDGE CONFIGS ────────────────────────────────────────────────
+
+const COURSE_CONFIGS = {
+  "Elementary Statistics": {
+    tier: "optimized",
+    label: "Elementary Statistics",
+    description: "Descriptive stats, probability, hypothesis testing, confidence intervals",
+    problemTypes: ["descriptive statistics", "probability", "hypothesis testing", "confidence intervals", "regression", "sampling distributions"],
+    keyDefinitions: [
+      "Mean, median, mode are distinct measures of center",
+      "Standard deviation measures spread around the mean",
+      "p-value is the probability of observing results at least as extreme as the sample, assuming H0 is true",
+      "Confidence interval does NOT mean there is a X% chance the parameter is in the interval",
+      "Type I error: rejecting a true null. Type II error: failing to reject a false null",
+      "Correlation does not imply causation"
+    ],
+    partialCreditRules: [
+      "Correct formula with arithmetic error: process is P3/P4, accuracy drops one level",
+      "Correct hypothesis setup with wrong conclusion: split credit between setup and conclusion",
+      "Correct interpretation with minor wording issues: P3 minimum",
+      "Showing all steps even with wrong final answer can earn P3"
+    ],
+    p4Descriptor: "All work shown, correct setup, correct execution, correct interpretation with statistical language",
+    p3Descriptor: "Essentially correct with minor computational or notation errors; interpretation is sound",
+    p2Descriptor: "Correct approach but significant computational gaps or incomplete interpretation",
+    p1Descriptor: "No meaningful attempt or fundamentally incorrect approach"
+  },
+
+  "Intermediate Algebra": {
+    tier: "optimized",
+    label: "Intermediate Algebra / College Algebra",
+    description: "Equations, inequalities, functions, polynomials, rational expressions",
+    problemTypes: ["linear equations", "quadratic equations", "systems of equations", "inequalities", "functions", "polynomials", "rational expressions", "radicals", "exponentials", "logarithms"],
+    keyDefinitions: [
+      "Solving an equation means finding all values that satisfy it",
+      "A function maps each input to exactly one output",
+      "Factoring and the quadratic formula are equivalent methods",
+      "Domain restrictions apply when denominator equals zero or radicand is negative",
+      "Logarithm and exponential are inverse operations"
+    ],
+    partialCreditRules: [
+      "Correct method with arithmetic error: P3 minimum",
+      "Correct factoring with sign error: P3",
+      "Missing one solution in a multi-solution problem: P3",
+      "Correct setup of equation with wrong solving steps: P2"
+    ],
+    p4Descriptor: "All steps shown, correct method, correct answer, no errors",
+    p3Descriptor: "Correct method with minor arithmetic or sign errors; answer may be off but approach is solid",
+    p2Descriptor: "Partially correct setup; significant gaps in execution or missing steps",
+    p1Descriptor: "No meaningful attempt or completely incorrect method"
+  },
+
+  "Linear Algebra": {
+    tier: "beta",
+    label: "Linear Algebra",
+    description: "Matrices, vectors, systems, eigenvalues, transformations — applied/computational focus",
+    problemTypes: [
+      "row reduction / Gaussian elimination",
+      "matrix operations (addition, multiplication, transpose)",
+      "determinants",
+      "systems of linear equations",
+      "vector spaces and subspaces",
+      "linear independence and span",
+      "basis and dimension",
+      "linear transformations",
+      "eigenvalues and eigenvectors",
+      "orthogonality and projections",
+      "least squares",
+      "LU decomposition",
+      "matrix inverses"
+    ],
+    keyDefinitions: [
+      "CRITICAL: Echelon form ≠ Reduced Row Echelon Form (RREF). Echelon form requires leading 1s with zeros below; RREF also requires zeros above. A matrix in echelon form is NOT required to be in RREF.",
+      "A system is consistent if it has at least one solution",
+      "Free variables correspond to non-pivot columns",
+      "A set of vectors is linearly independent if the only solution to the homogeneous system is the trivial solution",
+      "The null space of A is the solution set of Ax=0",
+      "Rank = number of pivot positions = dimension of column space",
+      "Rank-Nullity Theorem: rank(A) + nullity(A) = number of columns",
+      "An eigenvalue λ satisfies det(A - λI) = 0",
+      "Eigenvectors corresponding to distinct eigenvalues are linearly independent",
+      "A square matrix is invertible if and only if its determinant is nonzero",
+      "Similar matrices have the same eigenvalues",
+      "Orthogonal matrices satisfy Q^T Q = I"
+    ],
+    partialCreditRules: [
+      "CRITICAL: If a student uses the correct row operations but makes a single arithmetic error, this is at most a P3 — the process demonstrates mastery",
+      "If a student achieves the correct echelon form (not RREF) when only echelon form was asked: this is P4 — do not penalize for not going further",
+      "If a student sets up the characteristic polynomial correctly but makes an arithmetic error in solving: P3 minimum",
+      "If a student correctly identifies free variables and pivot columns but writes the solution set imprecisely: P3",
+      "If a student shows correct row operations on all but one step: P3",
+      "For multi-part problems: grade each part independently; a wrong answer in part (a) that is correctly carried into part (b) should not penalize part (b)",
+      "TRUE/FALSE with correct answer AND correct explanation = P4, even if the explanation uses informal language",
+      "TRUE/FALSE with correct answer but weak explanation = P3",
+      "TRUE/FALSE with wrong answer but strong reasoning about a related concept = P2"
+    ],
+    p4Descriptor: "Correct method, correct execution, correct conclusion; minor arithmetic slips do not prevent P4 if process is fully demonstrated",
+    p3Descriptor: "Sound mathematical reasoning with computational errors; student clearly understands the procedure even if the final answer is off",
+    p2Descriptor: "Partial understanding: correct setup but significant gaps in execution, or correct answer with no supporting work",
+    p1Descriptor: "No meaningful attempt, or approach shows fundamental misunderstanding of the concept"
+  },
+
+  "Calculus I": {
+    tier: "beta",
+    label: "Calculus I",
+    description: "Limits, derivatives, applications of differentiation — process-heavy grading",
+    problemTypes: [
+      "limits (algebraic, graphical, one-sided)",
+      "continuity",
+      "definition of the derivative",
+      "basic differentiation rules (power, product, quotient, chain)",
+      "implicit differentiation",
+      "derivatives of trigonometric functions",
+      "derivatives of exponential and logarithmic functions",
+      "related rates",
+      "curve sketching (increasing/decreasing, concavity, inflection points)",
+      "optimization (absolute and local extrema)",
+      "Mean Value Theorem",
+      "linearization / differentials",
+      "introduction to antiderivatives"
+    ],
+    keyDefinitions: [
+      "A limit describes behavior as x approaches a value, NOT the value at that point",
+      "A function is continuous at x=a if: f(a) exists, lim f(x) exists, and they are equal",
+      "The derivative f'(a) = lim[h→0] (f(a+h)-f(a))/h — this is the definition, not just a formula",
+      "Differentiability implies continuity, but continuity does NOT imply differentiability",
+      "Chain rule: d/dx[f(g(x))] = f'(g(x)) · g'(x) — the outer derivative times the inner derivative",
+      "Product rule: (uv)' = u'v + uv'",
+      "Quotient rule: (u/v)' = (u'v - uv') / v²",
+      "A critical number is where f'(x)=0 OR f'(x) is undefined",
+      "First Derivative Test: sign change of f' determines local max/min",
+      "Second Derivative Test: f''(c)>0 means local min, f''(c)<0 means local max",
+      "Mean Value Theorem requires f to be continuous on [a,b] and differentiable on (a,b)",
+      "Related rates problems require implicit differentiation with respect to time"
+    ],
+    partialCreditRules: [
+      "PROCESS IS PARAMOUNT in Calculus I: a student who sets up the chain rule correctly but makes an arithmetic error in simplification earns P3 minimum",
+      "Correct differentiation rule applied with wrong simplification: P3",
+      "Correct limit setup with wrong algebra: P3",
+      "Setting up a related rates diagram and equation correctly but differentiating wrong: P2-P3 depending on where the error occurs",
+      "Finding critical numbers correctly but wrong conclusion in First/Second Derivative Test: P3",
+      "Correct method for optimization but wrong final answer due to arithmetic: P3",
+      "For definition-of-derivative problems: correct limit setup earns significant partial credit even if algebra fails",
+      "Implicit differentiation: correctly differentiating both sides earns P3 even if solving for dy/dx has errors",
+      "If a student skips steps, penalize 'work shown' criterion but not necessarily 'problem solving'"
+    ],
+    p4Descriptor: "Correct method, all steps shown, correct answer; notation is mathematically sound; minor simplification errors do not prevent P4",
+    p3Descriptor: "Correct calculus reasoning with algebraic or arithmetic errors; student demonstrates they know which rule to apply and how",
+    p2Descriptor: "Partial setup: student attempts the right approach but significant execution gaps; or correct answer with insufficient supporting work",
+    p1Descriptor: "No meaningful attempt, wrong rule applied entirely, or answer with no connection to calculus concepts"
+  },
+
+  "Precalculus": {
+    tier: "beta",
+    label: "Precalculus",
+    description: "Functions, trigonometry, conics, sequences — bridges Algebra to Calculus",
+    problemTypes: ["functions and transformations", "polynomial functions", "rational functions", "exponential and logarithmic functions", "trigonometric functions", "inverse trig", "analytic trigonometry", "conic sections", "sequences and series", "polar coordinates"],
+    keyDefinitions: [
+      "A function has exactly one output per input",
+      "Inverse functions satisfy f(f⁻¹(x)) = x and f⁻¹(f(x)) = x",
+      "sin²θ + cos²θ = 1 is the Pythagorean identity",
+      "Amplitude, period, phase shift, and vertical shift are four distinct transformations of trig functions",
+      "log_b(x) = y means b^y = x",
+      "Natural log ln(x) = log_e(x)"
+    ],
+    partialCreditRules: [
+      "Correct transformation setup with wrong graph: P3",
+      "Correct identity used with algebra error: P3",
+      "Correct log/exponential conversion with wrong solving: P2-P3"
+    ],
+    p4Descriptor: "All work shown, correct method, correct answer with proper notation",
+    p3Descriptor: "Correct approach with minor errors; mathematical reasoning is sound",
+    p2Descriptor: "Partial understanding; significant gaps in execution",
+    p1Descriptor: "No meaningful attempt or fundamentally wrong approach"
+  },
+
+  "Calculus II": {
+    tier: "beta",
+    label: "Calculus II",
+    description: "Integration techniques, series, parametric and polar curves",
+    problemTypes: ["substitution", "integration by parts", "partial fractions", "trigonometric integrals", "trigonometric substitution", "improper integrals", "sequences", "series convergence tests", "power series", "Taylor and Maclaurin series", "parametric curves", "polar curves", "arc length", "surface area"],
+    keyDefinitions: [
+      "Integration by parts: ∫u dv = uv - ∫v du",
+      "A series converges if its sequence of partial sums converges",
+      "Ratio test, root test, integral test, comparison tests are distinct convergence tools",
+      "A Taylor series centered at a: Σ f⁽ⁿ⁾(a)/n! · (x-a)ⁿ",
+      "Improper integrals require a limit definition"
+    ],
+    partialCreditRules: [
+      "Correct integration technique chosen but wrong execution: P3",
+      "Correct convergence test chosen but wrong conclusion: P3",
+      "Correct Taylor series setup with arithmetic error in coefficients: P3"
+    ],
+    p4Descriptor: "Correct technique, complete execution, correct answer with all steps",
+    p3Descriptor: "Correct technique with computational errors; student knows the method",
+    p2Descriptor: "Partial technique or incomplete execution with significant gaps",
+    p1Descriptor: "No meaningful attempt or completely wrong technique"
   }
-  const jsonStr = cleaned.slice(start, end + 1);
-  try {
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    throw new Error(`extractJSON: JSON.parse failed — ${e.message}\nExtracted: ${jsonStr.slice(0, 300)}`);
+};
+
+// ─── TIER METADATA ────────────────────────────────────────────────────────────
+
+const TIER_META = {
+  optimized: {
+    label: "Fully Supported",
+    color: "#0F6E56",
+    bg: "#E1F5EE",
+    border: "#A3D9C8",
+    icon: "✓",
+    description: "Trained and validated on real student work. Highest grading accuracy."
+  },
+  beta: {
+    label: "Beta",
+    color: "#185FA5",
+    bg: "#E6F1FB",
+    border: "#A3C4E8",
+    icon: "β",
+    description: "Strong capability with subject knowledge built in. Review AI scores before finalizing."
+  },
+  experimental: {
+    label: "Experimental",
+    color: "#854F0B",
+    bg: "#FAEEDA",
+    border: "#E8C98A",
+    icon: "⚗",
+    description: "Early stage. Use for exploration only — not recommended for official grading."
   }
-}
+};
 
-// ── CONFIG ──────────────────────────────────────────────────────────────────
-const AUTH_PASSWORD = "dmgof50c";
+// ─── SYSTEM PROMPT BUILDER ────────────────────────────────────────────────────
 
-function PasswordGate({ children }) {
-  const [input, setInput] = useState("");
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("dm3a_auth") === AUTH_PASSWORD);
-  const [error, setError] = useState(false);
-  if (authed) return children;
-  return (
-    <div style={{ minHeight:"100svh", display:"flex", alignItems:"center", justifyContent:"center", background:"#F7F6F3" }}>
-      <div style={{ background:"#fff", borderRadius:16, padding:40, maxWidth:380, width:"100%", boxShadow:"0 4px 24px rgba(0,0,0,0.08)", textAlign:"center" }}>
-        <div style={{ fontSize:13, fontWeight:700, letterSpacing:2, color:"#0F6E56", marginBottom:8 }}>DM3A GRADER</div>
-        <h2 style={{ fontSize:22, fontWeight:700, color:"#1A3A2A", margin:"0 0 8px" }}>Instructor Access</h2>
-        <p style={{ fontSize:13, color:"#5F5E5A", margin:"0 0 24px" }}>Enter the access password to continue.</p>
-        <input type="password" value={input} onChange={e=>{ setInput(e.target.value); setError(false); }} onKeyDown={e=>{ if(e.key==="Enter"){ if(input===AUTH_PASSWORD){ sessionStorage.setItem("dm3a_auth",AUTH_PASSWORD); setAuthed(true); } else setError(true); }}} placeholder="Password" style={{ width:"100%", padding:"10px 14px", borderRadius:8, border: error ? "1.5px solid #e53e3e" : "1.5px solid #D3D1C7", fontSize:14, boxSizing:"border-box", marginBottom:8, outline:"none" }} />
-        {error && <p style={{ color:"#e53e3e", fontSize:12, margin:"0 0 8px" }}>Incorrect password. Try again.</p>}
-        <button onClick={()=>{ if(input===AUTH_PASSWORD){ sessionStorage.setItem("dm3a_auth",AUTH_PASSWORD); setAuthed(true); } else setError(true); }} style={{ width:"100%", background:"#0F6E56", color:"#fff", border:"none", borderRadius:8, padding:"11px", fontSize:14, fontWeight:600, cursor:"pointer", marginTop:4 }}>Enter</button>
-      </div>
-    </div>
-  );
-}
+function buildSystemPrompt(courseConfig) {
+  return `You are an expert mathematics grader using the DM3A mastery-based assessment framework developed by Dr. Ralph Minaya, Ed.D.
 
-const TIERS = [
-  { id: "P4", label: "P4", desc: "Mastery",             color: "#0F6E56", bg: "#E1F5EE", pct: "90–100%" },
-  { id: "P3", label: "P3", desc: "Approaching Mastery", color: "#185FA5", bg: "#E6F1FB", pct: "80–89%"  },
-  { id: "P2", label: "P2", desc: "Developing",          color: "#854F0B", bg: "#FAEEDA", pct: "60–79%"  },
-  { id: "P1", label: "P1", desc: "Beginning",           color: "#A32D2D", bg: "#FCEBEB", pct: "Below 60%" },
-];
-const SUBJECTS = ["Mathematics","Statistics","Algebra","Calculus","Science","English","History","Other"];
-const ACCEPT = "application/pdf,image/jpeg,image/jpg,image/png,image/webp,image/gif";
+## CORE DM3A PHILOSOPHY
+You NEVER use binary "correct" or "wrong" labels. Every problem is graded on the P1–P4 mastery scale.
+PROCESS IS MORE IMPORTANT THAN THE FINAL ANSWER. A student who demonstrates correct mathematical reasoning with a computational error is NOT a failing student.
 
-// ── HELPERS ──────────────────────────────────────────────────────────────────
-function tierColor(t) { return TIERS.find(x=>x.id===t)?.color || "#888"; }
-function tierBg(t)    { return TIERS.find(x=>x.id===t)?.bg    || "#f5f5f5"; }
+## P1–P4 MASTERY SCALE
+- P4 (Mastery, 90%+): ${courseConfig.p4Descriptor}
+- P3 (Approaching Mastery, 80–89%): ${courseConfig.p3Descriptor}
+- P2 (Developing, 60–79%): ${courseConfig.p2Descriptor}
+- P1 (Beginning, below 60%): ${courseConfig.p1Descriptor}
 
-function Badge({ tier, size = 13 }) {
-  const t = TIERS.find(x => x.id === tier);
-  if (!t) return null;
-  return (
-    <span style={{
-      display:"inline-flex", alignItems:"center", gap:5,
-      background:t.bg, color:t.color,
-      fontFamily:"'DM Mono',monospace", fontSize:size, fontWeight:600,
-      padding:"3px 10px", borderRadius:20, letterSpacing:"0.04em",
-      border:`1px solid ${t.color}33`, whiteSpace:"nowrap"
-    }}>{t.label} · {t.desc}</span>
-  );
-}
+## SUBJECT: ${courseConfig.label}
+Problem types you will encounter: ${courseConfig.problemTypes.join(", ")}.
 
-function fileToBase64(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result.split(",")[1]);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
-}
+## CRITICAL DEFINITIONS YOU MUST KNOW
+${courseConfig.keyDefinitions.map((d, i) => `${i + 1}. ${d}`).join("\n")}
 
-function isImage(file) { return file.type.startsWith("image/"); }
-function isPDF(file)   { return file.type === "application/pdf"; }
+## PARTIAL CREDIT RULES
+${courseConfig.partialCreditRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
 
-async function splitPDF(file, pagesPerChunk) {
-  const arrayBuffer = await file.arrayBuffer();
-  const srcPdf = await PDFDocument.load(arrayBuffer);
-  const totalPages = srcPdf.getPageCount();
-  const chunks = [];
-  for (let start = 0; start < totalPages; start += pagesPerChunk) {
-    const end = Math.min(start + pagesPerChunk, totalPages);
-    const chunkPdf = await PDFDocument.create();
-    const indices = Array.from({ length: end - start }, (_, i) => start + i);
-    const copied = await chunkPdf.copyPages(srcPdf, indices);
-    copied.forEach(p => chunkPdf.addPage(p));
-    const bytes = await chunkPdf.save();
-    const n = Math.floor(start / pagesPerChunk) + 1;
-    chunks.push(new File([bytes], `${file.name}_student${n}.pdf`, { type: "application/pdf" }));
-  }
-  return chunks;
-}
+## GRADING RULES
+1. Read ALL problems before grading. Do not skip any sub-parts (a, b, c, d, etc.). If a problem has parts, grade EVERY part.
+2. For multi-part problems: grade each part INDEPENDENTLY. A wrong answer in part (a) carried correctly into part (b) does NOT penalize part (b).
+3. Compare student work against the answer key/model solution if provided. If no answer key is provided, use your subject expertise.
+4. When handwriting is ambiguous, assume the most mathematically charitable interpretation.
+5. NEVER penalize a student for not reducing further than the problem asked.
+6. Flag any problem where you have LOW CONFIDENCE in your grading with "flagged: true".
 
-// ── PDF REPORT GENERATOR ─────────────────────────────────────────────────────
-function generateStudentPDF(student, assignment, subject, instructor, overrideTier) {
-  const displayTier = overrideTier || student.overallTier;
-  const t = TIERS.find(x => x.id === displayTier) || TIERS[3];
-  const date = new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+## OUTPUT FORMAT
+Return ONLY a valid JSON array. No preamble, no markdown fences, no explanation outside the JSON.
 
-  const problemRows = (student.problems || []).map(p => {
-    const isCorrect = p.correct === true;
-    const statusColor = isCorrect ? "#0F6E56" : "#A32D2D";
-    const statusBg    = isCorrect ? "#E1F5EE" : "#FCEBEB";
-    const statusLabel = isCorrect ? "Correct"  : "Wrong";
-    return `
-    <tr>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;font-family:'DM Mono',monospace;font-size:12px;color:#555;">${p.number||""}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:12px;">${p.correctAnswer||""}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;font-family:'DM Mono',monospace;font-size:12px;color:#333;">${p.studentAnswer||"—"}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;">
-        <span style="background:${statusBg};color:${statusColor};font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;font-family:'DM Mono',monospace;">${statusLabel}</span>
-      </td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:12px;color:#444;line-height:1.5;">${p.feedback||""}</td>
-    </tr>
-  `;
-  }).join("");
-
-  const patternItems = (student.patterns || []).map(p => `
-    <div style="margin-bottom:12px;padding:10px 14px;background:#F9F8F5;border-left:3px solid #0F6E56;border-radius:4px;">
-      <div style="font-weight:600;font-size:13px;color:#1a1a18;margin-bottom:4px;">${p.title||""}</div>
-      <div style="font-size:12px;color:#444;line-height:1.6;">${p.detail||""}</div>
-    </div>
-  `).join("");
-
-  const criteriaCards = (student.criteria || []).map(c => `
-    <div style="background:${tierBg(c.tier)};border-radius:8px;padding:12px 14px;border:1px solid ${tierColor(c.tier)}22;">
-      <div style="font-size:10px;color:${tierColor(c.tier)};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">${c.name}</div>
-      <div style="font-family:'DM Mono',monospace;font-size:18px;font-weight:600;color:${tierColor(c.tier)};">${c.tier}</div>
-    </div>
-  `).join("");
-
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8"/>
-<title>DM3A Report — ${student.studentName}</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
-<style>
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:'DM Sans',sans-serif; color:#1a1a18; background:#fff; padding:48px; font-size:13px; }
-  h1 { font-size:22px; font-weight:500; letter-spacing:-0.02em; }
-  h2 { font-size:15px; font-weight:500; letter-spacing:-0.01em; margin:28px 0 12px; border-bottom:1px solid #E2E0D8; padding-bottom:8px; }
-  table { width:100%; border-collapse:collapse; }
-  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:#888; padding:8px 10px; border-bottom:2px solid #E2E0D8; font-family:'DM Mono',monospace; }
-  @media print { body { padding:24px; } }
-</style>
-</head>
-<body>
-
-<!-- HEADER -->
-<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #0F6E56;">
-  <div>
-    <div style="font-family:'DM Mono',monospace;font-size:10px;color:#0F6E56;letter-spacing:0.1em;margin-bottom:6px;">DM3A GRADER · MASTERY REPORT</div>
-    <h1>${assignment}</h1>
-    <div style="font-size:12px;color:#666;margin-top:4px;">${subject} · ${date}</div>
-  </div>
-  <div style="text-align:right;">
-    <div style="font-size:12px;color:#666;">${instructor || "Dr. Ralph Minaya, Ed.D."}</div>
-    <div style="font-size:11px;color:#888;">University of Saint Joseph</div>
-  </div>
-</div>
-
-<!-- STUDENT HEADER -->
-<div style="display:flex;align-items:center;justify-content:space-between;background:#F9F8F5;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
-  <div>
-    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Student</div>
-    <div style="font-size:20px;font-weight:500;">${student.studentName || "—"}</div>
-  </div>
-  <div style="text-align:center;">
-    <div style="font-size:11px;color:#888;margin-bottom:4px;">OVERALL</div>
-    <div style="background:${t.bg};color:${t.color};font-family:'DM Mono',monospace;font-size:28px;font-weight:600;padding:8px 20px;border-radius:10px;border:1px solid ${t.color}33;">${displayTier}</div>
-    <div style="font-size:11px;color:${t.color};margin-top:4px;">${t.desc}</div>
-  </div>
-</div>
-
-<!-- CRITERIA GRID -->
-${student.criteria?.length ? `
-<h2>Criteria Breakdown</h2>
-<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:24px;">
-  ${criteriaCards}
-</div>` : ""}
-
-<!-- MASTERY FEEDBACK -->
-<h2>Mastery Feedback</h2>
-<div style="background:#F0FAF5;border-left:3px solid #0F6E56;border-radius:4px;padding:14px 16px;margin-bottom:24px;font-size:13px;line-height:1.7;color:#1a1a18;">
-  ${student.feedback || ""}
-</div>
-
-<!-- PROBLEM-BY-PROBLEM -->
-${student.problems?.length ? `
-<h2>Problem-by-Problem Results</h2>
-<div style="margin-bottom:8px;display:flex;gap:16px;">
-  <span style="font-size:12px;"><span style="font-family:'DM Mono',monospace;font-weight:600;color:#0F6E56;">Correct:</span> ${student.problems.filter(p=>p.correct===true).length}</span>
-  <span style="font-size:12px;"><span style="font-family:'DM Mono',monospace;font-weight:600;color:#A32D2D;">Wrong:</span> ${student.problems.filter(p=>p.correct!==true).length}</span>
-</div>
-<table style="margin-bottom:24px;">
-  <thead><tr>
-    <th style="width:60px;">#</th>
-    <th style="width:100px;">Correct Answer</th>
-    <th style="width:100px;">Student Answer</th>
-    <th style="width:80px;">Grade</th>
-    <th>Feedback</th>
-  </tr></thead>
-  <tbody>${problemRows}</tbody>
-</table>` : ""}
-
-<!-- PATTERNS -->
-${student.patterns?.length ? `
-<h2>Patterns to Address</h2>
-<div style="margin-bottom:24px;">${patternItems}</div>` : ""}
-
-<!-- NEXT STEP -->
-${student.growthNote ? `
-<h2>Next Step</h2>
-<div style="background:#E6F1FB;border-left:3px solid #185FA5;border-radius:4px;padding:14px 16px;margin-bottom:24px;font-size:13px;line-height:1.7;color:#1a1a18;">
-  ${student.growthNote}
-</div>` : ""}
-
-<!-- REFLECTION -->
-${student.reflectionPrompt ? `
-<h2>Reflection Prompt</h2>
-<div style="background:#FAEEDA;border-left:3px solid #854F0B;border-radius:4px;padding:14px 16px;margin-bottom:24px;font-size:13px;line-height:1.7;color:#1a1a18;font-style:italic;">
-  ${student.reflectionPrompt}
-</div>` : ""}
-
-<!-- FOOTER -->
-<div style="border-top:1px solid #E2E0D8;padding-top:16px;margin-top:32px;display:flex;justify-content:space-between;font-size:11px;color:#888;">
-  <span>DM3A Mastery Scale · P4=Mastery · P3=Approaching Mastery · P2=Developing · P1=Beginning</span>
-  <span>${instructor || "Dr. Ralph Minaya, Ed.D."}</span>
-</div>
-
-</body>
-</html>`;
-
-  const blob = new Blob([html], { type: "text/html" });
-  const url  = URL.createObjectURL(blob);
-  const win  = window.open(url, '_blank');
-  if (win) {
-    win.onload = () => { win.focus(); win.print(); };
-  }
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
-
-// ── GRADING API CALL ──────────────────────────────────────────────────────────
-
-const TIER_NUM = { P4: 4, P3: 3, P2: 2, P1: 1 };
-const NUM_TIER = { 4: "P4", 3: "P3", 2: "P2", 1: "P1" };
-
-function avgTier(tiersArr) {
-  const nums = tiersArr.map(t => TIER_NUM[t] || 2);
-  return NUM_TIER[Math.max(1, Math.min(4, Math.round(nums.reduce((a, b) => a + b, 0) / nums.length)))];
-}
-
-function mergeStudentChunks(chunks) {
-  if (chunks.length === 0) return { studentName: "Unknown", overallTier: "P1", feedback: "Grading incomplete." };
-  if (chunks.length === 1) return chunks[0];
-
-  const studentName = chunks.find(c => c.studentName?.trim())?.studentName || "Unknown";
-  const overallTier = avgTier(chunks.map(c => c.overallTier).filter(Boolean));
-
-  const criteriaMap = {};
-  chunks.forEach(c => (c.criteria || []).forEach(cr => {
-    (criteriaMap[cr.name] = criteriaMap[cr.name] || []).push(cr.tier);
-  }));
-  const criteria = Object.entries(criteriaMap).map(([name, tiers]) => ({ name, tier: avgTier(tiers) }));
-
-  const problems = chunks.flatMap(c => c.problems || []);
-
-  const seenPatterns = new Set();
-  const patterns = chunks.flatMap(c => c.patterns || []).filter(p => {
-    if (seenPatterns.has(p.title)) return false;
-    seenPatterns.add(p.title);
-    return true;
-  });
-
-  const feedback = chunks.map(c => c.feedback).filter(Boolean).join(" ");
-  const growthNote = chunks.map(c => c.growthNote).filter(Boolean).join(" ");
-  const reflectionPrompt = chunks.find(c => c.reflectionPrompt)?.reflectionPrompt || "";
-
-  return { studentName, overallTier, criteria, problems, patterns, feedback, growthNote, reflectionPrompt };
-}
-
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  const CHUNK = 8192;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-async function compressImage(file) {
-  return new Promise((resolve) => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const MAX_DIM = 1024;
-      let { width, height } = img;
-      if (width > height && width > MAX_DIM) { height = Math.round(height * MAX_DIM / width); width = MAX_DIM; }
-      else if (height > MAX_DIM) { width = Math.round(width * MAX_DIM / height); height = MAX_DIM; }
-      canvas.width = width;
-      canvas.height = height;
-      ctx.drawImage(img, 0, 0, width, height);
-      URL.revokeObjectURL(url);
-      canvas.toBlob((blob) => resolve(blob || file), 'image/jpeg', 0.65);
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
-    img.src = url;
-  });
-}
-
-async function gradeFile(file, { subject, assignment, rubric, criteria, pagesPerStudent, gradingMode }, extraFiles = []) {
-  const isImg = isImage(file);
-  let b64, finalMimeType, pageCount = null;
-
-  if (!isImg) {
-    const arrayBuffer = await file.arrayBuffer();
-    try {
-      const pdfDoc = await PDFDocument.load(arrayBuffer);
-      pageCount = pdfDoc.getPageCount();
-    } catch (e) { /* non-critical */ }
-    b64 = arrayBufferToBase64(arrayBuffer);
-    finalMimeType = 'application/pdf';
-  } else {
-    const compressed = await compressImage(file);
-    b64 = await fileToBase64(compressed);
-    finalMimeType = 'image/jpeg';
-  }
-  // Prepare extra pages for combined grading
-  const extraBlocks = await Promise.all(extraFiles.map(async (ef) => {
-    if (isImage(ef)) {
-      const efGrade = await compressImage(ef);
-      const efB64 = await fileToBase64(efGrade);
-      return { type: "image", source: { type: "base64", media_type: "image/jpeg", data: efB64 } };
-    } else {
-      const efBuffer = await ef.arrayBuffer();
-      const efB64 = arrayBufferToBase64(efBuffer);
-      return { type: "document", source: { type: "base64", media_type: "application/pdf", data: efB64 } };
-    }
-  }));
-
-  const isSummative = gradingMode === "summative";
-
-  const systemPrompt = `START YOUR RESPONSE WITH { AND NOTHING ELSE. NO PREAMBLE, NO COMMENTARY, NO MARKDOWN. ONLY RAW JSON.
-
-CRITICAL: Output ONLY the JSON object. Zero text before {. Zero text after }. No 'Looking at', no 'Here is', no markdown. Just raw JSON.
-
-CRITICAL: Your response must contain ONLY a JSON object. Do not write ANY text before or after the JSON. Do not say 'Looking at', 'Here is', 'Based on', or any other preamble. Start your response with { and end with }.
-
-You are DM3A Grader — an expert AI grading assistant developed by Dr. Ralph Minaya, Ed.D. You grade student work strictly against the provided answer key using the DM3A Mastery Scale.
-
-DM3A MASTERY SCALE:
-- P4 = Mastery: All or nearly all answers correct; complete, accurate work shown.
-- P3 = Approaching Mastery: Strong work with minor gaps that do not compromise overall understanding.
-- P2 = Developing: Partial understanding; key concepts present but work is incomplete or inconsistent.
-- P1 = Beginning: Significant gaps; foundational reteaching needed.
-
-GRADING MODE: ${isSummative ? "SUMMATIVE (STRICT)" : "FORMATIVE (SUPPORTIVE)"}
-
-ANSWER-KEY GRADING RULES — apply to every problem:
-1. Compare each student answer EXACTLY against the answer key provided in the rubric or assignment instructions.
-2. For multiple choice: the selected letter must match the correct letter exactly — no exceptions.
-3. For open-ended: the final answer must be mathematically equivalent to the answer key. Equivalent forms (e.g., 1/2 and 0.5) count as correct.
-4. Do NOT give credit for "showing understanding" if the final answer is wrong.
-5. Do NOT infer intent or give benefit of the doubt on wrong answers.
-6. Partial credit is ONLY allowed when (a) the rubric explicitly states partial credit is available AND (b) the student shows correct work steps with only a minor arithmetic error on the final step.
-7. If no answer key is provided in the rubric, state this clearly in the overall feedback and do NOT assign scores above P2 for any criterion.
-8. In each problem's feedback, explicitly state what was expected vs. what was written for every wrong answer (e.g., "Expected: B · Student wrote: C").
-9. The feedback for a WRONG answer must NEVER begin with the word "Correct". Start directly with the error (e.g., "Expected: 3/4 · Student wrote: 4/3. The numerator and denominator were flipped.").
-
-MULTIPLE CHOICE LETTER READING — handwriting accuracy rules:
-- Identify the selected answer by its POSITION in the answer list, not by reading the shape of the circled or bubbled letter.
-- A = first option listed, B = second option, C = third option, D = fourth option.
-- The circle or bubble may be imperfect, bleed into adjacent letters, or look ambiguous — always use position as the primary signal, not letter shape.
-- POSITION IS ABSOLUTE: if the student marks the second option listed, that is B — even if the circled letter looks like an A, C, or any other shape. Never override position with letter-shape recognition.
-- CRITICAL — DO NOT assume first = A by default: Never assume that a mark placed near the top of the answer list, or near the printed label "A", automatically means the student chose A. Count position from the top of the answer list every time. If the mark is on the second option, that is B — regardless of how the letter label looks or what letter shape appears to be circled.
-- B vs C DISAMBIGUATION (extremely common error): The letters B and C look very similar when handwritten or circled. DO NOT rely on letter shape to distinguish them. COUNT THE POSITION from the top: if the mark is on the 2nd option = B. If the mark is on the 3rd option = C. Re-verify your answer by counting options from the top before recording B or C in your response.
-- MANDATORY POSITION-COUNT PROTOCOL: For EVERY multiple choice answer you record, follow this 3-step verification:
-  1. Locate the circled/marked option in the vertical list of choices
-  2. Count down from the top: 1st option = A, 2nd = B, 3rd = C, 4th = D
-  3. Record the letter that matches that position number (ignore what the handwritten letter "looks like")
-- Never guess: if the selected option is truly ambiguous even by position, report the student's answer as "unclear" in the feedback.
-
-HANDWRITTEN MATH EXPRESSION READING — accuracy rules:
-- Read condensed mathematical expressions carefully, character by character. Do not skim or pattern-match loosely.
-- Small superscripts written next to a variable are exponents, not separate multiplied numbers (e.g., x² means x-squared, not x times 2).
-- COEFFICIENT vs EXPONENT: a digit written before a variable is a coefficient; a digit written as a superscript after the variable is an exponent. Never merge them. "3x²" = 3 · x² (three times x-squared), NOT 32 · x or 3x² read as "thirty-two x". The coefficient and the exponent are always separate values.
-- For logarithm expressions, read base, argument, exponents, and coefficients exactly as written. log₄(3x²/y) is a valid condensed form — the 3 is the coefficient of x² inside the argument, not part of the exponent. Do not misread the base, exponent, or coefficient.
-- If a student's final answer is mathematically equivalent to the answer key (e.g., same expression in a different but valid form), mark it correct even if intermediate notation differs slightly.
-- When in doubt about a character, consider the mathematical context (e.g., a small raised mark next to a variable is almost certainly an exponent).
-
-FINAL ANSWER vs INTERMEDIATE WORK — open-ended grading rules:
-- Always grade the FINAL answer, not intermediate steps.
-- The final answer is the last clearly written result — look for it at the end of the work, after the last equals sign in the solution chain, or wherever the student wrote the concluding value (e.g., "x = 14").
-- A boxed, circled, or underlined value is a strong signal that it is the intended final answer.
-- If a student writes intermediate steps (e.g., "2x - 1 = 27") and then concludes with a final answer (e.g., "x = 14"), grade the final answer only — do NOT penalize based on an intermediate expression.
-- SOLVE-FOR-X RULE: For any problem that asks the student to solve for a variable, the ONLY valid final answer form is "x = [number]" (or the relevant variable = value). An algebraic equation such as "2x - 1 = 27" or "2x = 28" is an intermediate step in the solving process — it is NEVER a final answer. Do not record an equation form as the student's final answer for a solve-for-x problem; keep reading until you find the "x = …" conclusion.
-- Only reference intermediate steps in feedback when explaining how the student arrived at a wrong final answer.
-
-${isSummative
-  ? `SUMMATIVE MODE — zero tolerance:
-- Wrong final answers receive NO partial credit, regardless of work shown.
-- Sign errors, transcription errors, and arithmetic mistakes all count as wrong answers.
-- Mark a problem correct: false whenever the final answer does not match the key exactly.
-- The overall tier must reflect the exact proportion of problems answered correctly.`
-  : `FORMATIVE MODE — growth-oriented:
-- Acknowledge correct reasoning steps even when the final answer is wrong.
-- Provide specific, encouraging feedback that identifies what the student understood.
-- Partial credit may be awarded for well-supported work with minor errors if the rubric allows.
-- Focus feedback on what to study next.`}
-
-SCAN QUALITY: Even if the scan is light, faded, or low contrast — do your best to read and grade the work. Never refuse due to image quality. If a problem is truly unreadable, note it in feedback and score P1.
-
-STUDENT IDENTIFICATION: ${pagesPerStudent === "all" ? "The ENTIRE file is ONE single student's submission — treat every page as belonging to one student. Return a JSON array with exactly ONE student object." : `Each student submission is ${pagesPerStudent} page(s). Identify each student by name if visible.`}
-
-FULL COVERAGE REQUIREMENT: When this submission spans multiple sections (e.g., Section I, Section II, Section III), you MUST grade EVERY section on EVERY page without exception. Never stop after completing one section — continue reading and grading through to the very last page. The "problems" array must include a result entry for every numbered problem that appears on any page of this submission. Stopping early or omitting the final section is a grading error.
-
-For each student provide:
-- Overall tier (P4/P3/P2/P1) based strictly on answer accuracy
-- Criteria breakdown (one tier per criterion from the rubric)
-- Problem-by-problem results: for each problem set correct: true or correct: false (never a tier label), with explicit right/wrong notation in feedback
-- Pattern analysis (recurring error types observed)
-- 2–3 sentences of individualized narrative feedback
-- One specific growth next step
-- A reflection prompt the student should answer before the next class
-
-Respond ONLY with a valid JSON array. Your ENTIRE response must be ONLY the JSON array — starting with [ and ending with ]. No commentary before or after. No markdown code blocks. No "Looking at" or "Here is" or any other preamble. JUST THE JSON ARRAY.
-
-Each student object must follow this schema exactly:
+Each student object:
 {
-  "studentName": string,
-  "overallTier": "P4"|"P3"|"P2"|"P1",
-  "criteria": [{"name": string, "tier": "P4"|"P3"|"P2"|"P1"}],
-  "problems": [{"number": string, "correctAnswer": string, "studentAnswer": string, "correct": boolean, "feedback": string}],
-  "patterns": [{"title": string, "detail": string}],
-  "feedback": string,
-  "growthNote": string,
-  "reflectionPrompt": string
+  "studentName": "string",
+  "overallTier": "P1|P2|P3|P4",
+  "dimensions": {
+    "conceptualUnderstanding": "P1|P2|P3|P4",
+    "problemSolving": "P1|P2|P3|P4",
+    "workShown": "P1|P2|P3|P4",
+    "accuracy": "P1|P2|P3|P4"
+  },
+  "problems": [
+    {
+      "id": "1a",
+      "description": "brief description of what the problem asked",
+      "tier": "P1|P2|P3|P4",
+      "reasoning": "specific explanation of why this tier was assigned, referencing student's actual work",
+      "processAssessment": "description of student's mathematical process/reasoning",
+      "answerCorrect": true|false,
+      "processCorrect": true|false,
+      "flagged": false,
+      "flagReason": null
+    }
+  ],
+  "strengths": ["string"],
+  "growthAreas": ["string"],
+  "feedback": "2-3 sentence personalized, growth-oriented feedback",
+  "instructorNote": "any concerns or observations for the instructor"
+}`;
 }
 
-CRITICAL — "studentAnswer" field requirement:
-- For multiple choice questions, the "studentAnswer" field must contain the letter that corresponds to the POSITION the student marked, not the letter shape you perceive.
-- Before recording "studentAnswer" for any MC question, mentally re-count: 1st option = A, 2nd = B, 3rd = C, 4th = D.
-- If you find yourself recording "B" or "C" as the studentAnswer, STOP and re-verify by counting position from the top. B and C are commonly confused due to similar letter shapes.
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
-If problems are not individually numbered, leave "problems" as an empty array [].
-Always return an array even for a single student.
+const SERVER_URL = 'https://dm3a-grader-server.onrender.com';
 
-CRITICAL: Output ONLY the JSON object. Zero text before {. Zero text after }. No 'Looking at', no 'Here is', no markdown. Just raw JSON.`;
+export default function DM3AGraderV5() {
+  const [step, setStep] = useState("login");
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [showTierGuide, setShowTierGuide] = useState(false);
+  const [subject, setSubject] = useState("");
+  const [assignment, setAssignment] = useState("");
+  const [rubric, setRubric] = useState("");
+  const [assignmentFile, setAssignmentFile] = useState(null);
+  const [answerKeyFile, setAnswerKeyFile] = useState(null);
+  const [studentFiles, setStudentFiles] = useState([]);
+  const [isBatchPDF, setIsBatchPDF] = useState(false);
+  const [batchMode, setBatchMode] = useState("auto"); // "auto" | "fixed"
+  const [pagesPerStudent, setPagesPerStudent] = useState(2);
+  const [combineImages, setCombineImages] = useState(false);
+  const [combinedStudentName, setCombinedStudentName] = useState("");
+  const [fileSizeWarnings, setFileSizeWarnings] = useState([]);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("");
+  const [error, setError] = useState("");
+  const [overrides, setOverrides] = useState({});
+  const [problemOverrides, setProblemOverrides] = useState({});
+  const [activeStudent, setActiveStudent] = useState(0);
 
-  const userPrompt = extraFiles && extraFiles.length > 0
-    ? `Subject: ${subject}\nAssignment: ${assignment}\nGrading Criteria: ${criteria.join(", ")}\nRubric: ${rubric}\n\nAll ${extraFiles.length + 1} files belong to ONE single student. Treat them as pages of the same submission. Return a JSON array with exactly ONE student object.`
-    : pagesPerStudent === "all"
-    ? `Subject: ${subject}\nAssignment: ${assignment}\nGrading Criteria: ${criteria.join(", ")}\nRubric: ${rubric}\n\nThis entire file is ONE single student's submission. Return a JSON array with exactly ONE student object.`
-    : `Subject: ${subject}\nAssignment: ${assignment}\nGrading Criteria: ${criteria.join(", ")}\nRubric: ${rubric}\n\nGrade every student submission in this ${isImg ? "image" : "PDF"}. Be comprehensive — include problem-level detail where visible.`;
+  const assignmentRef = useRef();
+  const answerKeyRef = useRef();
+  const studentRef = useRef();
 
-  console.log("[DM3A] → API request", {
-    fileName: file.name,
-    fileSizeMB: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
-    pageCount,
-    estimatedPayloadKB: `~${Math.round(b64.length * 0.75 / 1024)} KB`,
-    mimeType: finalMimeType,
-    pagesPerStudent,
-    subject,
-    assignment,
-  });
+  const APP_PASSWORD = "dmgof50c";
 
-  const contentBlock = isImg
-    ? { type: "image", source: { type: "base64", media_type: finalMimeType, data: b64 } }
-    : { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } };
+  // ─── LOGIN ────────────────────────────────────────────────────────────────
 
-  const res = await fetch("/api/grade", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 8000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: [contentBlock, ...extraBlocks, { type: "text", text: userPrompt }] }]
-    })
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const msg = err?.error?.message || `API error ${res.status}`;
-    console.error("[DM3A] ← API error", res.status, msg);
-    throw new Error(msg);
+  function handleLogin(e) {
+    e.preventDefault();
+    if (password === APP_PASSWORD) {
+      setStep("setup");
+      setShowTierGuide(true);
+    } else {
+      setLoginError("Incorrect password. Please contact Dr. Minaya for access.");
+    }
   }
 
-  const data = await res.json();
-  const responseText = data.content?.find(b => b.type === "text")?.text || "";
+  // ─── FILE HELPERS ─────────────────────────────────────────────────────────
 
-  console.log("[DM3A] ← API response (first 400 chars):", responseText.slice(0, 400));
+  async function fileToBase64(file) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(",")[1]);
+      r.onerror = () => rej(new Error("Read failed"));
+      r.readAsDataURL(file);
+    });
+  }
 
-  const parsed = extractJSON(responseText);
-  return Array.isArray(parsed) ? parsed : [parsed];
-}
+  function isImage(file) {
+    return file?.type?.startsWith("image/");
+  }
 
-// ── FILE CARD ─────────────────────────────────────────────────────────────────
-function FileCard({ file, status, result, onRemove }) {
-  const icon = isImage(file) ? "🖼" : "📄";
-  const statusColor = { pending:"#888", processing:"#185FA5", done:"#0F6E56", error:"#A32D2D" }[status];
-  const statusLabel = { pending:"Queued", processing:"Grading…", done:"Done", error:"Failed" }[status];
+  // Auto-compress images to stay under 1MB before sending to API
+  // Handles large phone camera photos (3-8MB) transparently
+  async function compressImage(file, maxSizeMB = 1.0, maxDimension = 1600) {
+    return new Promise((resolve) => {
+      // If already small enough, skip compression
+      if (file.size <= maxSizeMB * 1024 * 1024) {
+        fileToBase64(file).then(resolve);
+        return;
+      }
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        let { width, height } = img;
+        // Scale down if too large
+        if (width > maxDimension || height > maxDimension) {
+          const ratio = Math.min(maxDimension / width, maxDimension / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        // Try quality 0.85 first, then lower if still too big
+        let quality = 0.85;
+        let dataUrl = canvas.toDataURL("image/jpeg", quality);
+        while (dataUrl.length > maxSizeMB * 1024 * 1024 * 1.37 && quality > 0.3) {
+          quality -= 0.1;
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+        }
+        resolve(dataUrl.split(",")[1]);
+      };
+      img.onerror = () => {
+        // Fallback to uncompressed if something goes wrong
+        fileToBase64(file).then(resolve);
+      };
+      img.src = url;
+    });
+  }
 
-  return (
-    <div style={{
-      display:"flex", alignItems:"center", justifyContent:"space-between",
-      background:"#F9F8F5", borderRadius:10, padding:"10px 14px",
-      border:"0.5px solid #D3D1C7"
-    }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-        <span style={{ fontSize:18 }}>{icon}</span>
-        <div>
-          <div style={{ fontSize:13, fontWeight:500, color:"#2C2C2A" }}>{file.name}</div>
-          <div style={{ fontSize:11, color:"#888" }}>
-            {(file.size/1024/1024).toFixed(1)} MB
-            {result ? ` · ${result.length} student${result.length!==1?"s":""}` : ""}
-          </div>
-        </div>
+  async function pdfToImages(file, maxPages = 16, maxDimension = 400, quality = 0.3) {
+    const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    console.log(`[pdfToImages] pdf.numPages=${pdf.numPages} maxPages=${maxPages}`);
+    if (pdf.numPages > 20) console.warn(`[pdfToImages] PDF.js may be misreading page count — pdf.numPages=${pdf.numPages} seems too high`);
+    const images = [];
+    // Use try-catch per page rather than trusting pdf.numPages, which can misreport
+    for (let pageNum = 1; pageNum <= Math.min(pdf.numPages, maxPages); pageNum++) {
+      let page;
+      try {
+        page = await pdf.getPage(pageNum);
+      } catch {
+        break; // no more pages in the actual page tree
+      }
+      const viewport = page.getViewport({ scale: 1 });
+      const scale = Math.min(maxDimension / viewport.width, maxDimension / viewport.height, 1);
+      const scaledViewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = scaledViewport.width;
+      canvas.height = scaledViewport.height;
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport: scaledViewport }).promise;
+      images.push(canvas.toDataURL("image/jpeg", quality).split(",")[1]);
+    }
+    console.log(`[pdfToImages] produced ${images.length} images`);
+    return images;
+  }
+
+  async function uploadPDF(base64) {
+    const resp = await fetch(`${SERVER_URL}/upload-pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base64, mediaType: "application/pdf" })
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+      throw new Error(err.error || `Upload failed: HTTP ${resp.status}`);
+    }
+    const { file_id } = await resp.json();
+    return file_id;
+  }
+
+  async function fetchGradeResult(body) {
+    const response = await fetch(`${SERVER_URL}/grade`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+      throw new Error(err.error || `HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    return data.result;
+  }
+
+  // ─── GRADING ─────────────────────────────────────────────────────────────
+
+  async function handleGrade() {
+    if (!subject || !studentFiles.length) {
+      setError("Please select a subject and upload at least one student file.");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    setStep("grading");
+    const courseConfig = COURSE_CONFIGS[subject];
+    const systemPrompt = buildSystemPrompt(courseConfig);
+    const allResults = [];
+
+    // ── BATCH PDF MODE ──────────────────────────────────────────────────────
+    const file = studentFiles[0];
+    const isSinglePDF = studentFiles.length === 1 && file.type === "application/pdf" && isBatchPDF;
+    // PDFs over 5MB always use chunked image path regardless of batchMode
+    const isTrueBatch = isSinglePDF && batchMode !== "single" && file.size <= 5 * 1024 * 1024;
+
+    if (isTrueBatch) {
+      setLoadingMsg("Reading batch PDF and identifying students...");
+      try {
+        const studentB64 = await fileToBase64(file);
+        const contentBlocks = [];
+
+        if (assignmentFile) {
+          const assignB64 = await fileToBase64(assignmentFile);
+          if (isImage(assignmentFile)) {
+            contentBlocks.push({ type: "image", source: { type: "base64", media_type: assignmentFile.type, data: assignB64 } });
+          } else {
+            contentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: assignB64 }, title: "ASSIGNMENT PROMPT" });
+          }
+          contentBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
+        }
+
+        if (answerKeyFile) {
+          const keyB64 = await fileToBase64(answerKeyFile);
+          if (isImage(answerKeyFile)) {
+            contentBlocks.push({ type: "image", source: { type: "base64", media_type: answerKeyFile.type, data: keyB64 } });
+          } else {
+            contentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: keyB64 }, title: "MODEL SOLUTION / ANSWER KEY" });
+          }
+          contentBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
+        }
+
+        contentBlocks.push({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: studentB64 },
+          title: "BATCH STUDENT SUBMISSIONS"
+        });
+
+        const batchInstruction = batchMode === "auto"
+          ? `BATCH MODE — AUTO-DETECT: This PDF contains multiple students' work scanned together.
+STEP 1: Scan through the entire PDF and identify each student by their name written at the top of their work. Students may use varying numbers of pages.
+STEP 2: Group all pages belonging to each student together.
+STEP 3: Grade each student's complete work independently using DM3A P1–P4 mastery scoring.
+STEP 4: If you cannot find a name for a student, label them "Unknown Student [number]" and flag with instructorNote.
+Return a JSON array with one object per student found.`
+          : `BATCH MODE — FIXED PAGES: This PDF contains multiple students' work scanned together.
+Each student's work is exactly ${pagesPerStudent} page(s).
+Split the PDF into groups of ${pagesPerStudent} page(s) each and grade each group as one student.
+Try to find the student's name on the first page of each group.
+If no name is found, label them "Unknown Student [number]".
+Return a JSON array with one object per student found.`;
+
+        const userPrompt = `Subject: ${subject}
+Assignment: ${assignment || "Student Submission"}
+${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
+
+${batchInstruction}
+
+GRADING INSTRUCTIONS:
+1. Identify ALL problems and sub-parts for each student. Do not skip any.
+2. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
+3. Weight process and reasoning heavily.
+4. Grade each student completely and independently.`;
+
+        setLoadingMsg("Grading all students in batch — this may take a moment...");
+
+        const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+        const cleaned = raw.replace(/```json|```/g, "").trim();
+        const parsed = JSON.parse(cleaned);
+        const students = Array.isArray(parsed) ? parsed : [parsed];
+        allResults.push(...students);
+
+      } catch (err) {
+        allResults.push({
+          studentName: "Batch Processing Error",
+          overallTier: "P1",
+          error: err.message,
+          dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
+          problems: [],
+          feedback: `Error processing batch PDF: ${err.message}`,
+          strengths: [],
+          growthAreas: [],
+          instructorNote: "Batch processing failed. Try uploading individual files per student."
+        });
+      }
+
+    } else if (combineImages && studentFiles.length > 1 && studentFiles.every(f => f.type.startsWith("image/"))) {
+      // ── COMBINED IMAGES MODE — chunk 2 images per API call, merge results ─
+      const studentLabel = combinedStudentName.trim() || "Unknown Student";
+      try {
+        // Pre-compress all images at aggressive settings
+        const compressedPages = [];
+        for (let i = 0; i < studentFiles.length; i++) {
+          setLoadingMsg(`Compressing page ${i + 1} of ${studentFiles.length}...`);
+          const b64 = await compressImage(studentFiles[i], 0.5, 1000);
+          compressedPages.push(b64);
+        }
+
+        // Build shared context blocks (assignment + answer key)
+        const sharedBlocks = [];
+        if (assignmentFile) {
+          const assignB64 = isImage(assignmentFile) ? await compressImage(assignmentFile, 0.5, 1000) : await fileToBase64(assignmentFile);
+          if (isImage(assignmentFile)) {
+            sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: assignB64 } });
+          } else {
+            sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: assignB64 }, title: "ASSIGNMENT PROMPT" });
+          }
+          sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+        }
+        if (answerKeyFile) {
+          const keyB64 = isImage(answerKeyFile) ? await compressImage(answerKeyFile, 0.5, 1000) : await fileToBase64(answerKeyFile);
+          if (isImage(answerKeyFile)) {
+            sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: keyB64 } });
+          } else {
+            sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: keyB64 }, title: "MODEL SOLUTION / ANSWER KEY" });
+          }
+          sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
+        }
+
+        // Send 2 pages per API call
+        const chunkSize = 2;
+        const chunkResults = [];
+        for (let c = 0; c < compressedPages.length; c += chunkSize) {
+          const chunk = compressedPages.slice(c, c + chunkSize);
+          const chunkNum = Math.floor(c / chunkSize) + 1;
+          const totalChunks = Math.ceil(compressedPages.length / chunkSize);
+          setLoadingMsg(`Grading ${studentLabel} — part ${chunkNum} of ${totalChunks}...`);
+
+          const contentBlocks = [...sharedBlocks];
+          contentBlocks.push({ type: "text", text: `STUDENT SUBMISSION — pages ${c + 1} to ${c + chunk.length} of ${compressedPages.length} total. This is part ${chunkNum} of ${totalChunks}.` });
+          chunk.forEach((b64, idx) => {
+            contentBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+            contentBlocks.push({ type: "text", text: `Page ${c + idx + 1}` });
+          });
+
+          const userPrompt = `Subject: ${subject}
+Assignment: ${assignment || "Student Submission"}
+${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
+Student: ${studentLabel}
+This is part ${chunkNum} of ${totalChunks} of this student's submission (pages ${c + 1}–${c + chunk.length} of ${compressedPages.length}).
+
+INSTRUCTIONS:
+1. Identify and grade ALL problems visible on these pages only.
+2. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
+3. Weight process and reasoning heavily.
+4. Use "${studentLabel}" as the studentName.
+${totalChunks > 1 ? `5. Note: This is a partial submission. Grade only what you can see on these pages.` : ""}
+
+Return a JSON array with exactly ONE student object covering only the problems on these pages.`;
+
+          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+          const cleaned = raw.replace(/```json|```/g, "").trim();
+          const parsed = JSON.parse(cleaned);
+          const chunkStudents = Array.isArray(parsed) ? parsed : [parsed];
+          chunkResults.push(...(chunkStudents[0]?.problems || []));
+        }
+
+        // Merge all chunk results into one student object
+        const tierOrder = ["P4", "P3", "P2", "P1"];
+        const lowestTier = (tiers) => tierOrder[Math.max(...tiers.map(t => tierOrder.indexOf(t)))];
+        const allProblems = chunkResults;
+        const problemTiers = allProblems.map(p => p.tier).filter(Boolean);
+        const overallTier = problemTiers.length
+          ? tierOrder[Math.round(problemTiers.reduce((s, t) => s + tierOrder.indexOf(t), 0) / problemTiers.length)]
+          : "P1";
+
+        allResults.push({
+          studentName: studentLabel,
+          overallTier,
+          dimensions: {
+            conceptualUnderstanding: overallTier,
+            problemSolving: overallTier,
+            workShown: overallTier,
+            accuracy: overallTier
+          },
+          problems: allProblems,
+          feedback: `Graded across ${Math.ceil(compressedPages.length / chunkSize)} passes. Review individual problem scores above.`,
+          strengths: [],
+          growthAreas: [],
+          instructorNote: compressedPages.length > 2 ? "Multi-page submission graded in chunks. Dimension scores are averaged — use overrides to adjust." : null
+        });
+
+      } catch (err) {
+        allResults.push({
+          studentName: studentLabel,
+          overallTier: "P1",
+          error: err.message,
+          dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
+          problems: [],
+          feedback: `Error processing combined images: ${err.message}`,
+          strengths: [],
+          growthAreas: []
+        });
+      }
+
+    } else {
+      // ── INDIVIDUAL FILES MODE ─────────────────────────────────────────────
+      for (let i = 0; i < studentFiles.length; i++) {
+        const f = studentFiles[i];
+        setLoadingMsg(`${isImage(f) ? "Compressing and grading" : "Grading"} ${f.name} (${i + 1} of ${studentFiles.length})...`);
+
+        try {
+          const isPDF = f.type === "application/pdf";
+          const fileSize = f.size;
+          const isLargePDF = fileSize > 5 * 1024 * 1024; // only convert to images if over 5MB
+
+          // PDFs over 5MB: convert to images to avoid body size limits; smaller PDFs sent as raw document
+          let studentB64 = null;
+          let pdfPageImages = null;
+          let studentFileId = null;
+          console.log(`[ROUTING] fileSize=${fileSize}, isLargePDF=${isLargePDF}, using ${isLargePDF ? 'image path' : 'document path'}`);
+          if (isLargePDF) {
+            setLoadingMsg(`Converting ${f.name} to images for processing...`);
+            pdfPageImages = await pdfToImages(f, 16, 400, 0.3);
+            console.log(`PDF→images: ${pdfPageImages.length} pages`, pdfPageImages.map((b, i) => `p${i + 1}: ${Math.round(b.length * 0.75 / 1024)}KB`).join(', '));
+          } else {
+            studentB64 = isImage(f) ? await compressImage(f) : await fileToBase64(f);
+            if (isPDF) {
+              studentFileId = await uploadPDF(studentB64);
+            }
+          }
+          const studentMediaType = isImage(f) ? "image/jpeg" : f.type;
+
+          // Build shared context blocks
+          const sharedBlocks = [];
+          if (assignmentFile) {
+            const assignB64 = isImage(assignmentFile) ? await compressImage(assignmentFile) : await fileToBase64(assignmentFile);
+            if (isImage(assignmentFile)) {
+              sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: assignB64 } });
+            } else {
+              sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: assignB64 }, title: "ASSIGNMENT PROMPT" });
+            }
+            sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+          }
+          if (answerKeyFile) {
+            const keyB64 = isImage(answerKeyFile) ? await compressImage(answerKeyFile) : await fileToBase64(answerKeyFile);
+            const studentBytes = isLargePDF
+              ? pdfPageImages.reduce((s, b64) => s + b64.length * 0.75, 0)
+              : studentB64.length * 0.75;
+            const keyBytes = keyB64.length * 0.75;
+            console.log('SIZE CHECK — student:', Math.round(studentBytes / 1024), 'KB | answer key:', Math.round(keyBytes / 1024), 'KB | combined:', Math.round((studentBytes + keyBytes) / 1024), 'KB');
+            if (studentBytes + keyBytes > 3 * 1024 * 1024) {
+              sharedBlocks.push({ type: "text", text: "No answer key provided - use subject expertise." });
+            } else {
+              if (isImage(answerKeyFile)) {
+                sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: keyB64 } });
+              } else {
+                sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: keyB64 }, title: "MODEL SOLUTION / ANSWER KEY" });
+              }
+              sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
+            }
+          }
+
+          const userPrompt = `Subject: ${subject}
+Assignment: ${assignment || "Student Submission"}
+${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
+
+INSTRUCTIONS:
+1. First, identify ALL problems and sub-parts (a, b, c, d, etc.) visible. List them ALL before grading.
+2. Grade EVERY identified problem/sub-part. Do not skip any.
+3. Use the answer key if provided. If not, use your subject expertise.
+4. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
+5. Weight process and reasoning heavily.
+
+Return a JSON array with one object per student found in the submission.`;
+
+          if (isLargePDF) {
+            const TIER_ORDER = ["P1", "P2", "P3", "P4"];
+            const DIMENSION_KEYS = ["conceptualUnderstanding", "problemSolving", "workShown", "accuracy"];
+
+            const fetchChunk = async (pages, part, of_) => {
+              const contentBlocks = [
+                ...sharedBlocks,
+                ...pages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }))
+              ];
+              const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+              const cleaned = raw.replace(/```json|```/g, "").trim();
+              const parsed = JSON.parse(cleaned);
+              return Array.isArray(parsed) ? parsed[0] : parsed;
+            };
+
+            let s1, s2;
+            if (pdfPageImages.length > 8) {
+              setLoadingMsg(`Grading ${f.name} — part 1 of 2...`);
+              s1 = await fetchChunk(pdfPageImages.slice(0, 8), 1, 2);
+              setLoadingMsg(`Grading ${f.name} — part 2 of 2...`);
+              s2 = await fetchChunk(pdfPageImages.slice(8), 2, 2);
+            } else {
+              setLoadingMsg(`Grading ${f.name}...`);
+              s1 = await fetchChunk(pdfPageImages, 1, 1);
+            }
+
+            const results = [s1, s2].filter(Boolean);
+            if (!results.length) throw new Error("No valid results from any chunk");
+
+            const dimensionBests = Object.fromEntries(DIMENSION_KEYS.map(k => [k, "P1"]));
+            results.forEach(s => {
+              DIMENSION_KEYS.forEach(k => {
+                const val = s.dimensions?.[k];
+                if (val && TIER_ORDER.indexOf(val) > TIER_ORDER.indexOf(dimensionBests[k])) {
+                  dimensionBests[k] = val;
+                }
+              });
+            });
+            const avgIdx = Math.round(
+              DIMENSION_KEYS.reduce((s, k) => s + TIER_ORDER.indexOf(dimensionBests[k]), 0) / DIMENSION_KEYS.length
+            );
+            allResults.push({
+              ...results[0],
+              overallTier: TIER_ORDER[Math.min(avgIdx, 3)],
+              dimensions: dimensionBests,
+              feedback: results.map(s => s.feedback).filter(Boolean).join(" "),
+              problems: results.flatMap(s => s.problems || []),
+            });
+
+          } else {
+            // Small PDF or image — single API call
+            const studentBlock = isPDF
+              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: studentB64 } }
+              : { type: "image", source: { type: "base64", media_type: studentMediaType, data: studentB64 } };
+            const contentBlocks = [...sharedBlocks, studentBlock];
+            const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+            const cleaned = raw.replace(/```json|```/g, "").trim();
+            const parsed = JSON.parse(cleaned);
+            allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+          }
+        } catch (err) {
+          allResults.push({
+            studentName: f.name,
+            overallTier: "P1",
+            error: err.message,
+            dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
+            problems: [],
+            feedback: "Error processing this file.",
+            strengths: [],
+            growthAreas: []
+          });
+        }
+      }
+    }
+
+    setResults(allResults);
+    setOverrides({});
+    setActiveStudent(0);
+    setLoading(false);
+    setStep("results");
+  }
+
+  // ─── PROBLEM OVERRIDE HELPER ─────────────────────────────────────────────
+  function getProblemTier(studentName, probId, originalTier) {
+    return problemOverrides?.[studentName]?.[probId] || originalTier;
+  }
+
+  function setProblemTier(studentName, probId, tier) {
+    setProblemOverrides(prev => ({
+      ...prev,
+      [studentName]: { ...(prev[studentName] || {}), [probId]: tier }
+    }));
+  }
+
+  // ─── PDF DOWNLOAD ─────────────────────────────────────────────────────────
+  function downloadPDF(student) {
+    const ov = overrides[student.studentName] || {};
+    const displayName = ov.renamedName || student.studentName;
+    const overall = ov.overall || student.overallTier;
+    const tierLabels = { P4: "Mastery", P3: "Approaching Mastery", P2: "Developing", P1: "Beginning" };
+    const tierColors = { P4: "#0F6E56", P3: "#185FA5", P2: "#854F0B", P1: "#A32D2D" };
+
+    const problemRows = (student.problems || []).map(prob => {
+      const t = getProblemTier(student.studentName, prob.id, prob.tier);
+      return `
+        <tr style="border-bottom:1px solid #E8E6DE;">
+          <td style="padding:8px 10px;font-weight:600;">Problem ${prob.id}</td>
+          <td style="padding:8px 10px;font-size:12px;color:#5A5A55;">${prob.description || ""}</td>
+          <td style="padding:8px 10px;text-align:center;">
+            <span style="background:${tierColors[t]}20;color:${tierColors[t]};border:1px solid ${tierColors[t]}40;border-radius:4px;padding:2px 8px;font-weight:700;">${t}</span>
+          </td>
+          <td style="padding:8px 10px;font-size:11px;color:#5A5A55;">${prob.processAssessment || ""}</td>
+        </tr>`;
+    }).join("");
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>DM3A Report - ${student.studentName}</title>
+    <style>
+      body { font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 32px; color: #1A1A18; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      .badge { background: #1A1A18; color: #fff; font-size: 10px; padding: 3px 10px; border-radius: 2px; letter-spacing: 0.1em; text-transform: uppercase; }
+      .overall { font-size: 36px; font-weight: 700; color: ${tierColors[overall]}; }
+      table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+      th { background: #F5F4EF; text-align: left; padding: 8px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #5A5A55; }
+      .dim-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin: 16px 0; }
+      .dim { border: 1px solid #E8E6DE; border-radius: 6px; padding: 10px; text-align: center; }
+      .dim-label { font-size: 10px; text-transform: uppercase; color: #888; margin-bottom: 4px; }
+      .feedback { background: #F5F4EF; border-radius: 6px; padding: 14px; margin-top: 16px; }
+      .footer { margin-top: 32px; border-top: 1px solid #E8E6DE; padding-top: 12px; font-size: 11px; color: #888; }
+      @media print { body { padding: 16px; } }
+    </style></head><body>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
+      <div>
+        <span class="badge">DM3A Mastery Report</span>
+        <h1 style="margin-top:8px;">${displayName}</h1>
+        <p style="margin:0;color:#5A5A55;">${subject} · ${assignment || "Assignment"}</p>
+        <p style="margin:4px 0 0;color:#888;font-size:12px;">${new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" })}</p>
       </div>
-      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-        <span style={{ fontSize:11, fontWeight:600, color:statusColor, fontFamily:"'DM Mono',monospace" }}>
-          {status==="processing" ? "⏳ " : ""}{statusLabel}
-        </span>
-        {status==="pending" && (
-          <button onClick={onRemove} style={{ background:"none", border:"none", cursor:"pointer", color:"#B4B2A9", fontSize:16 }}>×</button>
-        )}
+      <div style="text-align:right;">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;">OVERALL MASTERY</div>
+        <div class="overall">${overall}</div>
+        <div style="color:${tierColors[overall]};font-size:13px;">${tierLabels[overall]}</div>
       </div>
     </div>
+    <div class="dim-grid">
+      ${[["Conceptual", ov.conceptual || student.dimensions?.conceptualUnderstanding],
+         ["Problem Solving", ov.problemSolving || student.dimensions?.problemSolving],
+         ["Work Shown", ov.workShown || student.dimensions?.workShown],
+         ["Accuracy", ov.accuracy || student.dimensions?.accuracy]].map(([label, val]) =>
+        `<div class="dim"><div class="dim-label">${label}</div><div style="font-weight:700;font-size:18px;color:${tierColors[val||"P1"]}">${val||"—"}</div></div>`
+      ).join("")}
+    </div>
+    ${student.problems?.length > 0 ? `
+    <table>
+      <thead><tr><th>Problem</th><th>Description</th><th style="text-align:center;">Mastery</th><th>Process Assessment</th></tr></thead>
+      <tbody>${problemRows}</tbody>
+    </table>` : ""}
+    <div class="feedback">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#5A5A55;margin-bottom:8px;">Personalized Feedback</div>
+      <p style="margin:0 0 8px;line-height:1.6;">${student.feedback || ""}</p>
+      ${student.strengths?.length ? `<div style="color:#0F6E56;font-size:12px;">✓ Strengths: ${student.strengths.join(", ")}</div>` : ""}
+      ${student.growthAreas?.length ? `<div style="color:#185FA5;font-size:12px;margin-top:4px;">→ Growth areas: ${student.growthAreas.join(", ")}</div>` : ""}
+    </div>
+    ${student.instructorNote ? `<div style="background:#FFF3CD;border:1px solid #FFCA2C;border-radius:6px;padding:10px 14px;margin-top:12px;font-size:13px;color:#856404;"><strong>Note for instructor:</strong> ${student.instructorNote}</div>` : ""}
+    <div class="footer">
+      Dr. Ralph Minaya, Ed.D. · Department of Mathematics · University of Saint Joseph · rminaya@usj.edu<br>
+      Generated by DM3A Grader v5 · ${new Date().toLocaleDateString()}
+    </div>
+    </body></html>`;
 
-  );
-}
-function StudentCard({ student, assignment, subject, instructor, idx, onViewReport, overrideTier }) {
-  const displayLevel = overrideTier || student.overallTier;
-  const tier = TIERS.find(t => t.id === displayLevel) || TIERS[3];
-  return (
-    <div style={{ background:"#fff", border:"1px solid #E8E6E1", borderRadius:12, padding:20, textAlign:"left" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-        <div>
-          <div style={{ fontWeight:700, fontSize:15, color:"#1A3A2A" }}>{student.studentName || `Student ${idx+1}`}</div>
-          <div style={{ fontSize:12, color:"#5F5E5A" }}>{subject} · {assignment}</div>
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `DM3A_${displayName.replace(/\s+/g, "_")}_${assignment || "Report"}.html`;
+    a.click();
+    setTimeout(() => window.open(url, "_blank"), 100);
+  }
+
+  // ─── EXPORT CSV ───────────────────────────────────────────────────────────
+
+  function exportCSV() {
+    const rows = [["Student", "Overall", "Conceptual", "Problem Solving", "Work Shown", "Accuracy", "Feedback"]];
+    results.forEach(s => {
+      const ov = overrides[s.studentName] || {};
+      rows.push([
+        s.studentName,
+        ov.overall || s.overallTier,
+        ov.conceptual || s.dimensions?.conceptualUnderstanding || "",
+        ov.problemSolving || s.dimensions?.problemSolving || "",
+        ov.workShown || s.dimensions?.workShown || "",
+        ov.accuracy || s.dimensions?.accuracy || "",
+        s.feedback || ""
+      ]);
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `DM3A_${subject}_${assignment || "Results"}.csv`;
+    a.click();
+  }
+
+  // ─── COLORS ───────────────────────────────────────────────────────────────
+
+  const tierColor = { P4: "#0F6E56", P3: "#185FA5", P2: "#854F0B", P1: "#A32D2D" };
+  const tierBg = { P4: "#E1F5EE", P3: "#E6F1FB", P2: "#FAEEDA", P1: "#FCEBEB" };
+  const tierBorder = { P4: "#A3D9C8", P3: "#A3C4E8", P2: "#E8C98A", P1: "#F5BEBE" };
+
+  // ─── RENDER ───────────────────────────────────────────────────────────────
+
+  const styles = {
+    root: { fontFamily: "'Georgia', 'Times New Roman', serif", maxWidth: 780, margin: "0 auto", padding: "24px 20px", color: "#1A1A18", background: "#FAFAF7", minHeight: "100vh" },
+    header: { borderBottom: "2px solid #1A1A18", paddingBottom: 16, marginBottom: 28 },
+    badge: { background: "#1A1A18", color: "#F0EFE9", fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 2, letterSpacing: "0.12em", textTransform: "uppercase" },
+    h1: { margin: "10px 0 4px", fontSize: 26, fontWeight: 400, letterSpacing: "-0.02em" },
+    sub: { margin: 0, fontSize: 13, color: "#5A5A55" },
+    card: { background: "#fff", border: "1px solid #D8D6CE", borderRadius: 8, padding: 20, marginBottom: 16 },
+    label: { display: "block", fontSize: 11, fontWeight: 700, color: "#5A5A55", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.07em" },
+    input: { width: "100%", padding: "10px 12px", border: "1px solid #C8C6BE", borderRadius: 6, fontSize: 14, background: "#FAFAF7", boxSizing: "border-box", fontFamily: "inherit" },
+    btn: { background: "#1A1A18", color: "#F0EFE9", border: "none", borderRadius: 6, padding: "12px 24px", fontSize: 14, fontWeight: 600, cursor: "pointer", letterSpacing: "0.04em" },
+    btnOutline: { background: "transparent", color: "#1A1A18", border: "1px solid #1A1A18", borderRadius: 6, padding: "10px 20px", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+    uploadZone: (active) => ({ border: `2px dashed ${active ? "#0F6E56" : "#C8C6BE"}`, borderRadius: 8, padding: "20px 16px", textAlign: "center", cursor: "pointer", background: active ? "#E1F5EE" : "#FAFAF7", transition: "all 0.2s" }),
+    tierPill: (tier) => ({ background: TIER_META[tier]?.bg, color: TIER_META[tier]?.color, border: `1px solid ${TIER_META[tier]?.border}`, borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 700, display: "inline-block", letterSpacing: "0.06em" }),
+    mastery: (t) => ({ background: tierBg[t] || "#F5F5F0", color: tierColor[t] || "#333", border: `1px solid ${tierBorder[t] || "#DDD"}`, borderRadius: 4, padding: "3px 10px", fontSize: 13, fontWeight: 700, display: "inline-block" }),
+  };
+
+  // ── LOGIN SCREEN ──────────────────────────────────────────────────────────
+  if (step === "login") return (
+    <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ width: "100%", maxWidth: 400 }}>
+        <div style={styles.header}>
+          <span style={styles.badge}>DM3A Grader</span>
+          <h1 style={styles.h1}>Mastery-Based AI Grading</h1>
+          <p style={styles.sub}>University of Saint Joseph · Dr. Ralph Minaya, Ed.D.</p>
         </div>
-        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-          {overrideTier && <span style={{ fontSize:11, color:"#854F0B" }}>✎</span>}
-          <div style={{ background:tier.bg, color:tier.color, fontWeight:700, fontSize:18, borderRadius:8, padding:"6px 14px" }}>{tier.id}</div>
+        <div style={styles.card}>
+          <form onSubmit={handleLogin}>
+            <label style={styles.label}>Access Password</label>
+            <input
+              style={{ ...styles.input, marginBottom: 16 }}
+              type="password"
+              placeholder="Enter password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              autoFocus
+            />
+            {loginError && <p style={{ color: "#A32D2D", fontSize: 13, marginBottom: 12 }}>{loginError}</p>}
+            <button style={{ ...styles.btn, width: "100%" }} type="submit">Enter DM3A Grader →</button>
+          </form>
         </div>
+        <p style={{ textAlign: "center", fontSize: 12, color: "#888" }}>Contact rminaya@usj.edu for access</p>
       </div>
-      {student.feedback && <p style={{ fontSize:13, color:"#444", margin:"0 0 10px" }}>{student.feedback}</p>}
-      {student.growthNote && <p style={{ fontSize:12, color:"#666", fontStyle:"italic", margin:"0 0 12px" }}>Next step: {student.growthNote}</p>}
-      <div style={{ textAlign:"right" }}>
-        <button
-          onClick={onViewReport}
-          style={{ background:"none", border:"1px solid #D3D1C7", borderRadius:6, padding:"5px 12px", fontSize:12, color:"#5F5E5A", cursor:"pointer", fontWeight:500 }}
-        >
-          View Report →
+    </div>
+  );
+
+  // ── TIER GUIDE MODAL ──────────────────────────────────────────────────────
+  const TierGuideModal = () => showTierGuide && (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 28, maxWidth: 600, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+          <div>
+            <span style={styles.badge}>Course Coverage</span>
+            <h2 style={{ margin: "8px 0 4px", fontSize: 20, fontWeight: 400 }}>Supported Subjects</h2>
+            <p style={{ margin: 0, fontSize: 13, color: "#5A5A55" }}>Know your grading confidence level before uploading</p>
+          </div>
+          <button onClick={() => setShowTierGuide(false)} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#888" }}>✕</button>
+        </div>
+
+        {/* Tier Legend */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+          {Object.entries(TIER_META).map(([key, meta]) => (
+            <div key={key} style={{ background: meta.bg, border: `1px solid ${meta.border}`, borderRadius: 6, padding: "8px 12px", flex: 1, minWidth: 140 }}>
+              <div style={{ color: meta.color, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{meta.icon} {meta.label}</div>
+              <div style={{ fontSize: 11, color: "#5A5A55", lineHeight: 1.4 }}>{meta.description}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Course List */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {Object.entries(COURSE_CONFIGS).map(([name, config]) => (
+            <div key={name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", border: "1px solid #E8E6DE", borderRadius: 6, background: "#FAFAF7" }}>
+              <span style={styles.tierPill(config.tier)}>{TIER_META[config.tier].icon} {TIER_META[config.tier].label}</span>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{config.label}</div>
+                <div style={{ fontSize: 12, color: "#5A5A55" }}>{config.description}</div>
+              </div>
+            </div>
+          ))}
+          {/* Experimental placeholders */}
+          {["Calculus III / Multivariable", "Differential Equations", "Discrete Mathematics"].map(name => (
+            <div key={name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", border: "1px solid #E8E6DE", borderRadius: 6, background: "#FAFAF7", opacity: 0.6 }}>
+              <span style={styles.tierPill("experimental")}>{TIER_META.experimental.icon} Coming Soon</span>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={() => setShowTierGuide(false)} style={{ ...styles.btn, width: "100%", marginTop: 20 }}>
+          I understand — Start Grading →
         </button>
       </div>
     </div>
   );
-}
 
-function StudentDetailView({ student, assignment, subject, instructor, gradeOverrides, setGradeOverrides, setSelectedStudent }) {
-  const override = gradeOverrides[student.studentName];
-  const displayLevel = override || student.overallTier;
-  const t = TIERS.find(x => x.id === displayLevel) || TIERS[3];
-  const date = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
-  const [editedName, setEditedName] = useState(student.studentName || "");
-  const [editingName, setEditingName] = useState(false);
-
-  function setOverride(level) {
-    setGradeOverrides(prev => ({ ...prev, [student.studentName]: level }));
-  }
-
-  const correctCount = (student.problems || []).filter(p => p.correct === true).length;
-  const wrongCount   = (student.problems || []).filter(p => p.correct !== true).length;
-
-  return (
-    <div>
-      <button
-        onClick={() => setSelectedStudent(null)}
-        style={{ background:"none", border:"none", cursor:"pointer", color:"#0F6E56", fontSize:13, fontWeight:600, padding:"0 0 20px", display:"flex", alignItems:"center", gap:6 }}
-      >
-        ← Back to Summary
-      </button>
-
-      <div style={{ background:"#F9F8F5", borderRadius:12, padding:"20px 24px", marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-        <div>
-          <div style={{ marginBottom:4 }}>
-              {editingName ? (
-                <input
-                  autoFocus
-                  value={editedName}
-                  onChange={e => setEditedName(e.target.value)}
-                  onBlur={() => setEditingName(false)}
-                  onKeyDown={e => { if (e.key === "Enter") setEditingName(false); }}
-                  style={{ fontSize:22, fontWeight:700, color:"#1A3A2A", border:"none", borderBottom:"2px solid #0F6E56", background:"transparent", outline:"none", width:"100%", fontFamily:"inherit", padding:0 }}
-                />
-              ) : (
-                <span
-                  onClick={() => setEditingName(true)}
-                  style={{ fontSize:22, fontWeight:700, color:"#1A3A2A", cursor:"pointer", display:"inline-flex", alignItems:"center", gap:8 }}
-                >
-                  {editedName || "Unknown"}
-                  <span style={{ fontSize:14, color:"#B4B2A9" }}>✏️</span>
-                </span>
-              )}
-              <div style={{ fontSize:11, color:"#B4B2A9", marginTop:2 }}>Name edits only affect the downloaded PDF</div>
-            </div>
-          <div style={{ fontSize:13, color:"#5F5E5A" }}>{subject} · {assignment} · {date}</div>
-        </div>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:11, color:"#888", marginBottom:4, textTransform:"uppercase", letterSpacing:"0.05em" }}>Overall</div>
-          <div style={{ background:t.bg, color:t.color, fontFamily:"'DM Mono',monospace", fontSize:26, fontWeight:700, padding:"8px 20px", borderRadius:10, border:`1px solid ${t.color}33` }}>{displayLevel}</div>
-          <div style={{ fontSize:11, color:t.color, marginTop:4 }}>{t.desc}</div>
+  // ── SETUP SCREEN ──────────────────────────────────────────────────────────
+  if (step === "setup") return (
+    <div style={styles.root}>
+      <TierGuideModal />
+      <div style={styles.header}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <span style={styles.badge}>DM3A Grader v5</span>
+            <h1 style={styles.h1}>Mastery-Based AI Grading</h1>
+            <p style={styles.sub}>University of Saint Joseph · Dr. Ralph Minaya, Ed.D.</p>
+          </div>
+          <button onClick={() => setShowTierGuide(true)} style={styles.btnOutline}>Course Coverage Guide</button>
         </div>
       </div>
 
-      <div style={{ marginBottom:20, padding:"16px 20px", background:"#fff", border:"1px solid #E8E6E1", borderRadius:10 }}>
-        <div style={{ fontSize:11, fontWeight:600, color:"#5F5E5A", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:10 }}>Override Grade</div>
-        <div style={{ display:"flex", gap:8, marginBottom: override ? 10 : 0 }}>
-          {[...TIERS].reverse().map(tier => (
-            <button
-              key={tier.id}
-              onClick={() => setOverride(tier.id)}
-              style={{
-                flex:1, padding:"8px 4px", borderRadius:8, cursor:"pointer",
-                fontFamily:"'DM Mono',monospace", fontSize:13, fontWeight:600,
-                background: displayLevel === tier.id ? tier.bg : "#F9F8F5",
-                color: displayLevel === tier.id ? tier.color : "#888",
-                border: displayLevel === tier.id ? `1.5px solid ${tier.color}` : "1px solid #D3D1C7",
-              }}
-            >
-              {tier.id}
-            </button>
+      {/* Subject Selection */}
+      <div style={styles.card}>
+        <label style={styles.label}>Subject *</label>
+        <select
+          style={{ ...styles.input, marginBottom: subject ? 10 : 0 }}
+          value={subject}
+          onChange={e => setSubject(e.target.value)}
+        >
+          <option value="">— Select a subject —</option>
+          {Object.entries(COURSE_CONFIGS).map(([name, config]) => (
+            <option key={name} value={name}>{TIER_META[config.tier].icon} {config.label} [{TIER_META[config.tier].label}]</option>
           ))}
-        </div>
-        {override && (
-          <div style={{ fontSize:12, color:t.color, fontWeight:500 }}>
-            Override: {override} ({t.desc})
+        </select>
+        {subject && (
+          <div style={{ background: TIER_META[COURSE_CONFIGS[subject].tier].bg, border: `1px solid ${TIER_META[COURSE_CONFIGS[subject].tier].border}`, borderRadius: 6, padding: "10px 14px", marginTop: 8 }}>
+            <span style={{ color: TIER_META[COURSE_CONFIGS[subject].tier].color, fontWeight: 700, fontSize: 13 }}>
+              {TIER_META[COURSE_CONFIGS[subject].tier].icon} {TIER_META[COURSE_CONFIGS[subject].tier].label}
+            </span>
+            <span style={{ fontSize: 13, color: "#5A5A55", marginLeft: 8 }}>
+              {TIER_META[COURSE_CONFIGS[subject].tier].description}
+            </span>
           </div>
         )}
       </div>
 
-      {student.criteria?.length > 0 && (
-        <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:"#1A3A2A", marginBottom:10, paddingBottom:6, borderBottom:"1px solid #E2E0D8" }}>Criteria Breakdown</div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10 }}>
-            {student.criteria.map((c, i) => {
-              const ct = TIERS.find(x => x.id === c.tier) || TIERS[3];
+      {/* Assignment Info */}
+      <div style={styles.card}>
+        <label style={styles.label}>Assignment Name</label>
+        <input style={{ ...styles.input, marginBottom: 14 }} placeholder="e.g., Quiz 3 — Linear Systems" value={assignment} onChange={e => setAssignment(e.target.value)} />
+        <label style={styles.label}>Additional Rubric Notes (optional)</label>
+        <textarea style={{ ...styles.input, minHeight: 80, resize: "vertical" }} placeholder="Any specific grading notes for this assignment..." value={rubric} onChange={e => setRubric(e.target.value)} />
+      </div>
+
+      {/* Three-Zone Upload */}
+      <div style={styles.card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Upload Files</h3>
+        </div>
+
+        {/* Zone 1: Assignment Prompt */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={styles.label}>① Assignment Prompt (optional)</label>
+          <div style={styles.uploadZone(!!assignmentFile)} onClick={() => assignmentRef.current.click()}>
+            <input ref={assignmentRef} type="file" accept="application/pdf,image/*" style={{ display: "none" }} onChange={e => setAssignmentFile(e.target.files[0])} />
+            {assignmentFile
+              ? <span style={{ color: "#0F6E56", fontWeight: 600 }}>📄 {assignmentFile.name}</span>
+              : <span style={{ color: "#888", fontSize: 13 }}>Upload the assignment questions / problem set</span>
+            }
+          </div>
+        </div>
+
+        {/* Zone 2: Answer Key */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <label style={{ ...styles.label, margin: 0 }}>② Answer Key / Model Solution</label>
+            <span style={{ background: "#FFF3CD", border: "1px solid #FFCA2C", borderRadius: 4, fontSize: 10, fontWeight: 700, padding: "1px 6px", color: "#856404" }}>STRONGLY RECOMMENDED</span>
+          </div>
+          <div style={styles.uploadZone(!!answerKeyFile)} onClick={() => answerKeyRef.current.click()}>
+            <input ref={answerKeyRef} type="file" accept="application/pdf,image/*" style={{ display: "none" }} onChange={e => setAnswerKeyFile(e.target.files[0])} />
+            {answerKeyFile
+              ? <span style={{ color: "#0F6E56", fontWeight: 600 }}>🔑 {answerKeyFile.name}</span>
+              : <div>
+                  <div style={{ color: "#854F0B", fontWeight: 600, fontSize: 13, marginBottom: 4 }}>⚠ Upload your answer key for highest accuracy</div>
+                  <div style={{ color: "#888", fontSize: 12 }}>Without an answer key, grading relies on AI subject knowledge alone</div>
+                </div>
+            }
+          </div>
+        </div>
+
+        {/* Zone 3: Student Work */}
+        <div>
+          <label style={styles.label}>③ Student Work * (PDF or images — one file per student, or one batch PDF)</label>
+          <div style={styles.uploadZone(studentFiles.length > 0)} onClick={() => studentRef.current.click()}>
+            <input ref={studentRef} type="file" accept="application/pdf,image/*" multiple style={{ display: "none" }}
+              onChange={e => {
+                const files = Array.from(e.target.files);
+                setStudentFiles(files);
+                const singlePDF = files.length === 1 && files[0].type === "application/pdf";
+                setIsBatchPDF(singlePDF);
+                if (singlePDF) setBatchMode("single"); // default to single student
+                // Auto-enable combine when multiple images uploaded
+                const multipleImages = files.length > 1 && files.every(f => f.type.startsWith("image/"));
+                setCombineImages(multipleImages);
+                if (!multipleImages) setCombinedStudentName("");
+                // File size warnings
+                const MAX_PDF_MB = 4;
+                const warnings = [];
+                files.forEach(f => {
+                  const sizeMB = (f.size / 1024 / 1024).toFixed(1);
+                  if (f.type === "application/pdf" && f.size > MAX_PDF_MB * 1024 * 1024) {
+                    warnings.push({
+                      type: "oversized_pdf",
+                      name: f.name,
+                      sizeMB,
+                      isBatch: singlePDF && files.length === 1
+                    });
+                  }
+                });
+                setFileSizeWarnings(warnings);
+              }} />
+            {studentFiles.length > 0
+              ? <div>
+                  <div style={{ color: "#0F6E56", fontWeight: 600, marginBottom: 4 }}>✓ {studentFiles.length} file(s) selected</div>
+                  {studentFiles.map(f => <div key={f.name} style={{ fontSize: 12, color: "#555" }}>{f.name}</div>)}
+                </div>
+              : <div>
+                  <div style={{ fontSize: 13, color: "#888", marginBottom: 4 }}>Upload student submissions (PDF or images)</div>
+                  <div style={{ fontSize: 11, color: "#AAA" }}>Multiple individual files, or one combined batch PDF</div>
+                </div>
+            }
+          </div>
+
+          {/* File Size Warnings */}
+          {fileSizeWarnings.length > 0 && fileSizeWarnings.map((w, i) => (
+            <div key={i} style={{ marginTop: 10, background: "#FCEBEB", border: "2px solid #F5BEBE", borderRadius: 8, padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <span style={{ fontSize: 20 }}>🚫</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#A32D2D", marginBottom: 6 }}>
+                    File Too Large — {w.sizeMB} MB (limit: 4 MB)
+                  </div>
+                  <div style={{ fontSize: 13, color: "#5A5A55", marginBottom: 10, lineHeight: 1.5 }}>
+                    <strong>{w.name}</strong> is {w.sizeMB} MB and will fail to grade.
+                    {w.isBatch
+                      ? " This appears to be a batch scan of multiple students. Large batch PDFs cannot be processed."
+                      : " This PDF is too large to process."}
+                  </div>
+                  <div style={{ background: "#fff", border: "1px solid #F5BEBE", borderRadius: 6, padding: "10px 12px" }}>
+                    <div style={{ fontWeight: 700, fontSize: 12, color: "#A32D2D", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      How to fix this:
+                    </div>
+                    {w.isBatch
+                      ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#5A5A55", lineHeight: 1.8 }}>
+                          <li><strong>Best:</strong> Have each student submit their own file individually (max 4 MB each)</li>
+                          <li><strong>Alternative:</strong> Use Adobe Acrobat to split the PDF by student, then upload each file separately</li>
+                          <li><strong>Quick fix:</strong> Photograph each student's work individually with your phone and upload as images</li>
+                          <li><strong>Post on Blackboard:</strong> "Please submit your own work as a single PDF or photo. Max 4 MB."</li>
+                        </ul>
+                      : <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#5A5A55", lineHeight: 1.8 }}>
+                          <li>Compress the PDF using <strong>Adobe Acrobat</strong> or <strong>smallpdf.com</strong> to under 4 MB</li>
+                          <li>Or photograph the pages individually and upload as images instead</li>
+                          <li>Or ask the student to resubmit with a smaller file</li>
+                        </ul>
+                    }
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {/* Batch Mode Toggle — only shows when a single PDF is uploaded */}
+          {isBatchPDF && studentFiles.length === 1 && (
+            <div style={{ marginTop: 12, background: "#F0EEE8", border: "1px solid #D8D6CE", borderRadius: 8, padding: "14px 16px" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#5A5A55", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                📄 PDF Detected — What does this file contain?
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+
+                {/* Single student option */}
+                <div
+                  onClick={() => setBatchMode("single")}
+                  style={{ flex: 1, minWidth: 160, border: `2px solid ${batchMode === "single" ? "#0F6E56" : "#C8C6BE"}`, borderRadius: 8, padding: "12px 14px", cursor: "pointer", background: batchMode === "single" ? "#E1F5EE" : "#fff", transition: "all 0.15s" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", border: `2px solid ${batchMode === "single" ? "#0F6E56" : "#C8C6BE"}`, background: batchMode === "single" ? "#0F6E56" : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {batchMode === "single" && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />}
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: batchMode === "single" ? "#0F6E56" : "#1A1A18" }}>One student's exam</span>
+                    <span style={{ background: "#0F6E56", color: "#fff", fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 3, letterSpacing: "0.05em" }}>RECOMMENDED</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#5A5A55", lineHeight: 1.5 }}>This PDF is a single student's multi-page exam or assignment — grade it all as one submission</div>
+                </div>
+
+                {/* Auto-detect option */}
+                <div
+                  onClick={() => setBatchMode("auto")}
+                  style={{ flex: 1, minWidth: 160, border: `2px solid ${batchMode === "auto" ? "#185FA5" : "#C8C6BE"}`, borderRadius: 8, padding: "12px 14px", cursor: "pointer", background: batchMode === "auto" ? "#E6F1FB" : "#fff", transition: "all 0.15s" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", border: `2px solid ${batchMode === "auto" ? "#185FA5" : "#C8C6BE"}`, background: batchMode === "auto" ? "#185FA5" : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {batchMode === "auto" && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />}
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: batchMode === "auto" ? "#185FA5" : "#1A1A18" }}>Multiple students (auto-detect)</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#5A5A55", lineHeight: 1.5 }}>PDF contains several students' work — Claude finds each name and grades separately</div>
+                </div>
+
+                {/* Fixed pages option */}
+                <div
+                  onClick={() => setBatchMode("fixed")}
+                  style={{ flex: 1, minWidth: 160, border: `2px solid ${batchMode === "fixed" ? "#854F0B" : "#C8C6BE"}`, borderRadius: 8, padding: "12px 14px", cursor: "pointer", background: batchMode === "fixed" ? "#FAEEDA" : "#fff", transition: "all 0.15s" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", border: `2px solid ${batchMode === "fixed" ? "#854F0B" : "#C8C6BE"}`, background: batchMode === "fixed" ? "#854F0B" : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {batchMode === "fixed" && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />}
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: batchMode === "fixed" ? "#854F0B" : "#1A1A18" }}>Multiple students (fixed pages)</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#5A5A55", lineHeight: 1.5, marginBottom: 8 }}>Each student's work is exactly the same number of pages</div>
+                  {batchMode === "fixed" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12, color: "#854F0B", fontWeight: 600 }}>Pages per student:</span>
+                      <input type="number" min="1" max="20" value={pagesPerStudent}
+                        onChange={e => setPagesPerStudent(parseInt(e.target.value) || 1)}
+                        onClick={e => e.stopPropagation()}
+                        style={{ width: 60, padding: "4px 8px", border: "1px solid #854F0B", borderRadius: 4, fontSize: 13, fontWeight: 600, color: "#854F0B", background: "#fff" }} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Combine Images Toggle — shows when multiple images uploaded */}
+          {combineImages && studentFiles.length > 1 && studentFiles.every(f => f.type.startsWith("image/")) && (
+            <div style={{ marginTop: 12, background: "#E6F1FB", border: "2px solid #185FA5", borderRadius: 8, padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <input
+                  type="checkbox"
+                  id="combineToggle"
+                  checked={combineImages}
+                  onChange={e => setCombineImages(e.target.checked)}
+                  style={{ width: 18, height: 18, cursor: "pointer", accentColor: "#185FA5" }}
+                />
+                <label htmlFor="combineToggle" style={{ fontWeight: 700, fontSize: 13, color: "#185FA5", cursor: "pointer" }}>
+                  📎 These {studentFiles.length} images are all one student's work (multi-page submission)
+                </label>
+              </div>
+              <div style={{ fontSize: 11, color: "#5A5A55", marginBottom: 12, paddingLeft: 28 }}>
+                All images will be sent together and graded as a single student. Uncheck if each image is a different student.
+              </div>
+              {/* Prominent name field */}
+              <div style={{ paddingLeft: 28 }}>
+                <div style={{ background: combinedStudentName.trim() ? "#E1F5EE" : "#FFF3CD", border: `2px solid ${combinedStudentName.trim() ? "#0F6E56" : "#FFCA2C"}`, borderRadius: 8, padding: "12px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                    <span style={{ fontSize: 16 }}>{combinedStudentName.trim() ? "✓" : "⚠"}</span>
+                    <label style={{ fontWeight: 700, fontSize: 13, color: combinedStudentName.trim() ? "#0F6E56" : "#856404" }}>
+                      Student Name {combinedStudentName.trim() ? "— Set" : "— Required for Report"}
+                    </label>
+                  </div>
+                  <input
+                    style={{ ...styles.input, fontSize: 14, fontWeight: combinedStudentName.trim() ? 600 : 400, border: `1px solid ${combinedStudentName.trim() ? "#A3D9C8" : "#FFCA2C"}`, background: "#fff" }}
+                    placeholder="⚠ Type student name here before grading"
+                    value={combinedStudentName}
+                    onChange={e => setCombinedStudentName(e.target.value)}
+                    autoFocus
+                  />
+                  {!combinedStudentName.trim() && (
+                    <div style={{ fontSize: 11, color: "#856404", marginTop: 6 }}>
+                      Without a name, the report will show "Unknown Student" — you cannot change it after grading
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {error && <div style={{ background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 6, padding: "10px 14px", marginBottom: 16, color: "#A32D2D", fontSize: 13 }}>{error}</div>}
+
+      <button
+        style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15, opacity: fileSizeWarnings.length > 0 ? 0.4 : 1, cursor: fileSizeWarnings.length > 0 ? "not-allowed" : "pointer" }}
+        onClick={fileSizeWarnings.length > 0 ? undefined : handleGrade}
+        disabled={fileSizeWarnings.length > 0}>
+        {fileSizeWarnings.length > 0 ? "⚠ Fix file size issues above before grading" : "Grade with DM3A →"}
+      </button>
+    </div>
+  );
+
+  // ── GRADING SCREEN ────────────────────────────────────────────────────────
+  if (step === "grading") return (
+    <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "80vh" }}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 40, marginBottom: 16, animation: "spin 2s linear infinite" }}>⟳</div>
+        <h2 style={{ fontSize: 20, fontWeight: 400, marginBottom: 8 }}>Grading in Progress</h2>
+        <p style={{ color: "#5A5A55", fontSize: 14 }}>{loadingMsg}</p>
+        <p style={{ color: "#888", fontSize: 12, marginTop: 8 }}>Analyzing handwriting, identifying all problems, applying DM3A rubric...</p>
+      </div>
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+
+  // ── RESULTS SCREEN ────────────────────────────────────────────────────────
+  if (step === "results") {
+    const student = results[activeStudent];
+    if (!student) return null;
+    const ov = overrides[student.studentName] || {};
+    const courseConfig = COURSE_CONFIGS[subject];
+    const isBeta = courseConfig?.tier !== "optimized";
+
+    return (
+      <div style={styles.root}>
+        <div style={styles.header}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <span style={styles.badge}>DM3A Results</span>
+              <h1 style={styles.h1}>{assignment || "Grading Results"}</h1>
+              <p style={styles.sub}>{subject} · {results.length} student(s)</p>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button style={styles.btnOutline} onClick={() => setStep("setup")}>← Back to Setup</button>
+              <button style={styles.btnOutline} onClick={exportCSV}>Export CSV</button>
+              <button style={styles.btnOutline} onClick={() => downloadPDF(student)}>⬇ Download Report</button>
+              <button style={styles.btn} onClick={() => { setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); }}>New Session</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Beta Warning */}
+        {isBeta && (
+          <div style={{ background: "#E6F1FB", border: "1px solid #A3C4E8", borderRadius: 6, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#185FA5" }}>
+            <strong>β Beta Subject:</strong> {TIER_META.beta.description} Use the override controls below to adjust any score before finalizing.
+          </div>
+        )}
+
+        {/* Student Tabs */}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+          {results.map((s, i) => {
+            const t = overrides[s.studentName]?.overall || s.overallTier;
+            return (
+              <button key={i} onClick={() => setActiveStudent(i)}
+                style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                {s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Student Card */}
+        <div style={styles.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+            <div style={{ flex: 1 }}>
+              {/* Inline rename — click pencil to edit */}
+              {ov.renamedName !== undefined
+                ? <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <input
+                      autoFocus
+                      style={{ ...styles.input, fontSize: 18, fontWeight: 600, maxWidth: 280, padding: "4px 10px" }}
+                      value={ov.renamedName}
+                      onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: e.target.value } }))}
+                      onKeyDown={e => { if (e.key === "Enter") setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: e.target.value } })); }}
+                    />
+                    <button onClick={() => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: ov.renamedName } }))}
+                      style={{ ...styles.btn, padding: "4px 12px", fontSize: 12 }}>✓ Save</button>
+                  </div>
+                : <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{ov.renamedName || student.studentName}</h2>
+                    <button
+                      onClick={() => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: ov.renamedName || student.studentName } }))}
+                      title="Rename student"
+                      style={{ background: "none", border: "1px solid #D8D6CE", borderRadius: 4, padding: "2px 8px", fontSize: 11, color: "#888", cursor: "pointer" }}>
+                      ✏ Rename
+                    </button>
+                  </div>
+              }
+              <p style={{ margin: 0, fontSize: 13, color: "#5A5A55" }}>{subject} · {assignment}</p>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>OVERALL MASTERY</div>
+              <span style={{ ...styles.mastery(ov.overall || student.overallTier), fontSize: 20, padding: "4px 16px" }}>{ov.overall || student.overallTier}</span>
+              <div style={{ marginTop: 6 }}>
+                <select style={{ fontSize: 12, padding: "3px 8px", border: "1px solid #C8C6BE", borderRadius: 4, background: "#FAFAF7" }}
+                  value={ov.overall || student.overallTier}
+                  onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], overall: e.target.value } }))}>
+                  {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <span style={{ fontSize: 11, color: "#888", marginLeft: 6 }}>Override</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Dimensions */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+            {[
+              ["Conceptual Understanding", "conceptualUnderstanding", "conceptual"],
+              ["Problem Solving", "problemSolving", "problemSolving"],
+              ["Work Shown", "workShown", "workShown"],
+              ["Accuracy", "accuracy", "accuracy"]
+            ].map(([label, key, ovKey]) => {
+              const val = ov[ovKey] || student.dimensions?.[key] || "P1";
               return (
-                <div key={i} style={{ background:ct.bg, borderRadius:8, padding:"12px 14px", border:`1px solid ${ct.color}22` }}>
-                  <div style={{ fontSize:10, color:ct.color, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>{c.name}</div>
-                  <div style={{ fontFamily:"'DM Mono',monospace", fontSize:20, fontWeight:700, color:ct.color }}>{c.tier}</div>
+                <div key={key} style={{ background: tierBg[val], border: `1px solid ${tierBorder[val]}`, borderRadius: 6, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: "#5A5A55", marginBottom: 4, fontWeight: 600 }}>{label.toUpperCase()}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: tierColor[val], fontWeight: 700, fontSize: 18 }}>{val}</span>
+                    <select style={{ fontSize: 11, padding: "2px 6px", border: `1px solid ${tierBorder[val]}`, borderRadius: 4, background: "transparent" }}
+                      value={val}
+                      onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], [ovKey]: e.target.value } }))}>
+                      {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Problem Breakdown */}
+          {student.problems?.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em", color: "#5A5A55" }}>Problem Breakdown</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {student.problems.map((prob, i) => {
+                  const pt = getProblemTier(student.studentName, prob.id, prob.tier);
+                  return (
+                  <div key={i} style={{ border: `1px solid ${tierBorder[pt] || "#E8E6DE"}`, borderLeft: `4px solid ${tierColor[pt] || "#888"}`, borderRadius: 6, padding: "10px 12px", background: "#FAFAF7" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                      <div>
+                        <span style={{ fontWeight: 700, fontSize: 14, marginRight: 8 }}>Problem {prob.id}</span>
+                        <span style={{ fontSize: 12, color: "#5A5A55" }}>{prob.description}</span>
+                        {prob.flagged && <span style={{ marginLeft: 8, background: "#FFF3CD", border: "1px solid #FFCA2C", borderRadius: 4, fontSize: 10, fontWeight: 700, padding: "1px 6px", color: "#856404" }}>⚑ Review</span>}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={styles.mastery(pt)}>{pt}</span>
+                        <select
+                          style={{ fontSize: 11, padding: "2px 6px", border: `1px solid ${tierBorder[pt] || "#C8C6BE"}`, borderRadius: 4, background: "#fff", cursor: "pointer" }}
+                          value={pt}
+                          onChange={e => setProblemTier(student.studentName, prob.id, e.target.value)}>
+                          {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#3A3A35", marginBottom: 4 }}><strong>Process:</strong> {prob.processAssessment}</div>
+                    <div style={{ fontSize: 12, color: "#5A5A55" }}>{prob.reasoning}</div>
+                    {prob.flagReason && <div style={{ fontSize: 11, color: "#856404", marginTop: 4 }}>⚑ {prob.flagReason}</div>}
+                  </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Feedback */}
+          <div style={{ background: "#F5F4EF", borderRadius: 6, padding: "14px 16px", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#5A5A55", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Personalized Feedback</div>
+            <p style={{ margin: "0 0 8px", fontSize: 14, lineHeight: 1.6 }}>{student.feedback}</p>
+            {student.strengths?.length > 0 && <div style={{ fontSize: 12, color: "#0F6E56" }}>✓ Strengths: {student.strengths.join(", ")}</div>}
+            {student.growthAreas?.length > 0 && <div style={{ fontSize: 12, color: "#185FA5", marginTop: 4 }}>→ Growth areas: {student.growthAreas.join(", ")}</div>}
+          </div>
+
+          {/* Instructor Note */}
+          {student.instructorNote && (
+            <div style={{ background: "#FFF3CD", border: "1px solid #FFCA2C", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#856404" }}>
+              <strong>Note for instructor:</strong> {student.instructorNote}
+            </div>
+          )}
+        </div>
+
+        {/* Class Summary */}
+        <div style={styles.card}>
+          <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#5A5A55" }}>Class Summary</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+            {["P4", "P3", "P2", "P1"].map(t => {
+              const count = results.filter(s => (overrides[s.studentName]?.overall || s.overallTier) === t).length;
+              return (
+                <div key={t} style={{ background: tierBg[t], border: `1px solid ${tierBorder[t]}`, borderRadius: 6, padding: "12px", textAlign: "center" }}>
+                  <div style={{ color: tierColor[t], fontWeight: 700, fontSize: 22 }}>{count}</div>
+                  <div style={{ color: tierColor[t], fontWeight: 700, fontSize: 13 }}>{t}</div>
+                  <div style={{ color: "#888", fontSize: 11 }}>{results.length ? Math.round(count / results.length * 100) : 0}%</div>
                 </div>
               );
             })}
           </div>
         </div>
-      )}
-
-      {student.feedback && (
-        <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:"#1A3A2A", marginBottom:10, paddingBottom:6, borderBottom:"1px solid #E2E0D8" }}>Mastery Feedback</div>
-          <div style={{ background:"#F0FAF5", borderLeft:"3px solid #0F6E56", borderRadius:4, padding:"14px 16px", fontSize:13, lineHeight:1.7, color:"#1a1a18" }}>
-            {student.feedback}
-          </div>
-        </div>
-      )}
-
-      {student.problems?.length > 0 && (
-        <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:"#1A3A2A", marginBottom:6, paddingBottom:6, borderBottom:"1px solid #E2E0D8" }}>Problem-by-Problem Results</div>
-          <div style={{ display:"flex", gap:16, marginBottom:10 }}>
-            <span style={{ fontSize:12 }}><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, color:"#0F6E56" }}>Correct:</span> {correctCount}</span>
-            <span style={{ fontSize:12 }}><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, color:"#A32D2D" }}>Wrong:</span> {wrongCount}</span>
-          </div>
-          <div style={{ overflowX:"auto" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-              <thead>
-                <tr>
-                  {["#","Correct Answer","Student Answer","Grade","Feedback"].map(h => (
-                    <th key={h} style={{ textAlign:"left", fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em", color:"#888", padding:"8px 10px", borderBottom:"2px solid #E2E0D8", fontFamily:"'DM Mono',monospace", whiteSpace:"nowrap" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {student.problems.map((p, i) => (
-                  <tr key={i} style={{ borderBottom:"1px solid #F0EEE8" }}>
-                    <td style={{ padding:"8px 10px", fontFamily:"'DM Mono',monospace", color:"#555" }}>{p.number || i+1}</td>
-                    <td style={{ padding:"8px 10px" }}>{p.correctAnswer || ""}</td>
-                    <td style={{ padding:"8px 10px", fontFamily:"'DM Mono',monospace", color:"#333" }}>{p.studentAnswer || "—"}</td>
-                    <td style={{ padding:"8px 10px" }}>
-                      <span style={{
-                        background: p.correct ? "#E1F5EE" : "#FCEBEB",
-                        color: p.correct ? "#0F6E56" : "#A32D2D",
-                        fontSize:11, fontWeight:600, padding:"2px 8px", borderRadius:10,
-                        fontFamily:"'DM Mono',monospace", whiteSpace:"nowrap"
-                      }}>
-                        {p.correct ? "Correct" : "Wrong"}
-                      </span>
-                    </td>
-                    <td style={{ padding:"8px 10px", color:"#444", lineHeight:1.5 }}>{p.feedback || ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginTop:8 }}>
-        <button
-          onClick={() => generateStudentPDF({ ...student, studentName: editedName }, assignment, subject, instructor, override)}
-          style={{ padding:"10px 20px", borderRadius:8, border:"none", background:"#0F6E56", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer" }}
-        >
-          ↓ Download PDF
-        </button>
       </div>
-    </div>
-  );
-}
-
-
-// ── MAIN APP ──────────────────────────────────────────────────────────────────
-function DM3AApp() {
-  const [files, setFiles]           = useState([]);
-  const [fileStatuses, setFileStatuses] = useState({});
-  const [fileResults, setFileResults]   = useState({});
-  const [subject, setSubject]       = useState("Statistics");
-  const [assignment, setAssignment] = useState("");
-  const [rubric, setRubric]         = useState("");
-  const [instructor, setInstructor] = useState("Dr. Ralph Minaya, Ed.D.");
-  const [criteria, setCriteria]     = useState(["Conceptual Understanding","Problem Solving","Work Shown","Accuracy"]);
-  const [newCrit, setNewCrit]       = useState("");
-  const [pagesPerStudent, setPagesPerStudent] = useState(2);
-  const [step, setStep]             = useState("setup"); // setup | grading | results
-  const [error, setError]           = useState("");
-  const [gradingProgress, setGradingProgress] = useState("");
-  const [gradingErrors, setGradingErrors]     = useState([]);
-  const [drag, setDrag]             = useState(false);
-  const [combineImages, setCombineImages] = useState(false);
-  const [gradingMode, setGradingMode] = useState("formative");
-  const gradingModeManualRef = useRef(false);
-  const [showDM3AModal, setShowDM3AModal] = useState(() => {
-    return !localStorage.getItem('dm3a_modal_seen');
-  });
-  const [showDisclaimerModal, setShowDisclaimerModal] = useState(() => {
-    return !sessionStorage.getItem('dm3a_disclaimer_accepted');
-  });
-  const fileRef = useRef();
-  const [selectedStudent, setSelectedStudent] = useState(null);
-  const [gradeOverrides, setGradeOverrides]   = useState({});
-
-  const allStudents = Object.values(fileResults).flat();
-  const tierCounts  = TIERS.map(t => ({ ...t, count: allStudents.filter(s => s.overallTier === t.id).length }));
-
-  function handleAssignmentChange(val) {
-    setAssignment(val);
-    if (!gradingModeManualRef.current) {
-      setGradingMode(/quiz|exam|test/i.test(val) ? "summative" : "formative");
-    }
+    );
   }
 
-  function addFiles(newFiles) {
-    const valid = Array.from(newFiles).filter(f => isImage(f) || isPDF(f));
-    if (valid.length === 0) { setError("Only PDF and image files (JPG, PNG) are accepted."); return; }
-    setError("");
-    setFiles(prev => {
-      const existingNames = new Set(prev.map(f=>f.name));
-      return [...prev, ...valid.filter(f=>!existingNames.has(f.name))];
-    });
-  }
-
-  function removeFile(idx) {
-    setFiles(prev => prev.filter((_,i) => i !== idx));
-  }
-
-  function addCriteria() {
-    if (newCrit.trim() && criteria.length < 6) {
-      setCriteria(prev => [...prev, newCrit.trim()]);
-      setNewCrit("");
-    }
-  }
-
-  async function startGrading() {
-    if (files.length === 0) { setError("Please upload at least one file."); return; }
-    const oversized = files.filter(f => f.size > 25 * 1024 * 1024);
-    if (oversized.length > 0) {
-      setError(`File too large: ${oversized.map(f => f.name).join(", ")}. Exceeds the 25 MB limit — split it or use images instead.`);
-      return;
-    }
-    if (!assignment.trim())  { setError("Please enter an assignment name."); return; }
-    if (!rubric.trim())      { setError("Please describe your rubric."); return; }
-
-    setError("");
-    setGradingErrors([]);
-    setGradingProgress("");
-    setStep("grading");
-    setFileStatuses({});
-    setFileResults({});
-
-    const params = { subject, assignment, rubric, criteria, pagesPerStudent, gradingMode };
-    let globalStudentCount = 1;
-
-    if (combineImages && files.length > 1) {
-      // All files = one student's multi-page submission
-      files.forEach(f => setFileStatuses(prev => ({ ...prev, [f.name]: "processing" })));
-      setGradingProgress("Grading combined submission…");
-      try {
-        console.log("[DM3A] Combining files as one student:", files.map(f => f.name));
-        const results = await gradeFile(files[0], params, files.slice(1));
-        setFileResults(prev => ({ ...prev, [files[0].name]: results }));
-        files.forEach(f => setFileStatuses(prev => ({ ...prev, [f.name]: "done" })));
-      } catch (e) {
-        files.forEach(f => setFileStatuses(prev => ({ ...prev, [f.name]: "error" })));
-        setGradingErrors(prev => [...prev, `Failed to grade combined submission: ${e.message}`]);
-        console.error("[DM3A] Combined grading error:", e);
-      }
-
-    } else {
-      for (const file of files) {
-        if (isPDF(file) && pagesPerStudent !== "all") {
-          // ── BULK PDF MODE: split PDF into per-student chunks ──
-          setFileStatuses(prev => ({ ...prev, [file.name]: "processing" }));
-          setGradingProgress(`Splitting ${file.name}…`);
-
-          let chunks;
-          try {
-            chunks = await splitPDF(file, Number(pagesPerStudent));
-            console.log(`[DM3A] Split ${file.name} into ${chunks.length} chunk(s) of ${pagesPerStudent} page(s) each`);
-          } catch (e) {
-            setFileStatuses(prev => ({ ...prev, [file.name]: "error" }));
-            setGradingErrors(prev => [...prev, `Failed to split "${file.name}": ${e.message}`]);
-            console.error("[DM3A] PDF split error:", e);
-            continue;
-          }
-
-          const fileResults = [];
-          for (let i = 0; i < chunks.length; i++) {
-            const studentLabel = `Student ${globalStudentCount}`;
-            setGradingProgress(`Grading ${studentLabel} of ${chunks.length} from "${file.name}"… (${i + 1}/${chunks.length})`);
-            console.log(`[DM3A] Grading chunk ${i + 1}/${chunks.length} from ${file.name}`);
-
-            try {
-              const chunkResults = await gradeFile(chunks[i], { ...params, pagesPerStudent: "all" });
-              const named = chunkResults.map(s => ({
-                ...s,
-                studentName: (s.studentName && s.studentName.trim()) ? s.studentName : studentLabel,
-              }));
-              globalStudentCount += named.length;
-              fileResults.push(...named);
-            } catch (e) {
-              setGradingErrors(prev => [...prev, `Failed to grade ${studentLabel} (chunk ${i + 1}/${chunks.length} of "${file.name}"): ${e.message}`]);
-              console.error(`[DM3A] Chunk ${i + 1} error:`, e);
-              globalStudentCount++;
-            }
-          }
-
-          setFileResults(prev => ({ ...prev, [file.name]: fileResults }));
-          setFileStatuses(prev => ({ ...prev, [file.name]: fileResults.length > 0 ? "done" : "error" }));
-
-        } else {
-          // ── SINGLE-FILE MODE (image, or PDF with pagesPerStudent="all") ──
-          setFileStatuses(prev => ({ ...prev, [file.name]: "processing" }));
-
-          if (isPDF(file) && pagesPerStudent === "all") {
-            // Check page count — chunk large PDFs to avoid token-limit 500s
-            let pageCount = 0;
-            try {
-              const ab = await file.arrayBuffer();
-              const pdfDoc = await PDFDocument.load(ab);
-              pageCount = pdfDoc.getPageCount();
-            } catch (e) { /* non-critical, fall through to normal grading */ }
-
-            if (pageCount > 6) {
-              setGradingProgress(`"${file.name}" has ${pageCount} pages — splitting into chunks to avoid token limits…`);
-              console.log(`[DM3A] Large PDF (${pageCount} pages) — splitting into 5-page chunks`);
-
-              let chunks;
-              try {
-                chunks = await splitPDF(file, 5);
-              } catch (e) {
-                setFileStatuses(prev => ({ ...prev, [file.name]: "error" }));
-                setGradingErrors(prev => [...prev, `Failed to split "${file.name}": ${e.message}`]);
-                console.error("[DM3A] PDF split error:", e);
-                continue;
-              }
-
-              const chunkResults = [];
-              for (let i = 0; i < chunks.length; i++) {
-                setGradingProgress(`Grading "${file.name}" — chunk ${i + 1} of ${chunks.length}…`);
-                try {
-                  const partResults = await gradeFile(chunks[i], { ...params, pagesPerStudent: "all" });
-                  chunkResults.push(...partResults);
-                } catch (e) {
-                  setGradingErrors(prev => [...prev, `Failed to grade chunk ${i + 1} of "${file.name}": ${e.message}`]);
-                  console.error(`[DM3A] Chunk ${i + 1}/${chunks.length} error for ${file.name}:`, e);
-                }
-              }
-
-              const merged = mergeStudentChunks(chunkResults);
-              setFileResults(prev => ({ ...prev, [file.name]: [merged] }));
-              setFileStatuses(prev => ({ ...prev, [file.name]: chunkResults.length > 0 ? "done" : "error" }));
-              globalStudentCount++;
-            } else {
-              setGradingProgress(`Grading entire file "${file.name}"…`);
-              try {
-                const results = await gradeFile(file, params);
-                setFileResults(prev => ({ ...prev, [file.name]: results }));
-                setFileStatuses(prev => ({ ...prev, [file.name]: "done" }));
-                globalStudentCount += results.length;
-              } catch (e) {
-                setFileStatuses(prev => ({ ...prev, [file.name]: "error" }));
-                setGradingErrors(prev => [...prev, `Failed to grade "${file.name}": ${e.message}`]);
-                console.error(`[DM3A] Grading error for ${file.name}:`, e);
-              }
-            }
-          } else {
-            setGradingProgress(`Grading "${file.name}"…`);
-            try {
-              const results = await gradeFile(file, params);
-              setFileResults(prev => ({ ...prev, [file.name]: results }));
-              setFileStatuses(prev => ({ ...prev, [file.name]: "done" }));
-              globalStudentCount += results.length;
-            } catch (e) {
-              setFileStatuses(prev => ({ ...prev, [file.name]: "error" }));
-              setGradingErrors(prev => [...prev, `Failed to grade "${file.name}": ${e.message}`]);
-              console.error(`[DM3A] Grading error for ${file.name}:`, e);
-            }
-          }
-        }
-      }
-    }
-
-    setGradingProgress("");
-    setStep("results");
-  }
-
-  function exportAllCSV() {
-    const snapshot = fileResults;
-    const rows = [["Student","File","Overall Tier",...criteria,"Feedback","Next Step","Reflection Prompt"]];
-    Object.entries(snapshot).forEach(([fname, students]) => {
-      students.forEach(s => {
-        const critTiers = criteria.map(c => s.criteria?.find(x=>x.name===c)?.tier || "");
-        rows.push([s.studentName||"—", fname, gradeOverrides[s.studentName] ?? s.overallTier, ...critTiers, s.feedback||"", s.growthNote||"", s.reflectionPrompt||""]);
-      });
-    });
-    const csv  = rows.map(r => r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type:"text/csv" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href     = url;
-    a.download = `dm3a_grades_${new Date().toISOString().slice(0,10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-  }
-
-  function downloadAllPDFs() {
-    allStudents.forEach((s, i) => {
-      setTimeout(() => generateStudentPDF(s, assignment, subject, instructor, gradeOverrides[s.studentName]), i * 400);
-    });
-  }
-
-  // ── RENDER ────────────────────────────────────────────────────────────────
-  return (
-    <div style={{ fontFamily:"'DM Sans',system-ui,sans-serif", maxWidth:760, margin:"0 auto", padding:"0 20px 60px", color:"#2C2C2A" }}>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
-
-      {/* HEADER */}
-      <div style={{ padding:"28px 0 20px", borderBottom:"0.5px solid #D3D1C7", marginBottom:28 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
-          <div style={{ fontFamily:"'DM Mono',monospace", fontSize:11, fontWeight:500, background:"#E1F5EE", color:"#0F6E56", padding:"3px 10px", borderRadius:20, letterSpacing:"0.06em" }}>DM3A GRADER</div>
-          <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:"#B4B2A9" }}>v2.0 · beta</div>
-        </div>
-        <h1 style={{ margin:"0 0 4px", fontSize:24, fontWeight:500, letterSpacing:"-0.025em" }}>Mastery-Based Grading</h1>
-        <p style={{ margin:0, fontSize:13, color:"#5F5E5A" }}>Upload PDFs or images · get comprehensive P1–P4 reports · download individual PDFs</p>
-      </div>
-
-      {/* DM3A INFO BANNER */}
-      <div style={{ background:"#E8F5EE", border:"1px solid #A8D5BA", borderRadius:8, padding:"10px 16px", marginBottom:8, display:"flex", alignItems:"center", justifyContent:"space-between", gap:12 }}>
-        <div style={{ fontSize:12, color:"#1A5C38", lineHeight:1.6 }}>
-          <strong>ℹ️ This app uses the DM3A Mastery Scale</strong> — not traditional letter grades.
-          Student work is scored as <strong>P1 (Beginning)</strong>, <strong>P2 (Developing)</strong>, <strong>P3 (Approaching Mastery)</strong>, or <strong>P4 (Mastery)</strong> based on demonstrated understanding, not just correct answers.
-        </div>
-        <button
-          onClick={() => setShowDM3AModal(true)}
-          style={{ flexShrink:0, background:"#0F6E56", color:"white", border:"none", borderRadius:6, padding:"6px 12px", fontSize:11, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-        >
-          Learn More
-        </button>
-      </div>
-
-      {/* SETUP */}
-      {step === "setup" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
-
-          {/* DROP ZONE */}
-          <div>
-            <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em" }}>
-              Student submissions — PDF or Image (JPG, PNG) · multiple files supported
-            </label>
-            <div
-              onDragOver={e=>{e.preventDefault();setDrag(true);}}
-              onDragLeave={()=>setDrag(false)}
-              onDrop={e=>{e.preventDefault();setDrag(false);addFiles(e.dataTransfer.files);}}
-              onClick={()=>fileRef.current.click()}
-              style={{
-                border:`1.5px dashed ${drag?"#1D9E75":"#B4B2A9"}`,
-                borderRadius:12, padding:"32px 20px", textAlign:"center",
-                cursor:"pointer", background:drag?"#E1F5EE":"transparent", transition:"all 0.2s"
-              }}>
-              <input ref={fileRef} type="file" accept={ACCEPT} multiple style={{display:"none"}} onChange={e=>addFiles(e.target.files)}/>
-              <div style={{ fontSize:32, marginBottom:8 }}>📂</div>
-              <p style={{ margin:"0 0 4px", fontSize:13, fontWeight:500, color:"#3d3d3a" }}>Drop PDFs or images here</p>
-              <p style={{ margin:0, fontSize:12, color:"#888" }}>or click to browse · PDF, JPG, PNG · multiple files at once</p>
-            </div>
-
-            {files.length > 0 && (
-              <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:10 }}>
-                {files.map((f,i) => (
-                  <FileCard key={f.name} file={f} status={fileStatuses[f.name]||"pending"} result={fileResults[f.name]} onRemove={()=>removeFile(i)}/>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* FIELDS */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-            <div>
-              <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:6, textTransform:"uppercase" }}>Subject</label>
-              <select value={subject} onChange={e=>setSubject(e.target.value)} style={{ width:"100%", padding:"9px 12px", borderRadius:8, border:"0.5px solid #D3D1C7", fontSize:13, background:"#fff" }}>
-                {SUBJECTS.map(s=><option key={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:6, textTransform:"uppercase" }}>Assignment name</label>
-              <input value={assignment} onChange={e=>handleAssignmentChange(e.target.value)} placeholder="e.g. HW 5.1 — Properties of Exponents"
-                style={{ width:"100%", padding:"9px 12px", borderRadius:8, border:"0.5px solid #D3D1C7", fontSize:13, boxSizing:"border-box" }}/>
-            </div>
-          </div>
-
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-            <div>
-              <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:6, textTransform:"uppercase" }}>Instructor name</label>
-              <input value={instructor} onChange={e=>setInstructor(e.target.value)}
-                style={{ width:"100%", padding:"9px 12px", borderRadius:8, border:"0.5px solid #D3D1C7", fontSize:13, boxSizing:"border-box" }}/>
-            </div>
-            <div>
-              <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:6, textTransform:"uppercase" }}>Pages per student</label>
-              <select value={pagesPerStudent} onChange={e=>{ const v=e.target.value; setPagesPerStudent(v==="all"?"all":Number(v)); }} style={{ width:"100%", padding:"9px 12px", borderRadius:8, border:"0.5px solid #D3D1C7", fontSize:13, background:"#fff" }}>
-                <option value={1}>1 page per student</option>
-                <option value={2}>2 pages (double-sided)</option>
-                <option value={3}>3 pages</option>
-                <option value={4}>4 pages</option>
-                <option value={5}>5 pages</option>
-                <option value={6}>6 pages</option>
-                <option value={8}>8 pages</option>
-                <option value={10}>10 pages</option>
-                <option value={15}>15 pages</option>
-                <option value="all">Entire file (all pages)</option>
-              </select>
-            </div>
-          </div>
-
-          {/* CRITERIA */}
-          <div>
-            <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:6, textTransform:"uppercase" }}>Grading criteria <span style={{ color:"#B4B2A9", textTransform:"none", fontWeight:400 }}>(max 6)</span></label>
-            <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:10 }}>
-              {criteria.map((c,i) => (
-                <span key={i} style={{ display:"flex", alignItems:"center", gap:6, background:"#F1EFE8", color:"#3d3d3a", fontSize:12, padding:"5px 12px", borderRadius:20, border:"0.5px solid #D3D1C7" }}>
-                  {c}
-                  <span onClick={()=>setCriteria(criteria.filter((_,j)=>j!==i))} style={{ cursor:"pointer", color:"#B4B2A9", fontSize:14 }}>×</span>
-                </span>
-              ))}
-            </div>
-            {criteria.length < 6 && (
-              <div style={{ display:"flex", gap:8 }}>
-                <input value={newCrit} onChange={e=>setNewCrit(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCriteria()} placeholder="Add a criterion…"
-                  style={{ flex:1, padding:"8px 12px", borderRadius:8, border:"0.5px solid #D3D1C7", fontSize:13 }}/>
-                <button onClick={addCriteria} style={{ padding:"8px 16px", borderRadius:8, border:"0.5px solid #D3D1C7", background:"#F1EFE8", fontSize:13, cursor:"pointer" }}>Add</button>
-              </div>
-            )}
-          </div>
-
-          {/* GRADING MODE */}
-          <div>
-            <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:6, textTransform:"uppercase" }}>
-              Grading Mode
-              {/quiz|exam|test/i.test(assignment) && gradingMode === "summative" && (
-                <span style={{ fontWeight:400, color:"#185FA5", marginLeft:8, textTransform:"none", fontSize:10 }}>Auto-detected from assignment name</span>
-              )}
-            </label>
-            <div style={{ display:"flex", gap:8 }}>
-              {[
-                { value:"formative", label:"Formative (supportive)", desc:"Growth-oriented · acknowledges partial understanding" },
-                { value:"summative", label:"Summative (strict)", desc:"Zero tolerance on wrong final answers · for quizzes & exams" }
-              ].map(m => (
-                <button key={m.value}
-                  onClick={() => { gradingModeManualRef.current = true; setGradingMode(m.value); }}
-                  style={{
-                    flex:1, padding:"10px 14px", borderRadius:8, cursor:"pointer", textAlign:"left",
-                    border: gradingMode === m.value
-                      ? `1.5px solid ${m.value === "summative" ? "#A32D2D" : "#0F6E56"}`
-                      : "0.5px solid #D3D1C7",
-                    background: gradingMode === m.value
-                      ? (m.value === "summative" ? "#FCEBEB" : "#E1F5EE")
-                      : "#F9F8F5",
-                    color: gradingMode === m.value
-                      ? (m.value === "summative" ? "#A32D2D" : "#0F6E56")
-                      : "#5F5E5A",
-                  }}>
-                  <div style={{ fontSize:13, fontWeight:600 }}>{m.label}</div>
-                  <div style={{ fontSize:11, opacity:0.8, marginTop:2 }}>{m.desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* RUBRIC */}
-          <div>
-            <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#5F5E5A", marginBottom:6, textTransform:"uppercase" }}>Rubric / grading instructions</label>
-            <textarea value={rubric} onChange={e=>setRubric(e.target.value)} rows={5}
-              placeholder="P4 = All problems correct with full steps shown. P3 = Mostly correct, minor errors. P2 = Partial understanding, several errors. P1 = Few problems attempted, significant gaps."
-              style={{ width:"100%", padding:"10px 12px", borderRadius:8, border:"0.5px solid #D3D1C7", fontSize:13, lineHeight:1.6, resize:"vertical", boxSizing:"border-box", fontFamily:"inherit" }}/>
-          </div>
-
-          {error && <div style={{ background:"#FCEBEB", color:"#A32D2D", padding:"10px 14px", borderRadius:8, fontSize:13 }}>{error}</div>}
-
-          <div style={{ display:"flex", alignItems:"center", gap:10, justifyContent:"center", marginBottom:12 }}>
-    <input type="checkbox" id="combineCheck" checked={combineImages} onChange={e => setCombineImages(e.target.checked)} style={{ width:16, height:16, cursor:"pointer" }} />
-    <label htmlFor="combineCheck" style={{ fontSize:13, color:"#5F5E5A", cursor:"pointer" }}>
-      Combine all files as one student (multi-page submission)
-    </label>
-  </div>
-  <button onClick={startGrading} style={{ padding:"14px 24px", borderRadius:10, border:"none", background:"#0F6E56", color:"#fff", fontSize:14, fontWeight:500, cursor:"pointer" }}>
-            Grade with DM3A →
-          </button>
-        </div>
-      )}
-
-      {/* GRADING */}
-      {step === "grading" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-
-          {gradingProgress && (
-            <div style={{ background:"#E6F1FB", border:"1px solid #185FA5", borderRadius:8, padding:"12px 16px", fontSize:13, color:"#185FA5", display:"flex", alignItems:"center", gap:10 }}>
-              <span style={{ display:"inline-block", animation:"spin 1.2s linear infinite", fontSize:16 }}>⏳</span>
-              {gradingProgress}
-            </div>
-          )}
-
-          {gradingErrors.length > 0 && (
-            <div style={{ background:"#FCEBEB", border:"1px solid #A32D2D", borderRadius:8, padding:"10px 14px" }}>
-              {gradingErrors.map((e, i) => (
-                <div key={i} style={{ fontSize:12, color:"#A32D2D" }}>• {e}</div>
-              ))}
-            </div>
-          )}
-
-          {files.map(f => (
-            <FileCard key={f.name} file={f} status={fileStatuses[f.name]||"pending"} result={fileResults[f.name]} onRemove={()=>{}}/>
-          ))}
-        </div>
-      )}
-
-      {/* RESULTS */}
-      {step === "results" && (
-        selectedStudent ? (
-          <StudentDetailView
-            student={selectedStudent}
-            assignment={assignment}
-            subject={subject}
-            instructor={instructor}
-            gradeOverrides={gradeOverrides}
-            setGradeOverrides={setGradeOverrides}
-            setSelectedStudent={setSelectedStudent}
-          />
-        ) : (
-        <div>
-          {gradingErrors.length > 0 && (
-            <div style={{ background:"#FCEBEB", border:"1px solid #A32D2D", borderRadius:8, padding:"12px 16px", marginBottom:16 }}>
-              <div style={{ fontSize:12, fontWeight:600, color:"#A32D2D", marginBottom:6 }}>
-                {gradingErrors.length === 1 ? "1 grading error occurred:" : `${gradingErrors.length} grading errors occurred:`}
-              </div>
-              {gradingErrors.map((e, i) => (
-                <div key={i} style={{ fontSize:12, color:"#A32D2D" }}>• {e}</div>
-              ))}
-            </div>
-          )}
-
-          {/* Summary */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:20 }}>
-            {tierCounts.map(t => (
-              <div key={t.id} style={{ background:t.bg, borderRadius:10, padding:"12px 14px", border:`0.5px solid ${t.color}33` }}>
-                <p style={{ margin:"0 0 2px", fontFamily:"'DM Mono',monospace", fontSize:11, color:t.color, fontWeight:600 }}>{t.id}</p>
-                <p style={{ margin:0, fontSize:22, fontWeight:500, color:t.color }}>{t.count}</p>
-                <p style={{ margin:0, fontSize:11, color:t.color, opacity:0.75 }}>{t.desc}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* Actions */}
-          <div style={{ display:"flex", gap:10, marginBottom:24, flexWrap:"wrap" }}>
-            <button onClick={downloadAllPDFs} style={{ padding:"9px 18px", borderRadius:8, border:"0.5px solid #0F6E56", background:"#E1F5EE", color:"#0F6E56", fontSize:13, cursor:"pointer", fontWeight:500 }}>
-              ↓ All PDF Reports ({allStudents.length})
-            </button>
-            <button onClick={exportAllCSV} style={{ padding:"9px 18px", borderRadius:8, border:"0.5px solid #D3D1C7", background:"#F1EFE8", color:"#2C2C2A", fontSize:13, cursor:"pointer" }}>
-              Export CSV
-            </button>
-            <button onClick={()=>{setStep("setup");setFiles([]);setFileStatuses({});setFileResults({});}} style={{ padding:"9px 18px", borderRadius:8, border:"0.5px solid #D3D1C7", background:"transparent", color:"#5F5E5A", fontSize:13, cursor:"pointer" }}>
-              Grade another batch
-            </button>
-          </div>
-
-          {/* Student cards */}
-          <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-            {allStudents.map((s,i) => (
-              <StudentCard key={i} student={s} assignment={assignment} subject={subject} instructor={instructor} idx={i}
-                onViewReport={() => setSelectedStudent(s)}
-                overrideTier={gradeOverrides[s.studentName]}
-              />
-            ))}
-          </div>
-
-          <p style={{ marginTop:16, fontSize:12, color:"#B4B2A9", textAlign:"center" }}>
-            {allStudents.length} student{allStudents.length!==1?"s":""} graded · DM3A Mastery Scale · {instructor}
-          </p>
-        </div>
-        )
-      )}
-
-      {showDisclaimerModal && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.65)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-          <div style={{ background:"white", borderRadius:16, padding:36, maxWidth:580, width:"100%", boxShadow:"0 24px 72px rgba(0,0,0,0.35)" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
-              <div style={{ background:"#E1F5EE", color:"#0F6E56", fontFamily:"'DM Mono',monospace", fontSize:10, fontWeight:700, padding:"3px 10px", borderRadius:20, letterSpacing:"0.06em", whiteSpace:"nowrap" }}>DM3A GRADER</div>
-            </div>
-            <h2 style={{ margin:"0 0 16px", fontSize:20, fontWeight:700, color:"#1A3A2A", letterSpacing:"-0.02em" }}>AI-Assisted Grading — Important Notice</h2>
-            <p style={{ fontSize:13, color:"#444", lineHeight:1.75, margin:"0 0 12px" }}>
-              The DM3A Grader uses artificial intelligence to evaluate student work. While designed to support mastery-based grading, AI has known limitations in reading handwritten work, including:
-            </p>
-            <ul style={{ margin:"0 0 14px", paddingLeft:20, fontSize:13, color:"#444", lineHeight:2 }}>
-              <li><strong>Optical Character Recognition (OCR) errors</strong> — handwritten letters, numbers, and symbols may be misread, particularly in multiple choice selections and mathematical expressions</li>
-              <li><strong>Contextual interpretation</strong> — AI may misidentify final answers vs. intermediate steps in multi-step problems</li>
-              <li><strong>Rounding and precision</strong> — minor numerical differences may not always be evaluated consistently</li>
-            </ul>
-            <p style={{ fontSize:13, color:"#444", lineHeight:1.75, margin:"0 0 14px" }}>
-              Research consistently shows that AI-assisted grading works best as a first-pass tool, not a final authority. Instructors should review all results before releasing grades to students.
-            </p>
-            <p style={{ fontSize:13, color:"#444", lineHeight:1.75, margin:"0 0 14px" }}>
-              <strong>Data &amp; Privacy</strong><br/>
-              Student submissions are processed by Anthropic's Claude AI to generate mastery-level feedback. Submissions are sent securely and are not used to train AI models. Do not upload personally identifiable information beyond what is necessary for grading. By proceeding, you acknowledge this data handling.
-            </p>
-            <div style={{ background:"#E1F5EE", border:"1px solid #A8D5BA", borderRadius:8, padding:"12px 16px", marginBottom:24 }}>
-              <p style={{ margin:0, fontSize:13, color:"#1A5C38", lineHeight:1.7, fontWeight:500 }}>
-                By proceeding, you acknowledge that you will review AI-generated grades before distributing them to students.
-              </p>
-            </div>
-            <button
-              onClick={() => { sessionStorage.setItem('dm3a_disclaimer_accepted', 'true'); setShowDisclaimerModal(false); }}
-              style={{ width:"100%", background:"#0F6E56", color:"white", border:"none", borderRadius:8, padding:"13px", fontSize:14, fontWeight:600, cursor:"pointer", letterSpacing:"-0.01em" }}
-            >
-              I Understand — Proceed to Grading
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showDM3AModal && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-          <div style={{ background:"white", borderRadius:16, padding:32, maxWidth:520, width:"100%", boxShadow:"0 20px 60px rgba(0,0,0,0.3)", position:"relative" }}>
-            <button onClick={() => { setShowDM3AModal(false); localStorage.setItem("dm3a_modal_seen","1"); }} style={{ position:"absolute", top:16, right:16, background:"none", border:"none", fontSize:20, cursor:"pointer", color:"#888" }}>X</button>
-            <h2 style={{ margin:"0 0 8px", fontSize:20, fontWeight:700, color:"#1A3A2A" }}>What is the DM3A Mastery Scale?</h2>
-            <p style={{ fontSize:13, color:"#555", lineHeight:1.7, margin:"0 0 16px" }}>DM3A replaces traditional percentage grades with P1 through P4 mastery levels based on what students actually understand and demonstrate.</p>
-            <div style={{ display:"grid", gap:8, marginBottom:20 }}>
-              {[{tier:"P4",label:"Mastery",color:"#0F6E56",bg:"#E1F5EE"},{tier:"P3",label:"Approaching Mastery",color:"#185FA5",bg:"#E6F1FB"},{tier:"P2",label:"Developing",color:"#854F0B",bg:"#FAEEDA"},{tier:"P1",label:"Beginning",color:"#A32D2D",bg:"#FCEBEB"}].map(t => (
-                <div key={t.tier} style={{ background:t.bg, borderRadius:8, padding:"10px 14px", display:"flex", alignItems:"center", gap:12 }}>
-                  <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:16, color:t.color, minWidth:28 }}>{t.tier}</span>
-                  <div style={{ fontSize:12, fontWeight:600, color:t.color }}>{t.label}</div>
-                </div>
-              ))}
-            </div>
-            <button onClick={() => { setShowDM3AModal(false); localStorage.setItem("dm3a_modal_seen","1"); }} style={{ width:"100%", background:"#0F6E56", color:"white", border:"none", borderRadius:8, padding:"12px", fontSize:14, fontWeight:600, cursor:"pointer" }}>Got it, lets grade!</button>
-          </div>
-        </div>
-      )}
-
-    </div>
-  );
-}
-
-
-export default function App() {
-  return <PasswordGate><DM3AApp /></PasswordGate>;
+  return null;
 }

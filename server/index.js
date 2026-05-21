@@ -20,24 +20,16 @@ app.post('/upload-pdf', (req, res) => {
 
 app.post('/grade', async (req, res) => {
   try {
-    const { file_id, imageBlocks, systemPrompt, userPrompt, contentBlocks: clientBlocks } = req.body;
+    const { contentBlocks: clientBlocks, systemPrompt, userPrompt } = req.body;
     let contentBlocks = [];
-    if (file_id) {
-      contentBlocks = [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file_id } },
-        { type: 'text', text: userPrompt || 'Grade this exam.' }
-      ];
-    } else if (clientBlocks && clientBlocks.length > 0) {
-      contentBlocks = clientBlocks;
-    } else if (imageBlocks && imageBlocks.length > 0) {
-      contentBlocks = [
-        ...imageBlocks,
-        { type: 'text', text: userPrompt || 'Grade this exam.' }
-      ];
+    if (clientBlocks && clientBlocks.length > 0) {
+      contentBlocks = userPrompt
+        ? [...clientBlocks, { type: 'text', text: userPrompt }]
+        : clientBlocks;
     }
     console.log(`Grading — blocks: ${contentBlocks.length}`);
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 8000,
       system: systemPrompt,
       messages: [{ role: 'user', content: contentBlocks }],
