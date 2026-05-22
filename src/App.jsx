@@ -438,12 +438,26 @@ export default function DM3AGraderV5() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ base64, mediaType: "application/pdf" })
     });
+    const respText = await resp.text();
     if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-      throw new Error(err.error || `Upload failed: HTTP ${resp.status}`);
+      let errMsg = `Upload failed: HTTP ${resp.status}`;
+      try { errMsg = JSON.parse(respText).error || errMsg; } catch { errMsg = respText || errMsg; }
+      throw new Error(errMsg);
     }
-    const { file_id } = await resp.json();
+    let file_id;
+    try { file_id = JSON.parse(respText).file_id; } catch {}
     return file_id;
+  }
+
+  // Converts any file (PDF or image) into Anthropic image content blocks.
+  // All PDFs go through pdfToImages so Claude can read handwritten/scanned content.
+  async function fileToImageBlocks(file, maxPages = 4) {
+    if (isImage(file)) {
+      const b64 = await compressImage(file, 0.5, 1200);
+      return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }];
+    }
+    const pages = await pdfToImages(file, maxPages, 1200, 0.75);
+    return pages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
   }
 
   async function fetchGradeResult(body) {
@@ -485,8 +499,7 @@ export default function DM3AGraderV5() {
     // ── BATCH PDF MODE ──────────────────────────────────────────────────────
     const file = studentFiles[0];
     const isSinglePDF = studentFiles.length === 1 && file.type === "application/pdf" && isBatchPDF;
-    // PDFs over 5MB always use chunked image path regardless of batchMode
-    const isTrueBatch = isSinglePDF && batchMode !== "single" && file.size <= 5 * 1024 * 1024;
+    const isTrueBatch = isSinglePDF && batchMode !== "single";
 
     if (isTrueBatch) {
       setLoadingMsg("Reading batch PDF and identifying students...");
@@ -498,66 +511,95 @@ export default function DM3AGraderV5() {
         if (!batchPageImages || batchPageImages.length === 0) {
           throw new Error("Could not convert PDF to images — please try a different file");
         }
-        const contentBlocks = [];
-
+        const sharedBlocks = [];
         if (assignmentFile) {
-          const assignB64 = await fileToBase64(assignmentFile);
-          if (isImage(assignmentFile)) {
-            contentBlocks.push({ type: "image", source: { type: "base64", media_type: assignmentFile.type, data: assignB64 } });
-          } else {
-            contentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: assignB64 }, title: "ASSIGNMENT PROMPT" });
-          }
-          contentBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
+          const blocks = await fileToImageBlocks(assignmentFile);
+          sharedBlocks.push(...blocks);
+          sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
         }
-
         if (answerKeyFile) {
-          const keyB64 = await fileToBase64(answerKeyFile);
-          if (isImage(answerKeyFile)) {
-            contentBlocks.push({ type: "image", source: { type: "base64", media_type: answerKeyFile.type, data: keyB64 } });
-          } else {
-            contentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: keyB64 }, title: "MODEL SOLUTION / ANSWER KEY" });
-          }
-          contentBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
+          const blocks = await fileToImageBlocks(answerKeyFile);
+          sharedBlocks.push(...blocks);
+          sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
 
-        batchPageImages.forEach((b64, i) => {
-          contentBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
-          contentBlocks.push({ type: "text", text: `Page ${i + 1}` });
-        });
-
-        const batchInstruction = batchMode === "auto"
-          ? `BATCH MODE — AUTO-DETECT: This PDF contains multiple students' work scanned together.
-STEP 1: Scan through the entire PDF and identify each student by their name written at the top of their work. Students may use varying numbers of pages.
-STEP 2: Group all pages belonging to each student together.
-STEP 3: Grade each student's complete work independently using DM3A P1–P4 mastery scoring.
-STEP 4: If you cannot find a name for a student, label them "Unknown Student [number]" and flag with instructorNote.
-Return a JSON array with one object per student found.`
-          : `BATCH MODE — FIXED PAGES: This PDF contains multiple students' work scanned together.
-Each student's work is exactly ${pagesPerStudent} page(s).
-Split the PDF into groups of ${pagesPerStudent} page(s) each and grade each group as one student.
-Try to find the student's name on the first page of each group.
-If no name is found, label them "Unknown Student [number]".
-Return a JSON array with one object per student found.`;
-
-        const userPrompt = `Subject: ${subject}
+        if (batchMode === "fixed") {
+          // Grade each student's page-chunk independently
+          const chunks = [];
+          for (let i = 0; i < batchPageImages.length; i += pagesPerStudent) {
+            chunks.push(batchPageImages.slice(i, i + pagesPerStudent));
+          }
+          for (let c = 0; c < chunks.length; c++) {
+            const studentNum = c + 1;
+            setLoadingMsg(`Grading student ${studentNum} of ${chunks.length}...`);
+            const chunkBlocks = chunks[c].flatMap((b64, i) => [
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
+              { type: "text", text: `Page ${c * pagesPerStudent + i + 1}` }
+            ]);
+            const contentBlocks = [...sharedBlocks, ...chunkBlocks];
+            const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
 
-${batchInstruction}
+BATCH FIXED-PAGES: This is student ${studentNum} of ~${chunks.length} in a batch scan (${pagesPerStudent} page(s) per student).
+Find the student's name on the first page. If no name found, label them "Unknown Student ${studentNum}".
+
+GRADING INSTRUCTIONS:
+1. Identify ALL problems and sub-parts. Do not skip any.
+2. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
+3. Weight process and reasoning heavily.
+
+Return a JSON array with exactly ONE student object.`;
+            try {
+              const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+              const cleaned = raw.replace(/```json|```/g, "").trim();
+              const parsed = JSON.parse(cleaned);
+              allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+            } catch (err) {
+              allResults.push({
+                studentName: `Student ${studentNum}`,
+                overallTier: "P1",
+                error: err.message,
+                dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
+                problems: [],
+                feedback: err.message || `Error grading student ${studentNum}.`,
+                strengths: [],
+                growthAreas: [],
+                instructorNote: `Failed on pages ${c * pagesPerStudent + 1}–${Math.min((c + 1) * pagesPerStudent, batchPageImages.length)}.`
+              });
+            }
+          }
+        } else {
+          // Auto-detect: one call, Claude identifies all students
+          const contentBlocks = [
+            ...sharedBlocks,
+            ...batchPageImages.flatMap((b64, i) => [
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
+              { type: "text", text: `Page ${i + 1}` }
+            ])
+          ];
+          const userPrompt = `Subject: ${subject}
+Assignment: ${assignment || "Student Submission"}
+${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
+
+BATCH MODE — AUTO-DETECT: This PDF contains multiple students' work scanned together.
+STEP 1: Identify each student by their name written at the top of their work.
+STEP 2: Group all pages belonging to each student together.
+STEP 3: Grade each student's complete work independently using DM3A P1–P4 mastery scoring.
+STEP 4: Label unnamed students "Unknown Student [number]" and flag with instructorNote.
+Return a JSON array with one object per student found.
 
 GRADING INSTRUCTIONS:
 1. Identify ALL problems and sub-parts for each student. Do not skip any.
 2. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
 3. Weight process and reasoning heavily.
 4. Grade each student completely and independently.`;
-
-        setLoadingMsg("Grading all students in batch — this may take a moment...");
-
-        const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
-        const cleaned = raw.replace(/```json|```/g, "").trim();
-        const parsed = JSON.parse(cleaned);
-        const students = Array.isArray(parsed) ? parsed : [parsed];
-        allResults.push(...students);
+          setLoadingMsg("Grading all students in batch — this may take a moment...");
+          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+          const cleaned = raw.replace(/```json|```/g, "").trim();
+          const parsed = JSON.parse(cleaned);
+          allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+        }
 
       } catch (err) {
         allResults.push({
@@ -566,7 +608,7 @@ GRADING INSTRUCTIONS:
           error: err.message,
           dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
           problems: [],
-          feedback: `Error processing batch PDF: ${err.message}`,
+          feedback: err.message || "Error processing batch PDF.",
           strengths: [],
           growthAreas: [],
           instructorNote: "Batch processing failed. Try uploading individual files per student."
@@ -585,24 +627,16 @@ GRADING INSTRUCTIONS:
           compressedPages.push(b64);
         }
 
-        // Build shared context blocks (assignment + answer key)
+        // Build shared context blocks (assignment + answer key) — images only, no raw PDF base64
         const sharedBlocks = [];
         if (assignmentFile) {
-          const assignB64 = isImage(assignmentFile) ? await compressImage(assignmentFile, 0.5, 1000) : await fileToBase64(assignmentFile);
-          if (isImage(assignmentFile)) {
-            sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: assignB64 } });
-          } else {
-            sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: assignB64 }, title: "ASSIGNMENT PROMPT" });
-          }
+          const blocks = await fileToImageBlocks(assignmentFile);
+          sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
         }
         if (answerKeyFile) {
-          const keyB64 = isImage(answerKeyFile) ? await compressImage(answerKeyFile, 0.5, 1000) : await fileToBase64(answerKeyFile);
-          if (isImage(answerKeyFile)) {
-            sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: keyB64 } });
-          } else {
-            sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: keyB64 }, title: "MODEL SOLUTION / ANSWER KEY" });
-          }
+          const blocks = await fileToImageBlocks(answerKeyFile);
+          sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
 
@@ -709,34 +743,17 @@ Return a JSON array with exactly ONE student object covering only the problems o
           }
           const studentMediaType = isImage(f) ? "image/jpeg" : f.type;
 
-          // Build shared context blocks
+          // Build shared context blocks — images only, no raw PDF base64
           const sharedBlocks = [];
           if (assignmentFile) {
-            const assignB64 = isImage(assignmentFile) ? await compressImage(assignmentFile) : await fileToBase64(assignmentFile);
-            if (isImage(assignmentFile)) {
-              sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: assignB64 } });
-            } else {
-              sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: assignB64 }, title: "ASSIGNMENT PROMPT" });
-            }
+            const blocks = await fileToImageBlocks(assignmentFile);
+            sharedBlocks.push(...blocks);
             sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
           }
           if (answerKeyFile) {
-            const keyB64 = isImage(answerKeyFile) ? await compressImage(answerKeyFile) : await fileToBase64(answerKeyFile);
-            const studentBytes = isPDF
-              ? pdfPageImages.reduce((s, b64) => s + b64.length * 0.75, 0)
-              : studentB64.length * 0.75;
-            const keyBytes = keyB64.length * 0.75;
-            console.log('SIZE CHECK — student:', Math.round(studentBytes / 1024), 'KB | answer key:', Math.round(keyBytes / 1024), 'KB | combined:', Math.round((studentBytes + keyBytes) / 1024), 'KB');
-            if (studentBytes + keyBytes > 3 * 1024 * 1024) {
-              sharedBlocks.push({ type: "text", text: "No answer key provided - use subject expertise." });
-            } else {
-              if (isImage(answerKeyFile)) {
-                sharedBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: keyB64 } });
-              } else {
-                sharedBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: keyB64 }, title: "MODEL SOLUTION / ANSWER KEY" });
-              }
-              sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
-            }
+            const blocks = await fileToImageBlocks(answerKeyFile);
+            sharedBlocks.push(...blocks);
+            sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
           }
 
           const userPrompt = `Subject: ${subject}
