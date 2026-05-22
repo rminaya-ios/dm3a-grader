@@ -615,7 +615,23 @@ Return ONLY the JSON array, starting with [ immediately.`;
           const cleaned = start !== -1 && end !== -1 ? raw.slice(start, end + 1) : raw.replace(/```json|```/g, "").trim();
           try {
             const parsed = JSON.parse(cleaned);
-            allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+            const students = Array.isArray(parsed) ? parsed : [parsed];
+            const normalised = students.map(s => ({
+              studentName:  s.studentName || s.name || "Unknown Student",
+              overallTier:  s.overallTier || s.overall || "P1",
+              dimensions: {
+                conceptualUnderstanding: s.dimensions?.conceptualUnderstanding || s.conceptual || s.conceptualUnderstanding || "P1",
+                problemSolving:          s.dimensions?.problemSolving          || s.problemSolving                               || "P1",
+                workShown:               s.dimensions?.workShown               || s.workShown                                    || "P1",
+                accuracy:                s.dimensions?.accuracy                || s.accuracy                                     || "P1",
+              },
+              problems:      s.problems      || [],
+              strengths:     s.strengths     || [],
+              growthAreas:   s.growthAreas   || [],
+              feedback:      s.feedback      || "",
+              instructorNote: s.instructorNote || null,
+            }));
+            allResults.push(...normalised);
           } catch {
             allResults.push({
               studentName: file.name,
