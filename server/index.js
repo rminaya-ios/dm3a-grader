@@ -37,6 +37,7 @@ app.post('/grade', async (req, res) => {
       messages: [{ role: 'user', content: finalBlocks }],
     });
     const text = response.content?.[0]?.text ?? '';
+    console.log('Sending result, length:', text?.length);
     res.json({ result: text });
   } catch (err) {
     console.error('Grade error:', err);
