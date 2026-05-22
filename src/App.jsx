@@ -597,13 +597,27 @@ GRADING INSTRUCTIONS:
           setLoadingMsg("Grading all students in batch — this may take a moment...");
           const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
-          const parsed = JSON.parse(cleaned);
-          allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+          try {
+            const parsed = JSON.parse(cleaned);
+            allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+          } catch {
+            allResults.push({
+              studentName: file.name,
+              overallTier: "P1",
+              error: "Could not parse grading response as JSON",
+              dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
+              problems: [],
+              feedback: "Grading response could not be parsed. Raw response: " + cleaned.slice(0, 300),
+              strengths: [],
+              growthAreas: [],
+              instructorNote: "Claude returned a response but it was not valid JSON. Try grading again."
+            });
+          }
         }
 
       } catch (err) {
         allResults.push({
-          studentName: "Batch Processing Error",
+          studentName: file.name,
           overallTier: "P1",
           error: err.message,
           dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
@@ -611,7 +625,7 @@ GRADING INSTRUCTIONS:
           feedback: err.message || "Error processing batch PDF.",
           strengths: [],
           growthAreas: [],
-          instructorNote: "Batch processing failed. Try uploading individual files per student."
+          instructorNote: "Batch setup failed (PDF conversion or network error). Try uploading individual files per student."
         });
       }
 
