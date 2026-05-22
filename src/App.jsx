@@ -570,32 +570,43 @@ Return a JSON array with exactly ONE student object.`;
             }
           }
         } else {
-          // Auto-detect: one call, Claude identifies all students
+          // Auto-detect: one call, Claude identifies all students by name and grades each
+          const batchSystemPrompt = systemPrompt + `
+
+BATCH EXAM MODE — CRITICAL INSTRUCTIONS:
+This is a batch of student exams scanned into a single PDF. Each student wrote their name at the top of their first page.
+Your job:
+1. Scan ALL pages in order and identify where each new student's work begins (look for a name at the top of a page).
+2. Group the pages that belong to each student.
+3. Grade each student's complete work independently using the DM3A P1–P4 rubric above.
+4. If a student's name is not visible, label them "Unknown Student [N]" and flag with instructorNote.
+Return a JSON array — one object per student — using the exact DM3A format specified above.`;
+
           const contentBlocks = [
             ...sharedBlocks,
+            { type: "text", text: `The following ${batchPageImages.length} pages are the complete batch scan. Each page is labeled.` },
             ...batchPageImages.flatMap((b64, i) => [
-              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-              { type: "text", text: `Page ${i + 1}` }
+              { type: "text", text: `=== PAGE ${i + 1} OF ${batchPageImages.length} ===` },
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }
             ])
           ];
           const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
 
-BATCH MODE — AUTO-DETECT: This PDF contains multiple students' work scanned together.
-STEP 1: Identify each student by their name written at the top of their work.
-STEP 2: Group all pages belonging to each student together.
-STEP 3: Grade each student's complete work independently using DM3A P1–P4 mastery scoring.
-STEP 4: Label unnamed students "Unknown Student [number]" and flag with instructorNote.
-Return a JSON array with one object per student found.
+You are looking at ${batchPageImages.length} pages from a batch scan of multiple student exams.
 
-GRADING INSTRUCTIONS:
-1. Identify ALL problems and sub-parts for each student. Do not skip any.
-2. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
-3. Weight process and reasoning heavily.
-4. Grade each student completely and independently.`;
-          setLoadingMsg("Grading all students in batch — this may take a moment...");
-          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+STEP 1 — FIND STUDENT BOUNDARIES: Scan every page. When you see a student name at the top of a page, that starts a new student's section. List every student you find and which pages they occupy.
+STEP 2 — GRADE EACH STUDENT: For each student, grade ALL problems visible on their pages using DM3A P1–P4 mastery scoring.
+STEP 3 — RETURN JSON: Return a JSON array with one complete DM3A result object per student.
+
+Rules:
+- Never skip a student.
+- Never skip a problem or sub-part.
+- Process is more important than the final answer.
+- Label unnamed students "Unknown Student [N]" and set flagged: true in instructorNote.`;
+          setLoadingMsg(`Auto-detecting students across ${batchPageImages.length} pages...`);
+          const raw = await fetchGradeResult({ contentBlocks, systemPrompt: batchSystemPrompt, userPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
           try {
             const parsed = JSON.parse(cleaned);
