@@ -580,7 +580,8 @@ Your job:
 2. Group the pages that belong to each student.
 3. Grade each student's complete work independently using the DM3A P1–P4 rubric above.
 4. If a student's name is not visible, label them "Unknown Student [N]" and flag with instructorNote.
-Return a JSON array — one object per student — using the exact DM3A format specified above.`;
+Return a JSON array — one object per student — using the exact DM3A format specified above.
+You must respond with ONLY a valid JSON array. No explanation, no preamble, no markdown code blocks. Start your response with [ and end with ].`;
 
           const contentBlocks = [
             ...sharedBlocks,
@@ -604,10 +605,14 @@ Rules:
 - Never skip a student.
 - Never skip a problem or sub-part.
 - Process is more important than the final answer.
-- Label unnamed students "Unknown Student [N]" and set flagged: true in instructorNote.`;
+- Label unnamed students "Unknown Student [N]" and set flagged: true in instructorNote.
+
+Return ONLY the JSON array, starting with [ immediately.`;
           setLoadingMsg(`Auto-detecting students across ${batchPageImages.length} pages...`);
           const raw = await fetchGradeResult({ contentBlocks, systemPrompt: batchSystemPrompt, userPrompt });
-          const cleaned = raw.replace(/```json|```/g, "").trim();
+          const start = raw.indexOf("[");
+          const end = raw.lastIndexOf("]");
+          const cleaned = start !== -1 && end !== -1 ? raw.slice(start, end + 1) : raw.replace(/```json|```/g, "").trim();
           try {
             const parsed = JSON.parse(cleaned);
             allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
