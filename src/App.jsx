@@ -456,8 +456,15 @@ export default function DM3AGraderV5() {
       const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
       throw new Error(err.error || `HTTP ${response.status}`);
     }
-    const data = await response.json();
-    return data.result;
+    const text = await response.text();
+    let result;
+    try {
+      const data = JSON.parse(text);
+      result = data.result || data.text || text;
+    } catch {
+      result = text;
+    }
+    return result;
   }
 
   // ─── GRADING ─────────────────────────────────────────────────────────────
