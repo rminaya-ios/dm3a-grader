@@ -452,19 +452,20 @@ export default function DM3AGraderV5() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
+    const rawText = await response.text();
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-      throw new Error(err.error || `HTTP ${response.status}`);
+      let errMsg = `HTTP ${response.status}`;
+      try { errMsg = JSON.parse(rawText).error || errMsg; } catch { errMsg = rawText || errMsg; }
+      throw new Error(errMsg);
     }
-    const text = await response.text();
-    let result;
+    let resultText;
     try {
-      const data = JSON.parse(text);
-      result = data.result || data.text || text;
+      const parsed = JSON.parse(rawText);
+      resultText = parsed.result || parsed.text || rawText;
     } catch {
-      result = text;
+      resultText = rawText;
     }
-    return result;
+    return resultText;
   }
 
   // ─── GRADING ─────────────────────────────────────────────────────────────
