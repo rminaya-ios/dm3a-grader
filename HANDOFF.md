@@ -74,6 +74,19 @@ Upload → Size Check → Page Count → Page Preview → Readability Score → 
 - **Notes:** 3 of 4 student names not fully detected (handwriting legibility issue) — name detection prompt improved
 - **Significance:** First successful stress test beyond 4 MB limit. App now handles 25 MB mixed-format batch PDFs.
 
+### May 22, 2026 — Stress Test 2 (In Progress)
+- **File:** DM3A_Test_Packet_Combined.pdf
+- **Size:** 71.03 MB (22 files: 3 PDFs + 19 images + 12 separators = 35 pages)
+- **Students:** 12 (MATH 110-03 and MATH 110-04 combined — CC Balance assignment)
+- **Status:** PENDING — chat hit image limit before upload completed
+- **Next step:** Upload 71 MB file, select auto-detect, verify all 12 students grade successfully
+
+### Current App Limits (as of May 22, 2026)
+- **File size:** 100 MB soft limit (amber warning + "Grade anyway" button)
+- **Compression ladder:** ≤5 MB = 1200px/0.75 · 5–20 MB = 1000px/0.60 · 20–100 MB = 800px/0.50 · >100 MB = 800px/0.50 + warning
+- **Max tokens:** 16000
+- **Batch mode:** auto-detect recommended for mixed-format files
+
 ## Known Issues / Watch Out For
 - Render free tier spins down after inactivity — first request after idle takes ~15s
 - `pdfToImages` uses a CDN import; if the CDN is down, PDF conversion silently fails (error shown in feedback field)
