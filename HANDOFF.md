@@ -63,6 +63,17 @@ Upload → Size Check → Page Count → Page Preview → Readability Score → 
 | Medium | 15 | 5–25 MB |
 | Large | 25–30 | 25–50 MB |
 
+## Validation Log
+
+### May 22, 2026 — Stress Test 1
+- **File:** DM3A_Test_Packet_Combined.pdf
+- **Size:** 21.7 MB (mixed formats: PDF + JPG + HEIC + PNG with separators)
+- **Students:** 4 (Elementary Statistics — CC Balance assignment)
+- **Result:** All 4 students graded successfully
+- **Instructor validation:** Dr. Minaya confirmed grades are FAIR and accurate across all four DM3A dimensions
+- **Notes:** 3 of 4 student names not fully detected (handwriting legibility issue) — name detection prompt improved
+- **Significance:** First successful stress test beyond 4 MB limit. App now handles 25 MB mixed-format batch PDFs.
+
 ## Known Issues / Watch Out For
 - Render free tier spins down after inactivity — first request after idle takes ~15s
 - `pdfToImages` uses a CDN import; if the CDN is down, PDF conversion silently fails (error shown in feedback field)
