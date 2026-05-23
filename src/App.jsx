@@ -507,8 +507,9 @@ export default function DM3AGraderV5() {
         const fileMB = file.size / 1024 / 1024;
         console.log(`[grading] batch PDF — file: "${file.name}", size: ${fileMB.toFixed(1)} MB`);
         const isLarge = fileMB > 5;
+        const isVeryLarge = fileMB > 20;
         setLoadingMsg(`Converting batch PDF to images${isLarge ? " (compressing — large file)..." : "..."}`);
-        const batchPageImages = await pdfToImages(file, 16, isLarge ? 1000 : 1200, isLarge ? 0.6 : 0.75);
+        const batchPageImages = await pdfToImages(file, 16, isVeryLarge ? 800 : isLarge ? 1000 : 1200, isVeryLarge ? 0.5 : isLarge ? 0.6 : 0.75);
         console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
         if (!batchPageImages || batchPageImages.length === 0) {
           throw new Error("Could not convert PDF to images — please try a different file");
@@ -785,9 +786,10 @@ Return a JSON array with exactly ONE student object covering only the problems o
           if (isPDF) {
             const fMB = f.size / 1024 / 1024;
             const fLarge = fMB > 5;
+            const fVeryLarge = fMB > 20;
             console.log(`[grading] individual PDF — file: "${f.name}", size: ${fMB.toFixed(1)} MB`);
             setLoadingMsg(`Converting ${f.name} to images${fLarge ? " (compressing — large file)..." : "..."}`);
-            pdfPageImages = await pdfToImages(f, 8, fLarge ? 1000 : 1200, fLarge ? 0.6 : 0.75);
+            pdfPageImages = await pdfToImages(f, 8, fVeryLarge ? 800 : fLarge ? 1000 : 1200, fVeryLarge ? 0.5 : fLarge ? 0.6 : 0.75);
             console.log(`[PDF→images] ${f.name}: ${pdfPageImages.length} pages`);
             if (!pdfPageImages || pdfPageImages.length === 0) {
               throw new Error("Could not convert PDF to images — please try a different file");
@@ -1182,7 +1184,7 @@ Return a JSON array with one object per student found in the submission.`;
                 if (!multipleImages) setCombinedStudentName("");
                 // File size warnings: "large" 4-25 MB (compress + proceed), "oversized" >25 MB (warn + confirm)
                 const LARGE_MB = 4;
-                const OVERSIZED_MB = 25;
+                const OVERSIZED_MB = 100;
                 const warnings = [];
                 files.forEach(f => {
                   const sizeMB = (f.size / 1024 / 1024).toFixed(1);
