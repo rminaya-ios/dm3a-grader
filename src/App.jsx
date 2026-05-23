@@ -584,7 +584,7 @@ Your job:
 1. Scan ALL pages in order and identify where each new student's work begins (look for a name at the top of a page).
 2. Group the pages that belong to each student.
 3. Grade each student's complete work independently using the DM3A P1–P4 rubric above.
-4. If a student's name is not visible, label them "Unknown Student [N]" and flag with instructorNote.
+4. Look for student names on every page — they may appear handwritten, typed, on a cover page, or on a separator page. If a name appears anywhere on a student's pages, use it. Only use "Unknown Student [N]" as a last resort when no name can be found anywhere.
 5. Some pages may be blank separator pages, cover pages, or administrative pages from mixed-format uploads — skip those entirely and grade only pages containing actual student work (handwritten math, equations, written answers).
 Return a JSON array — one object per student — using the exact DM3A format specified above.
 You must respond with ONLY a valid JSON array. No explanation, no preamble, no markdown code blocks. Start your response with [ and end with ].`;
