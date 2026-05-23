@@ -504,13 +504,18 @@ export default function DM3AGraderV5() {
     if (isTrueBatch) {
       setLoadingMsg("Reading batch PDF and identifying students...");
       try {
-        console.log(`[grading] batch PDF — file: "${file.name}", size: ${(file.size / 1024).toFixed(1)} KB`);
-        setLoadingMsg("Converting batch PDF pages to images...");
-        const batchPageImages = await pdfToImages(file, 16, 1200, 0.75);
+        const fileMB = file.size / 1024 / 1024;
+        console.log(`[grading] batch PDF — file: "${file.name}", size: ${fileMB.toFixed(1)} MB`);
+        const isLarge = fileMB > 5;
+        setLoadingMsg(`Converting batch PDF to images${isLarge ? " (compressing — large file)..." : "..."}`);
+        const batchPageImages = await pdfToImages(file, 16, isLarge ? 1000 : 1200, isLarge ? 0.6 : 0.75);
         console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
         if (!batchPageImages || batchPageImages.length === 0) {
           throw new Error("Could not convert PDF to images — please try a different file");
         }
+        const batchCompressedMB = (batchPageImages.reduce((s, b64) => s + b64.length * 0.75, 0) / 1024 / 1024).toFixed(1);
+        const batchEstMin = Math.max(1, Math.ceil(batchPageImages.length / 3));
+        setLoadingMsg(`${batchPageImages.length} pages detected · Compressed to ~${batchCompressedMB} MB · Est. ~${batchEstMin} min`);
         const sharedBlocks = [];
         if (assignmentFile) {
           const blocks = await fileToImageBlocks(assignmentFile);
@@ -580,6 +585,7 @@ Your job:
 2. Group the pages that belong to each student.
 3. Grade each student's complete work independently using the DM3A P1–P4 rubric above.
 4. If a student's name is not visible, label them "Unknown Student [N]" and flag with instructorNote.
+5. Some pages may be blank separator pages, cover pages, or administrative pages from mixed-format uploads — skip those entirely and grade only pages containing actual student work (handwritten math, equations, written answers).
 Return a JSON array — one object per student — using the exact DM3A format specified above.
 You must respond with ONLY a valid JSON array. No explanation, no preamble, no markdown code blocks. Start your response with [ and end with ].`;
 
@@ -777,13 +783,18 @@ Return a JSON array with exactly ONE student object covering only the problems o
           let pdfPageImages = null;
           console.log(`[ROUTING] file: ${f.name}, size: ${fileSize}, isPDF: ${isPDF}`);
           if (isPDF) {
-            console.log(`[grading] individual PDF — file: "${f.name}", size: ${(f.size / 1024).toFixed(1)} KB`);
-            setLoadingMsg(`Converting ${f.name} to images...`);
-            pdfPageImages = await pdfToImages(f, 8, 1200, 0.75);
+            const fMB = f.size / 1024 / 1024;
+            const fLarge = fMB > 5;
+            console.log(`[grading] individual PDF — file: "${f.name}", size: ${fMB.toFixed(1)} MB`);
+            setLoadingMsg(`Converting ${f.name} to images${fLarge ? " (compressing — large file)..." : "..."}`);
+            pdfPageImages = await pdfToImages(f, 8, fLarge ? 1000 : 1200, fLarge ? 0.6 : 0.75);
             console.log(`[PDF→images] ${f.name}: ${pdfPageImages.length} pages`);
             if (!pdfPageImages || pdfPageImages.length === 0) {
               throw new Error("Could not convert PDF to images — please try a different file");
             }
+            const indivCompressedMB = (pdfPageImages.reduce((s, b64) => s + b64.length * 0.75, 0) / 1024 / 1024).toFixed(1);
+            const indivEstMin = Math.max(1, Math.ceil(pdfPageImages.length / 2));
+            setLoadingMsg(`${pdfPageImages.length} pages detected · Compressed to ~${indivCompressedMB} MB · Est. ~${indivEstMin} min`);
           } else {
             studentB64 = await compressImage(f);
           }
@@ -1169,14 +1180,15 @@ Return a JSON array with one object per student found in the submission.`;
                 const multipleImages = files.length > 1 && files.every(f => f.type.startsWith("image/"));
                 setCombineImages(multipleImages);
                 if (!multipleImages) setCombinedStudentName("");
-                // File size warnings
-                const MAX_PDF_MB = 4;
+                // File size warnings: "large" 4-25 MB (compress + proceed), "oversized" >25 MB (warn + confirm)
+                const LARGE_MB = 4;
+                const OVERSIZED_MB = 25;
                 const warnings = [];
                 files.forEach(f => {
                   const sizeMB = (f.size / 1024 / 1024).toFixed(1);
-                  if (f.type === "application/pdf" && f.size > MAX_PDF_MB * 1024 * 1024) {
+                  if (f.type === "application/pdf" && f.size > LARGE_MB * 1024 * 1024) {
                     warnings.push({
-                      type: "oversized_pdf",
+                      type: f.size > OVERSIZED_MB * 1024 * 1024 ? "oversized" : "large",
                       name: f.name,
                       sizeMB,
                       isBatch: singlePDF && files.length === 1
@@ -1198,43 +1210,38 @@ Return a JSON array with one object per student found in the submission.`;
           </div>
 
           {/* File Size Warnings */}
-          {fileSizeWarnings.length > 0 && fileSizeWarnings.map((w, i) => (
-            <div key={i} style={{ marginTop: 10, background: "#FCEBEB", border: "2px solid #F5BEBE", borderRadius: 8, padding: "14px 16px" }}>
+          {fileSizeWarnings.map((w, i) => w.type === "large" ? (
+            // 4–25 MB: info banner, grading proceeds with auto-compression
+            <div key={i} style={{ marginTop: 10, background: "#E6F1FB", border: "1px solid #A3C4E8", borderRadius: 8, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 18 }}>⚙</span>
+              <div style={{ fontSize: 13, color: "#185FA5", flex: 1 }}>
+                <strong>Large file detected ({w.sizeMB} MB)</strong> — pages will be compressed automatically before grading. This may take a moment.
+              </div>
+            </div>
+          ) : (
+            // >25 MB: warning banner with "Grade anyway" option
+            <div key={i} style={{ marginTop: 10, background: "#FFF3CD", border: "2px solid #FFCA2C", borderRadius: 8, padding: "14px 16px" }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                <span style={{ fontSize: 20 }}>🚫</span>
+                <span style={{ fontSize: 20 }}>⚠</span>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14, color: "#A32D2D", marginBottom: 6 }}>
-                    File Too Large — {w.sizeMB} MB (limit: 4 MB)
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#856404", marginBottom: 4 }}>
+                    Very large file — {w.sizeMB} MB
                   </div>
                   <div style={{ fontSize: 13, color: "#5A5A55", marginBottom: 10, lineHeight: 1.5 }}>
-                    <strong>{w.name}</strong> is {w.sizeMB} MB and will fail to grade.
-                    {w.isBatch
-                      ? " This appears to be a batch scan of multiple students. Large batch PDFs cannot be processed."
-                      : " This PDF is too large to process."}
+                    <strong>{w.name}</strong> is {w.sizeMB} MB. Grading will use aggressive compression and may take several minutes. Files over 50 MB may time out.
                   </div>
-                  <div style={{ background: "#fff", border: "1px solid #F5BEBE", borderRadius: 6, padding: "10px 12px" }}>
-                    <div style={{ fontWeight: 700, fontSize: 12, color: "#A32D2D", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                      How to fix this:
-                    </div>
-                    {w.isBatch
-                      ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#5A5A55", lineHeight: 1.8 }}>
-                          <li><strong>Best:</strong> Have each student submit their own file individually (max 4 MB each)</li>
-                          <li><strong>Alternative:</strong> Use Adobe Acrobat to split the PDF by student, then upload each file separately</li>
-                          <li><strong>Quick fix:</strong> Photograph each student's work individually with your phone and upload as images</li>
-                          <li><strong>Post on Blackboard:</strong> "Please submit your own work as a single PDF or photo. Max 4 MB."</li>
-                        </ul>
-                      : <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#5A5A55", lineHeight: 1.8 }}>
-                          <li>Compress the PDF using <strong>Adobe Acrobat</strong> or <strong>smallpdf.com</strong> to under 4 MB</li>
-                          <li>Or photograph the pages individually and upload as images instead</li>
-                          <li>Or ask the student to resubmit with a smaller file</li>
-                        </ul>
-                    }
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      onClick={() => setFileSizeWarnings(prev => prev.filter((_, j) => j !== i))}
+                      style={{ ...styles.btn, padding: "8px 18px", fontSize: 13, background: "#856404" }}>
+                      Grade anyway (may be slow)
+                    </button>
+                    <button
+                      onClick={() => { setStudentFiles([]); setFileSizeWarnings([]); setIsBatchPDF(false); setBatchMode("auto"); }}
+                      style={{ ...styles.btnOutline, padding: "8px 18px", fontSize: 13 }}>
+                      ← Choose a different file
+                    </button>
                   </div>
-                  <button
-                    onClick={() => { setStudentFiles([]); setFileSizeWarnings([]); setIsBatchPDF(false); setBatchMode("auto"); }}
-                    style={{ ...styles.btnOutline, marginTop: 12 }}>
-                    ← Back to Setup
-                  </button>
                 </div>
               </div>
             </div>
@@ -1348,12 +1355,17 @@ Return a JSON array with one object per student found in the submission.`;
 
       {error && <div style={{ background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 6, padding: "10px 14px", marginBottom: 16, color: "#A32D2D", fontSize: 13 }}>{error}</div>}
 
-      <button
-        style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15, opacity: fileSizeWarnings.length > 0 ? 0.4 : 1, cursor: fileSizeWarnings.length > 0 ? "not-allowed" : "pointer" }}
-        onClick={fileSizeWarnings.length > 0 ? undefined : handleGrade}
-        disabled={fileSizeWarnings.length > 0}>
-        {fileSizeWarnings.length > 0 ? "⚠ Fix file size issues above before grading" : "Grade with DM3A →"}
-      </button>
+      {(() => {
+        const blocked = fileSizeWarnings.some(w => w.type === "oversized");
+        return (
+          <button
+            style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15, opacity: blocked ? 0.4 : 1, cursor: blocked ? "not-allowed" : "pointer" }}
+            onClick={blocked ? undefined : handleGrade}
+            disabled={blocked}>
+            {blocked ? "⚠ Acknowledge the large file warning above to continue" : "Grade with DM3A →"}
+          </button>
+        );
+      })()}
     </div>
   );
 
