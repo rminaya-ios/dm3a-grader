@@ -1,42 +1,44 @@
-export const config = {
-  maxDuration: 60,
-  api: { bodyParser: { sizeLimit: "50mb" } },
-};
+export const config = { runtime: 'edge', maxDuration: 300 };
 
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  const apiKey = process.env.ANTHROPIC_KEY;
-  if (!apiKey) return res.status(500).json({ error: "Grading service unavailable" });
-
-  const { messages, system, max_tokens, model } = req.body;
+export default async function handler(req) {
+  if (req.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
+    const body = await req.json();
+    const { contentBlocks, systemPrompt } = body;
+
+    console.log(`SIZE CHECK — combined blocks: ${JSON.stringify(contentBlocks).length} chars`);
+
+    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "pdfs-2024-09-25",
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({ messages, system, max_tokens, model }),
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 8000,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: contentBlocks }],
+      }),
     });
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error("[api/grade] Anthropic error", response.status, data);
-      return res.status(500).json({ error: "Grading service unavailable" });
+    if (!anthropicRes.ok) {
+      const err = await anthropicRes.text();
+      return new Response(JSON.stringify({ error: err }), { status: 500 });
     }
 
-    return res.status(200).json(data);
+    const data = await anthropicRes.json();
+    const text = data.content?.[0]?.text ?? '';
+    return new Response(JSON.stringify({ result: text }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
   } catch (err) {
-    console.error("[api/grade] Unexpected error", err);
-    return res.status(500).json({ error: "Grading service unavailable" });
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
   }
 }

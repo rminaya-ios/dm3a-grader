@@ -509,7 +509,7 @@ export default function DM3AGraderV5() {
         const isLarge = fileMB > 5;
         const isVeryLarge = fileMB > 20;
         setLoadingMsg(`Converting batch PDF to images${isLarge ? " (compressing — large file)..." : "..."}`);
-        const batchPageImages = await pdfToImages(file, 16, isVeryLarge ? 800 : isLarge ? 1000 : 1200, isVeryLarge ? 0.5 : isLarge ? 0.6 : 0.75);
+        const batchPageImages = await pdfToImages(file, 60, isVeryLarge ? 800 : isLarge ? 1000 : 1200, isVeryLarge ? 0.5 : isLarge ? 0.6 : 0.75);
         console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
         if (!batchPageImages || batchPageImages.length === 0) {
           throw new Error("Could not convert PDF to images — please try a different file");
@@ -576,21 +576,19 @@ Return a JSON array with exactly ONE student object.`;
             }
           }
         } else {
-          // Auto-detect: one call, Claude identifies all students by name and grades each
-          const batchSystemPrompt = systemPrompt + `
+          // Auto-detect: TWO-PASS — boundary detection first, then grade each student individually
+          const boundarySystemPrompt = systemPrompt + `
+You are scanning a batch of student exams to find student boundaries only.
+Return ONLY a JSON array: [{"studentName":"Name","startPage":0,"endPage":2},...]
+Page numbers are 0-indexed. Find every student. Return ONLY the JSON array starting with [.`;
 
-BATCH EXAM MODE — CRITICAL INSTRUCTIONS:
-This is a batch of student exams scanned into a single PDF. Each student wrote their name at the top of their first page.
-Your job:
-1. Scan ALL pages in order and identify where each new student's work begins (look for a name at the top of a page).
-2. Group the pages that belong to each student.
-3. Grade each student's complete work independently using the DM3A P1–P4 rubric above.
-4. Look for student names on every page — they may appear handwritten, typed, on a cover page, or on a separator page. If a name appears anywhere on a student's pages, use it. Only use "Unknown Student [N]" as a last resort when no name can be found anywhere.
-5. Some pages may be blank separator pages, cover pages, or administrative pages from mixed-format uploads — skip those entirely and grade only pages containing actual student work (handwritten math, equations, written answers).
-Return a JSON array — one object per student — using the exact DM3A format specified above.
-You must respond with ONLY a valid JSON array. No explanation, no preamble, no markdown code blocks. Start your response with [ and end with ].`;
+          const boundaryUserPrompt = `You are looking at ${batchPageImages.length} pages from a batch scan.
+Assignment: ${assignment || "Student Submission"}
+${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
+TASK: Find every student name and which pages (0-indexed) belong to them. Separator pages mark new students.
+Return ONLY the JSON array of boundaries. Do not grade anything yet.`;
 
-          const contentBlocks = [
+          const boundaryContentBlocks = [
             ...sharedBlocks,
             { type: "text", text: `The following ${batchPageImages.length} pages are the complete batch scan. Each page is labeled.` },
             ...batchPageImages.flatMap((b64, i) => [
@@ -598,76 +596,49 @@ You must respond with ONLY a valid JSON array. No explanation, no preamble, no m
               { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }
             ])
           ];
-          const userPrompt = `Subject: ${subject}
+
+          setLoadingMsg(`Pass 1 of 2 — detecting student boundaries across ${batchPageImages.length} pages...`);
+          let boundaries = [];
+          try {
+            const boundaryRaw = await fetchGradeResult({ contentBlocks: boundaryContentBlocks, systemPrompt: boundarySystemPrompt, userPrompt: boundaryUserPrompt });
+            const boundaryCleaned = boundaryRaw.replace(/```json|```/g, "").trim();
+            boundaries = JSON.parse(boundaryCleaned);
+            if (boundaries.length === 0) throw new Error("No boundaries detected");
+          } catch (err) {
+            boundaries = [{ studentName: "Unknown Student 1", startPage: 0, endPage: batchPageImages.length - 1 }];
+          }
+
+          for (let s = 0; s < boundaries.length; s++) {
+            const { studentName, startPage, endPage } = boundaries[s];
+            const studentNum = s + 1;
+            setLoadingMsg(`Pass 2 — grading ${studentName} (${studentNum} of ${boundaries.length})...`);
+            const studentPages = batchPageImages.slice(startPage, endPage + 1);
+            const studentContentBlocks = [
+              ...sharedBlocks,
+              { type: "text", text: `The following ${studentPages.length} pages are ${studentName}s submission only.` },
+              ...studentPages.flatMap((b64, i) => [
+                { type: "text", text: `=== PAGE ${i + 1} OF ${studentPages.length} ===` },
+                { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }
+              ])
+            ];
+            const studentUserPrompt = `Student: ${studentName}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
-
-You are looking at ${batchPageImages.length} pages from a batch scan of multiple student exams.
-
-STEP 1 — FIND STUDENT BOUNDARIES: Scan every page. When you see a student name at the top of a page, that starts a new student's section. List every student you find and which pages they occupy.
-STEP 2 — GRADE EACH STUDENT: For each student, grade ALL problems visible on their pages using DM3A P1–P4 mastery scoring.
-STEP 3 — RETURN JSON: Return a JSON array with one complete DM3A result object per student.
-
-Rules:
-- Never skip a student.
-- Never skip a problem or sub-part.
-- Process is more important than the final answer.
-- Label unnamed students "Unknown Student [N]" and set flagged: true in instructorNote.
-
-Return ONLY the JSON array, starting with [ immediately.`;
-          setLoadingMsg(`Auto-detecting students across ${batchPageImages.length} pages...`);
-          const raw = await fetchGradeResult({ contentBlocks, systemPrompt: batchSystemPrompt, userPrompt });
-          const start = raw.indexOf("[");
-          const end = raw.lastIndexOf("]");
-          const cleaned = start !== -1 && end !== -1 ? raw.slice(start, end + 1) : raw.replace(/```json|```/g, "").trim();
-          try {
-            const parsed = JSON.parse(cleaned);
-            const students = Array.isArray(parsed) ? parsed : [parsed];
-            const normalised = students.map(s => ({
-              studentName:  s.studentName || s.name || "Unknown Student",
-              overallTier:  s.overallTier || s.overall || "P1",
-              dimensions: {
-                conceptualUnderstanding: s.dimensions?.conceptualUnderstanding || s.conceptual || s.conceptualUnderstanding || "P1",
-                problemSolving:          s.dimensions?.problemSolving          || s.problemSolving                               || "P1",
-                workShown:               s.dimensions?.workShown               || s.workShown                                    || "P1",
-                accuracy:                s.dimensions?.accuracy                || s.accuracy                                     || "P1",
-              },
-              problems:      s.problems      || [],
-              strengths:     s.strengths     || [],
-              growthAreas:   s.growthAreas   || [],
-              feedback:      s.feedback      || "",
-              instructorNote: s.instructorNote || null,
-            }));
-            allResults.push(...normalised);
-          } catch {
-            allResults.push({
-              studentName: file.name,
-              overallTier: "P1",
-              error: "Could not parse grading response as JSON",
-              dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
-              problems: [],
-              feedback: "Grading response could not be parsed. Raw response: " + cleaned.slice(0, 300),
-              strengths: [],
-              growthAreas: [],
-              instructorNote: "Claude returned a response but it was not valid JSON. Try grading again."
-            });
+Grade ALL problems on this student pages using DM3A P1-P4 mastery scoring.
+Return a JSON array with exactly ONE student object.`;
+            try {
+              const raw = await fetchGradeResult({ contentBlocks: studentContentBlocks, systemPrompt, userPrompt: studentUserPrompt });
+              const cleaned = raw.replace(/```json|```/g, "").trim();
+              const parsed = JSON.parse(cleaned);
+              allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+            } catch (err) {
+              allResults.push({ studentName, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message, strengths: [], growthAreas: [], instructorNote: `Failed on pages ${startPage + 1}-${endPage + 1}.` });
+            }
           }
         }
-
-      } catch (err) {
-        allResults.push({
-          studentName: file.name,
-          overallTier: "P1",
-          error: err.message,
-          dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
-          problems: [],
-          feedback: err.message || "Error processing batch PDF.",
-          strengths: [],
-          growthAreas: [],
-          instructorNote: "Batch setup failed (PDF conversion or network error). Try uploading individual files per student."
-        });
-      }
-
+        } catch (err) {
+          allResults.push({ studentName: file.name, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: "Error processing batch PDF.", strengths: [], growthAreas: [], instructorNote: "Batch setup failed (PDF conversion or network error). Try uploading individual files per student." });
+        }
     } else if (combineImages && studentFiles.length > 1 && studentFiles.every(f => f.type.startsWith("image/"))) {
       // ── COMBINED IMAGES MODE — chunk 2 images per API call, merge results ─
       const studentLabel = combinedStudentName.trim() || "Unknown Student";
