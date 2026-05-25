@@ -322,6 +322,8 @@ export default function DM3AGraderV5() {
   const [overrides, setOverrides] = useState({});
   const [problemOverrides, setProblemOverrides] = useState({});
   const [activeStudent, setActiveStudent] = useState(0);
+  const [isBBBatch, setIsBBBatch] = useState(false);
+  const [bbGroups, setBbGroups] = useState([]);
 
   const assignmentRef = useRef();
   const answerKeyRef = useRef();
@@ -330,6 +332,29 @@ export default function DM3AGraderV5() {
   const APP_PASSWORD = "dmgof50c";
 
   // ─── LOGIN ────────────────────────────────────────────────────────────────
+
+  // ─── BB FILENAME PARSER ───────────────────────────────────────────────────
+  function parseBBFilename(filename) {
+    // Pattern: anything_STUDENTID_attempt_YYYY-MM-DD-HH-MM-SS_originalname.ext
+    const match = filename.match(/^(.+?)_(\d{6,12})_attempt_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_(.+)$/i);
+    if (!match) return null;
+    return { studentId: match[2], timestamp: match[3], originalName: match[4] };
+  }
+
+  function groupBBFiles(files) {
+    const groups = {};
+    files.forEach(f => {
+      const parsed = parseBBFilename(f.name);
+      const key = parsed ? parsed.studentId : "UNRECOGNIZED";
+      if (!groups[key]) groups[key] = { studentId: key, files: [] };
+      groups[key].files.push({ file: f, timestamp: parsed ? parsed.timestamp : "0" });
+    });
+    // Sort each group's files by timestamp ascending
+    Object.values(groups).forEach(g => {
+      g.files.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    });
+    return Object.values(groups);
+  }
 
   function handleLogin(e) {
     e.preventDefault();
@@ -953,6 +978,9 @@ Return a JSON array with one object per student found in the submission.`;
 
   // ─── COLORS ───────────────────────────────────────────────────────────────
 
+  // Top-level systemPrompt — available in all screens including BB preview
+  const systemPrompt = "CRITICAL: Your response must be ONLY a valid JSON array. No prose. No explanation. No markdown. Start your response with [ and end with ]. You are a mathematics grader using DM3A mastery rubric: P4=90%+, P3=80-89%, P2=60-79%, P1=below 60%. Return exactly: [{\"studentName\":\"...\",\"overallTier\":\"P3\",\"dimensions\":{\"conceptualUnderstanding\":\"P3\",\"problemSolving\":\"P3\",\"workShown\":\"P2\",\"accuracy\":\"P3\"},\"problems\":[{\"id\":\"1\",\"description\":\"...\",\"tier\":\"P3\",\"processAssessment\":\"...\",\"reasoning\":\"...\"}],\"feedback\":\"...\",\"strengths\":[\"...\"],\"growthAreas\":[\"...\"]}]";
+
   const tierColor = { P4: "#0F6E56", P3: "#185FA5", P2: "#854F0B", P1: "#A32D2D" };
   const tierBg = { P4: "#E1F5EE", P3: "#E6F1FB", P2: "#FAEEDA", P1: "#FCEBEB" };
   const tierBorder = { P4: "#A3D9C8", P3: "#A3C4E8", P2: "#E8C98A", P1: "#F5BEBE" };
@@ -1146,14 +1174,26 @@ Return a JSON array with one object per student found in the submission.`;
               onChange={e => {
                 const files = Array.from(e.target.files);
                 setStudentFiles(files);
+                // ── BB Batch Mode detection ──────────────────────────────
+                const hasBBFiles = files.length > 1 && files.some(f => parseBBFilename(f.name));
+                setIsBBBatch(hasBBFiles);
+                if (hasBBFiles) {
+                  setBbGroups(groupBBFiles(files));
+                  setIsBatchPDF(false);
+                  setCombineImages(false);
+                  setCombinedStudentName("");
+                  setFileSizeWarnings([]);
+                  return;
+                }
+                setIsBBBatch(false);
+                setBbGroups([]);
+                // ── Existing logic (unchanged) ───────────────────────────
                 const singlePDF = files.length === 1 && files[0].type === "application/pdf";
                 setIsBatchPDF(singlePDF);
-                if (singlePDF) setBatchMode("single"); // default to single student
-                // Auto-enable combine when multiple images uploaded
+                if (singlePDF) setBatchMode("single");
                 const multipleImages = files.length > 1 && files.every(f => f.type.startsWith("image/"));
                 setCombineImages(multipleImages);
                 if (!multipleImages) setCombinedStudentName("");
-                // File size warnings: "large" 4-25 MB (compress + proceed), "oversized" >25 MB (warn + confirm)
                 const LARGE_MB = 4;
                 const OVERSIZED_MB = 100;
                 const warnings = [];
@@ -1172,8 +1212,21 @@ Return a JSON array with one object per student found in the submission.`;
               }} />
             {studentFiles.length > 0
               ? <div>
-                  <div style={{ color: "#0F6E56", fontWeight: 600, marginBottom: 4 }}>✓ {studentFiles.length} file(s) selected</div>
-                  {studentFiles.map(f => <div key={f.name} style={{ fontSize: 12, color: "#555" }}>{f.name}</div>)}
+                  {isBBBatch
+                    ? <div>
+                        <div style={{ color: "#0F6E56", fontWeight: 700, marginBottom: 6 }}>✓ BB Batch Mode — {bbGroups.length} student(s) detected from {studentFiles.length} files</div>
+                        {bbGroups.map(g => (
+                          <div key={g.studentId} style={{ fontSize: 12, color: "#555", marginBottom: 2 }}>
+                            📁 Student {g.studentId} — {g.files.length} file(s)
+                          </div>
+                        ))}
+                        <div style={{ fontSize: 11, color: "#185FA5", marginTop: 6 }}>You will review groupings before grading starts.</div>
+                      </div>
+                    : <div>
+                        <div style={{ color: "#0F6E56", fontWeight: 600, marginBottom: 4 }}>✓ {studentFiles.length} file(s) selected</div>
+                        {studentFiles.map(f => <div key={f.name} style={{ fontSize: 12, color: "#555" }}>{f.name}</div>)}
+                      </div>
+                  }
                 </div>
               : <div>
                   <div style={{ fontSize: 13, color: "#888", marginBottom: 4 }}>Upload student submissions (PDF or images)</div>
@@ -1220,8 +1273,8 @@ Return a JSON array with one object per student found in the submission.`;
             </div>
           ))}
 
-          {/* Batch Mode Toggle — only shows when a single PDF is uploaded */}
-          {isBatchPDF && studentFiles.length === 1 && (
+          {/* Batch Mode Toggle — only shows when a single PDF is uploaded and NOT in BB batch mode */}
+          {!isBBBatch && isBatchPDF && studentFiles.length === 1 && (
             <div style={{ marginTop: 12, background: "#F0EEE8", border: "1px solid #D8D6CE", borderRadius: 8, padding: "14px 16px" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#5A5A55", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                 📄 PDF Detected — What does this file contain?
@@ -1333,14 +1386,152 @@ Return a JSON array with one object per student found in the submission.`;
         return (
           <button
             style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15, opacity: blocked ? 0.4 : 1, cursor: blocked ? "not-allowed" : "pointer" }}
-            onClick={blocked ? undefined : handleGrade}
+            onClick={blocked ? undefined : isBBBatch ? () => setStep('preview') : handleGrade}
             disabled={blocked}>
-            {blocked ? "⚠ Acknowledge the large file warning above to continue" : "Grade with DM3A →"}
+            {blocked ? "⚠ Acknowledge the large file warning above to continue" : isBBBatch ? "Review Student Groups →" : "Grade with DM3A →"}
           </button>
         );
       })()}
     </div>
   );
+
+  // ── BB PREVIEW SCREEN ────────────────────────────────────────────────────
+  if (step === "preview") {
+    return (
+      <div style={styles.root}>
+        <div style={styles.header}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <span style={styles.badge}>DM3A Grader v5</span>
+              <h1 style={styles.h1}>Review Student Groups</h1>
+              <p style={styles.sub}>{bbGroups.length} student(s) detected — confirm before grading</p>
+            </div>
+            <button style={styles.btnOutline} onClick={() => setStep("setup")}>← Back</button>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
+          {bbGroups.map((group, gi) => (
+            <div key={group.studentId} style={{ ...styles.card, borderLeft: "4px solid #185FA5" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div>
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>
+                    {group.studentId === "UNRECOGNIZED" ? "⚠ Unrecognized Files" : `Student ID: ${group.studentId}`}
+                  </span>
+                  <span style={{ marginLeft: 10, fontSize: 12, color: "#5A5A55" }}>{group.files.length} file(s)</span>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {group.files.map((item, fi) => (
+                  <div key={fi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: "#3A3A35", background: "#F5F4EF", borderRadius: 4, padding: "6px 10px" }}>
+                    <span>📄 {item.file.name}</span>
+                    <button
+                      onClick={() => {
+                        const updated = bbGroups.map((g, idx) => idx !== gi ? g : {
+                          ...g,
+                          files: g.files.filter((_, fIdx) => fIdx !== fi)
+                        }).filter(g => g.files.length > 0);
+                        setBbGroups(updated);
+                      }}
+                      style={{ background: "none", border: "none", color: "#A32D2D", cursor: "pointer", fontSize: 11, padding: "2px 6px" }}>
+                      ✕ Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button
+          style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15 }}
+          onClick={async () => {
+            // Grade each BB group sequentially using individual files mode
+            setStep("grading");
+            setLoading(true);
+            const allResults = [];
+            const courseConf = COURSE_CONFIGS[subject] || {};
+            const systemPrompt = "You are an expert mathematics grader using the DM3A mastery-based rubric. P4 = 90%+ mastery, P3 = 80-89%, P2 = 60-79%, P1 = below 60%. Always return valid JSON only. No markdown fences. Return a JSON array with exactly ONE student object per call with this shape: {\"studentName\":\"...\",\"overallTier\":\"P3\",\"dimensions\":{\"conceptualUnderstanding\":\"P3\",\"problemSolving\":\"P3\",\"workShown\":\"P2\",\"accuracy\":\"P3\"},\"problems\":[{\"id\":\"1\",\"description\":\"...\",\"tier\":\"P3\",\"processAssessment\":\"...\",\"reasoning\":\"...\"}],\"feedback\":\"...\",\"strengths\":[\"...\"],\"growthAreas\":[\"...\"]}";
+            for (let gi = 0; gi < bbGroups.length; gi++) {
+              const group = bbGroups[gi];
+              const groupFiles = group.files.map(item => item.file);
+              setLoadingMsg(`Grading Student ${group.studentId} (${gi + 1} of ${bbGroups.length})...`);
+              // Build shared context blocks
+              const sharedBlocks = [];
+              if (assignmentFile) {
+                const blocks = await fileToImageBlocks(assignmentFile);
+                sharedBlocks.push(...blocks);
+                sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+              }
+              if (answerKeyFile) {
+                const blocks = await fileToImageBlocks(answerKeyFile);
+                sharedBlocks.push(...blocks);
+                sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
+              }
+              // Compress and collect all pages for this student
+              const pageBlocks = [];
+              for (let fi = 0; fi < groupFiles.length; fi++) {
+                const f = groupFiles[fi];
+                setLoadingMsg(`Student ${group.studentId} (${gi + 1}/${bbGroups.length}) — processing file ${fi + 1} of ${groupFiles.length}...`);
+                try {
+                  if (f.type === "application/pdf") {
+                    const imgs = await pdfToImages(f, 8, 1000, false);
+                    imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+                  } else {
+                    const b64 = await compressImage(f);
+                    pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+                  }
+                } catch (err) {
+                  console.error("Error processing file", f.name, err);
+                }
+              }
+              const studentLabel = `Student_${group.studentId}`;
+              const userPrompt = `Subject: ${subject}
+Assignment: ${assignment || "Student Submission"}
+${rubric ? "Instructor Rubric Notes: " + rubric : ""}
+Student ID: ${group.studentId}
+
+INSTRUCTIONS:
+1. Identify ALL problems and sub-parts visible. List them ALL before grading.
+2. Grade EVERY identified problem/sub-part. Do not skip any.
+3. Use the answer key if provided. If not, use your subject expertise.
+4. Apply DM3A P1-P4 mastery scoring — never binary correct/wrong.
+5. Weight process and reasoning heavily.
+6. Use "${studentLabel}" as the studentName in your response.
+
+Return a JSON array with exactly ONE student object.`;
+              try {
+                const contentBlocks = [...sharedBlocks, ...pageBlocks];
+                const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+                const cleaned = raw.replace(/```json|```/g, "").trim();
+                const jsonMatch = cleaned.match(/(\[\s*\{[\s\S]*\}\s*\])/);
+                const jsonStr = jsonMatch ? jsonMatch[1] : cleaned;
+                const parsed = JSON.parse(jsonStr);
+                allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+              } catch (err) {
+                allResults.push({
+                  studentName: studentLabel,
+                  overallTier: "P1",
+                  error: err.message,
+                  dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
+                  problems: [],
+                  feedback: err.message || "Error processing this student.",
+                  strengths: [],
+                  growthAreas: []
+                });
+              }
+            }
+            setResults(allResults);
+            setOverrides({});
+            setActiveStudent(0);
+            setLoading(false);
+            setStep("results");
+          }}>
+          Grade All {bbGroups.length} Student(s) →
+        </button>
+      </div>
+    );
+  }
 
   // ── GRADING SCREEN ────────────────────────────────────────────────────────
   if (step === "grading") return (
@@ -1376,7 +1567,7 @@ Return a JSON array with one object per student found in the submission.`;
               <button style={styles.btnOutline} onClick={() => setStep("setup")}>← Back to Setup</button>
               <button style={styles.btnOutline} onClick={exportCSV}>Export CSV</button>
               <button style={styles.btnOutline} onClick={() => downloadPDF(student)}>⬇ Download Report</button>
-              <button style={styles.btn} onClick={() => { setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); }}>New Session</button>
+              <button style={styles.btn} onClick={() => { setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
             </div>
           </div>
         </div>

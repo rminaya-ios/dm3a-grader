@@ -1,94 +1,119 @@
-# DM3A Grader — Handoff
-
-## URLs & Passwords
-- **Frontend**: https://dm3a-grader.vercel.app (Vercel, auto-deploys on `vercel --prod`)
-- **Backend**: https://dm3a-grader-server.onrender.com (Render, auto-deploys on `git push`)
-- **GitHub**: https://github.com/rminaya-ios/dm3a-grader
-- **App password**: `dmgof50c`
-
-## Architecture
-```
-Browser (Vite/React)  →  Express server (Render)  →  Anthropic API (claude-sonnet-4-6)
-     src/App.jsx              server/index.js
-```
-- `/upload-pdf` — pass-through: receives `{ base64, mediaType }`, returns `{ file_id: base64 }` (no Anthropic Files API)
-- `/grade` — receives `{ contentBlocks, systemPrompt, userPrompt }`, appends userPrompt as text block, calls Claude with `max_tokens: 16000`, returns `{ result: text }`
-
-## Grading Pipeline
-1. User selects subject + uploads PDFs/images
-2. **All PDFs** → `pdfToImages()` (pdf.js CDN, max 8 pages, 1200px, 0.75 quality) — no raw PDF base64 ever sent
-3. `fileToImageBlocks(file)` helper unifies PDF and image handling
-4. `sharedBlocks` = assignment prompt + answer key (also images only)
-5. `fetchGradeResult()` POSTs to `/grade`; reads `response.text()` then JSON-parses with fallback (never `response.json()`)
-6. Results normalised to `{ studentName, overallTier, dimensions: {…}, problems, feedback }`
-
-## Batch Modes
-- **Single student**: individual files loop, one call per file
-- **Fixed pages**: splits batch PDF into N-page chunks, one API call per student
-- **Auto-detect**: all pages sent in one call; `batchSystemPrompt` instructs Claude to find name boundaries; response extracted with `raw.slice(indexOf("["), lastIndexOf("]")+1)`
-
-## Deploy Commands
-```bash
-git add -A && git commit -m "…" && git push   # pushes to GitHub → Render auto-deploys backend
-vercel --prod                                  # deploys frontend to Vercel
-```
+---
 
 ## Phase 1 Development Plan
 
-**Differentiator:** "DM3A Grader was built for real classrooms — not perfect submissions"
+### Priority 0 — Multi-File Batch Upload (Build BEFORE resuming stress tests)
 
-### PDF Stress-Test Pipeline
-Upload → Size Check → Page Count → Page Preview → Readability Score → Auto-Compress → Grade
+Real professors download a ZIP from Blackboard containing 20-25 mixed files and drop them all at once. The app must support this workflow.
 
-### File Size Targets
-| Tier | Limit | Status |
-|---|---|---|
-| Current | ~4 MB | Live |
-| MVP | 25 MB | Phase 1 goal |
-| Competitive | 50 MB | Phase 2 |
-| Long-term | 100 MB | Matches Gradescope/Canvas |
+#### Features to build:
+1. Multi-file drag-and-drop — accept 25+ files simultaneously, mixed formats (PDF, JPG, HEIC, PNG)
+2. Auto-group by student ID — parse Blackboard filename pattern (see below)
+3. Handle multiple files per student — merge all files with same student ID into one submission
+4. Pre-grading preview — show instructor proposed groupings before grading starts
+5. Instructor adjustment — allow corrections before grading starts
+6. Grade each student group as one unified submission
+7. Label results as Student_[ID] — instructor uses existing Rename button to add real names post-grading
 
-### Competitor Limits
-| Tool | Limit |
-|---|---|
-| Crowdmark | 25 MB |
-| Möbius | 10 MB |
-| Gradescope | 100 MB |
-| Canvas | 100 MB preview |
+#### Blackboard filename pattern (CONFIRMED from real download):
+AssignmentName_StudentID_attempt_YYYY-MM-DD-HH-MM-SS_OriginalFilename.ext
+Example: 10_28 - HW 5.1 Exercises_ Practice Section_01560658_attempt_2025-10-30-15-24-40_IMG_2683.jpeg
 
-### Test File Targets (one batch per course: Statistics, Precalculus, Intermediate Algebra)
-| Batch | Students | File Size |
-|---|---|---|
-| Small | 5 | < 5 MB |
-| Medium | 15 | 5–25 MB |
-| Large | 25–30 | 25–50 MB |
+#### Parsing logic:
+- Split on underscore
+- Student ID = numeric token (e.g. 01560658)
+- Group all files sharing the same student ID as one student submission
+- Attempt timestamp used to sort pages in correct order within a student group
+- If filename does not match BB pattern, fall back to Claude reading student name from handwriting on page
 
-## Validation Log
+#### Why student names are not in BB filenames:
+Blackboard uses student ID numbers, not names, in downloaded filenames.
+Workaround for now: instructor renames after grading using Rename button.
+Future fix (next semester): require students to name files LastName_FirstName_AssignmentName_P#.ext before uploading.
 
-### May 22, 2026 — Stress Test 1
-- **File:** DM3A_Test_Packet_Combined.pdf
-- **Size:** 21.7 MB (mixed formats: PDF + JPG + HEIC + PNG with separators)
-- **Students:** 4 (Elementary Statistics — CC Balance assignment)
-- **Result:** All 4 students graded successfully
-- **Instructor validation:** Dr. Minaya confirmed grades are FAIR and accurate across all four DM3A dimensions
-- **Notes:** 3 of 4 student names not fully detected (handwriting legibility issue) — name detection prompt improved
-- **Significance:** First successful stress test beyond 4 MB limit. App now handles 25 MB mixed-format batch PDFs.
+#### Syllabus language for future semesters:
+All assignments submitted digitally must follow this naming format:
+LastName_FirstName_AssignmentName_P#.ext
+Example: Smith_John_CCBalance_P1.pdf
+Rules: No spaces (underscores only), last name first, exact assignment name from Blackboard,
+page number required for multi-page submissions.
+Accepted formats: PDF, JPG, JPEG, PNG, HEIC. Max 25 MB per file.
 
-### May 22, 2026 — Stress Test 2 (In Progress)
-- **File:** DM3A_Test_Packet_Combined.pdf
-- **Size:** 71.03 MB (22 files: 3 PDFs + 19 images + 12 separators = 35 pages)
-- **Students:** 12 (MATH 110-03 and MATH 110-04 combined — CC Balance assignment)
-- **Status:** PENDING — chat hit image limit before upload completed
-- **Next step:** Upload 71 MB file, select auto-detect, verify all 12 students grade successfully
+#### Marketing angle:
+Download from Blackboard. Drop everything in. Done.
+Beats Gradescope, Crowdmark, and Canvas SpeedGrader which all require pre-formatted single PDFs.
 
-### Current App Limits (as of May 22, 2026)
-- **File size:** 100 MB soft limit (amber warning + "Grade anyway" button)
-- **Compression ladder:** ≤5 MB = 1200px/0.75 · 5–20 MB = 1000px/0.60 · 20–100 MB = 800px/0.50 · >100 MB = 800px/0.50 + warning
-- **Max tokens:** 16000
-- **Batch mode:** auto-detect recommended for mixed-format files
+---
+
+### Priority 1 — Stress Test 3 (After Priority 0 is built)
+
+Course: MATH 1010-04 Intermediate Algebra
+Students: 20-25
+File size: 50-100 MB
+Format: Mixed BB download (PDF + JPG + HEIC + PNG, no separators)
+Goal: Verify DM3A rubric quality holds for algebra work (equations, factoring, graphing)
+Note: Run Test 3 using the new multi-file drop interface, not combined PDF method
+
+### Priority 2 — Stress Test 4 (Final ceiling test)
+
+Course: Statistics OR Algebra
+Students: 25-30
+File size: 100+ MB
+Goal: Find the true upper limit of the app under real professor workflow
+
+---
+
+## Stress Test Log
+
+### May 22, 2026 - Stress Test 1
+- File: DM3A_Test_Packet_Combined.pdf
+- Size: 21.7 MB (mixed formats: PDF + JPG + HEIC + PNG with separators)
+- Students: 4 (Elementary Statistics - CC Balance assignment)
+- Result: PASSED - All 4 students graded successfully
+- Instructor validation: Dr. Minaya confirmed grades are FAIR and accurate across all four DM3A dimensions
+- Notes: 3 of 4 student names not fully detected (handwriting legibility issue) - name detection prompt improved
+- Significance: First successful stress test beyond 4 MB limit. App now handles 25 MB mixed-format batch PDFs.
+
+### May 22, 2026 - Stress Test 2
+- File: DM3A_Test_Packet_2026-05-23_193032_12Students_35Pages_71.03MB.pdf
+- Size: 71.03 MB (22 files: 3 PDFs + 19 images + 12 separators = 35 pages)
+- Students: 12 (MATH 110-03 and MATH 110-04 combined - CC Balance assignment)
+- Result: PASSED - All 12 students graded successfully
+- Fixes applied during this session:
+  1. Two-pass auto-detect: boundary detection first, then per-student grading loop
+  2. maxPages raised from 16 to 60 for batch PDFs
+  3. Orphaned single-call block removed
+- Root causes fixed:
+  - Single-call auto-detect truncated at 16k tokens causing only 6 students to grade
+  - maxPages=16 cap converting only 16 of 35 pages
+  - Old block still executing causing 24 duplicate students
+- Known issue remaining: PDF.js misreads numPages=35 as too high (Epson ScanSmart issue)
+  but try-catch per-page correctly produces 35 images. Not blocking.
+- Notes: Student_003 scored P1 (genuine low score, not an error)
+- Commit: a9fc607
+
+---
+
+## Current App Limits (as of May 25, 2026)
+- File size soft limit: 100 MB (amber warning + Grade anyway button)
+- Compression ladder: <=5 MB = 1200px/0.75 · 5-20 MB = 1000px/0.60 · 20-100 MB = 800px/0.50 · >100 MB = 800px/0.50 + warning
+- Max tokens: 16000 (set in server/index.js - raise if large batches still truncate)
+- Batch mode maxPages: 60 (raised from 16 during Stress Test 2)
+- Batch mode: auto-detect recommended for mixed-format files
 
 ## Known Issues / Watch Out For
-- Render free tier spins down after inactivity — first request after idle takes ~15s
-- `pdfToImages` uses a CDN import; if the CDN is down, PDF conversion silently fails (error shown in feedback field)
-- Auto-detect works best with ≤16 pages; larger batches may truncate even at 16k tokens
-- `max_tokens: 16000` is set in `server/index.js` — raise if large batches still truncate
+- Render free tier spins down after inactivity - first request after idle takes ~15s
+- pdfToImages uses a CDN import; if the CDN is down, PDF conversion silently fails (error shown in feedback field)
+- PDF.js misreads Epson ScanSmart PDFs (numPages inflated) but try-catch per-page handles it correctly
+- max_tokens: 16000 is set in server/index.js - raise if large batches still truncate
+- Auto-detect works best with <=60 pages total
+
+## URLs and Passwords
+- Frontend: https://dm3a-grader.vercel.app (Vercel, auto-deploys on vercel --prod)
+- Backend: https://dm3a-grader-server.onrender.com
+- App password: dmgof50c
+
+## Deployment
+- Frontend deploy: cd ~/dm3a-grader && vercel --prod
+- Backend: Railway.app migration paused (platform incident) - still on Render free tier
+- GitHub: rminaya-ios/dm3a-grader
