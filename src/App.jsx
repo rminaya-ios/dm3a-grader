@@ -383,10 +383,24 @@ export default function DM3AGraderV5() {
 
   // Auto-compress images to stay under 1MB before sending to API
   // Handles large phone camera photos (3-8MB) transparently
+  async function convertHeicToJpeg(file) {
+    // Dynamically load heic2any only when needed
+    const heic2any = (await import("https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js")).default;
+    const blob = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.85 });
+    const jpegBlob = Array.isArray(blob) ? blob[0] : blob;
+    return new File([jpegBlob], file.name.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg"), { type: "image/jpeg" });
+  }
+
   async function compressImage(file, maxSizeMB = 1.0, maxDimension = 1600) {
+    // Convert HEIC/HEIF to JPEG first — Anthropic API cannot process HEIC
+    const isHEIC = file.type === "image/heic" || file.type === "image/heif" || file.name.toLowerCase().endsWith(".heic") || file.name.toLowerCase().endsWith(".heif");
+    if (isHEIC) {
+      try { file = await convertHeicToJpeg(file); } catch(e) { console.warn("HEIC conversion failed, trying anyway:", e); }
+    }
     return new Promise((resolve) => {
+    if (file.size <= maxSizeMB * 1024 * 1024) {
       // If already small enough, skip compression
-      if (file.size <= maxSizeMB * 1024 * 1024) {
+      
         fileToBase64(file).then(resolve);
         return;
       }
@@ -1170,7 +1184,7 @@ Return a JSON array with one object per student found in the submission.`;
         <div>
           <label style={styles.label}>③ Student Work * (PDF or images — one file per student, or one batch PDF)</label>
           <div style={styles.uploadZone(studentFiles.length > 0)} onClick={() => studentRef.current.click()}>
-            <input ref={studentRef} type="file" accept="application/pdf,image/*" multiple style={{ display: "none" }}
+            <input ref={studentRef} type="file" accept="application/pdf,image/jpeg,image/jpg,image/png,image/gif,image/webp" multiple style={{ display: "none" }}
               onChange={e => {
                 const files = Array.from(e.target.files);
                 setStudentFiles(files);
