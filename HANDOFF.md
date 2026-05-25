@@ -117,3 +117,42 @@ Goal: Find the true upper limit of the app under real professor workflow
 - Frontend deploy: cd ~/dm3a-grader && vercel --prod
 - Backend: Railway.app migration paused (platform incident) - still on Render free tier
 - GitHub: rminaya-ios/dm3a-grader
+
+---
+
+## Stress Test 3 — May 25, 2026 (Priority 0 BB Batch Mode)
+
+### What was built today
+- BB Batch Mode: drop 15+ extracted Blackboard files, auto-group by student ID
+- parseBBFilename() utility: parses BB pattern (AssignmentName_StudentID_attempt_YYYY-MM-DD-HH-MM-SS_file.ext)
+- Group Preview screen: shows proposed groupings before grading, with Remove button per file
+- Parallel grading: all students graded simultaneously via Promise.all (16 min -> 6 min for 15 students)
+- JSON extraction fix: regex pulls JSON array even when Claude adds preamble text
+- systemPrompt moved to top-level component scope (available in all screens)
+- HEIC fix: file picker now excludes HEIC (accept= no longer includes image/heic)
+- HEIC pre-processing: run sips command before uploading to convert HEIC to JPG
+- LibreOffice installed at /Applications/LibreOffice.app for future .docx conversion
+
+### HEIC pre-processing command (run before every BB upload)
+find ~/Downloads -name "*_attempt_*.HEIC" | while read f; do sips -s format jpeg "$f" --out "${f%.HEIC}.jpg"; done
+
+### Stress Test 3 Results
+- Files: 15 students, real Blackboard download (mixed JPG, JPEG, PNG, PDF, HEIC->JPG)
+- Assignment: HW 5.1 Exercises, Intermediate Algebra
+- Result: PASSED — 14/15 students graded with real DM3A feedback
+- Score distribution: mostly P3, some P2/P4, realistic and differentiated
+- Time: ~6 minutes (parallel grading)
+- Known issue: student 01793443 submitted only 2 HEIC images (very small submission), graded P1
+
+### Commits today
+- df06dfa: Priority 0 BB batch mode — multi-file drop, student ID grouping, preview screen, JSON parse fix
+- 92c2c64: perf: parallel grading — 15 students in 6min vs 16min sequential
+- bc0032f: fix: HEIC conversion via sips, exclude HEIC from file picker, parallel grading stable
+
+### Current App Limits (as of May 25, 2026 end of day)
+- File types accepted: PDF, JPG, JPEG, PNG, GIF, WEBP (HEIC excluded — convert first with sips)
+- Parallel grading: all students fired simultaneously via Promise.all
+- BB Batch Mode: auto-activates when 2+ files with BB filename pattern detected
+- Group Preview: shows student ID groupings, allows file removal before grading
+- Sequential mode (single PDF batch): still available and unchanged
+- Backend: still on Render free tier (Railway migration paused)
