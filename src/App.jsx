@@ -1452,45 +1452,41 @@ Return a JSON array with one object per student found in the submission.`;
             const allResults = [];
             const courseConf = COURSE_CONFIGS[subject] || {};
             const systemPrompt = "You are an expert mathematics grader using the DM3A mastery-based rubric. P4 = 90%+ mastery, P3 = 80-89%, P2 = 60-79%, P1 = below 60%. Always return valid JSON only. No markdown fences. Return a JSON array with exactly ONE student object per call with this shape: {\"studentName\":\"...\",\"overallTier\":\"P3\",\"dimensions\":{\"conceptualUnderstanding\":\"P3\",\"problemSolving\":\"P3\",\"workShown\":\"P2\",\"accuracy\":\"P3\"},\"problems\":[{\"id\":\"1\",\"description\":\"...\",\"tier\":\"P3\",\"processAssessment\":\"...\",\"reasoning\":\"...\"}],\"feedback\":\"...\",\"strengths\":[\"...\"],\"growthAreas\":[\"...\"]}";
-            for (let gi = 0; gi < bbGroups.length; gi++) {
-              const group = bbGroups[gi];
+            setLoadingMsg(`Preparing all ${bbGroups.length} students for parallel grading...`);
+
+            // Build all grading promises simultaneously
+            const gradingPromises = bbGroups.map(async (group, gi) => {
               const groupFiles = group.files.map(item => item.file);
-              setLoadingMsg(`Grading Student ${group.studentId} (${gi + 1} of ${bbGroups.length})...`);
-              // Build shared context blocks
-              const sharedBlocks = [];
-              if (assignmentFile) {
-                const blocks = await fileToImageBlocks(assignmentFile);
-                sharedBlocks.push(...blocks);
-                sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
-              }
-              if (answerKeyFile) {
-                const blocks = await fileToImageBlocks(answerKeyFile);
-                sharedBlocks.push(...blocks);
-                sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
-              }
-              // Compress and collect all pages for this student
-              const pageBlocks = [];
-              for (let fi = 0; fi < groupFiles.length; fi++) {
-                const f = groupFiles[fi];
-                setLoadingMsg(`Student ${group.studentId} (${gi + 1}/${bbGroups.length}) — processing file ${fi + 1} of ${groupFiles.length}...`);
-                try {
-                  if (f.type === "application/pdf") {
-                    const imgs = await pdfToImages(f, 8, 1000, false);
-                    imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
-                  } else {
-                    const b64 = await compressImage(f);
-                    pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
-                  }
-                } catch (err) {
-                  console.error("Error processing file", f.name, err);
-                }
-              }
               const studentLabel = `Student_${group.studentId}`;
-              const userPrompt = `Subject: ${subject}
+              try {
+                const sharedBlocks = [];
+                if (assignmentFile) {
+                  const blocks = await fileToImageBlocks(assignmentFile);
+                  sharedBlocks.push(...blocks);
+                  sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+                }
+                if (answerKeyFile) {
+                  const blocks = await fileToImageBlocks(answerKeyFile);
+                  sharedBlocks.push(...blocks);
+                  sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
+                }
+                const pageBlocks = [];
+                for (let fi = 0; fi < groupFiles.length; fi++) {
+                  const f = groupFiles[fi];
+                  try {
+                    if (f.type === "application/pdf") {
+                      const imgs = await pdfToImages(f, 8, 1000, false);
+                      imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+                    } else {
+                      const b64 = await compressImage(f);
+                      pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+                    }
+                  } catch (err) { console.error("Error processing file", f.name, err); }
+                }
+                const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? "Instructor Rubric Notes: " + rubric : ""}
 Student ID: ${group.studentId}
-
 INSTRUCTIONS:
 1. Identify ALL problems and sub-parts visible. List them ALL before grading.
 2. Grade EVERY identified problem/sub-part. Do not skip any.
@@ -1498,29 +1494,22 @@ INSTRUCTIONS:
 4. Apply DM3A P1-P4 mastery scoring — never binary correct/wrong.
 5. Weight process and reasoning heavily.
 6. Use "${studentLabel}" as the studentName in your response.
-
 Return a JSON array with exactly ONE student object.`;
-              try {
                 const contentBlocks = [...sharedBlocks, ...pageBlocks];
                 const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
-                const cleaned = raw.replace(/```json|```/g, "").trim();
+                const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
                 const jsonMatch = cleaned.match(/(\[\s*\{[\s\S]*\}\s*\])/);
                 const jsonStr = jsonMatch ? jsonMatch[1] : cleaned;
                 const parsed = JSON.parse(jsonStr);
-                allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+                return Array.isArray(parsed) ? parsed : [parsed];
               } catch (err) {
-                allResults.push({
-                  studentName: studentLabel,
-                  overallTier: "P1",
-                  error: err.message,
-                  dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
-                  problems: [],
-                  feedback: err.message || "Error processing this student.",
-                  strengths: [],
-                  growthAreas: []
-                });
+                return [{ studentName: studentLabel, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message || "Error processing this student.", strengths: [], growthAreas: [] }];
               }
-            }
+            });
+
+            setLoadingMsg(`Grading all ${bbGroups.length} students in parallel — this will be faster...`);
+            const allResultArrays = await Promise.all(gradingPromises);
+            allResultArrays.forEach(arr => allResults.push(...arr));
             setResults(allResults);
             setOverrides({});
             setActiveStudent(0);
