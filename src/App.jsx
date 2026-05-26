@@ -437,25 +437,16 @@ export default function DM3AGraderV5() {
     return new File([jpegBlob], file.name.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg"), { type: "image/jpeg" });
   }
 
-  async function compressImage(file, maxSizeMB = 1.0, maxDimension = 1600) {
-    // Convert HEIC/HEIF to JPEG first — Anthropic API cannot process HEIC
-    const isHEIC = file.type === "image/heic" || file.type === "image/heif" || file.name.toLowerCase().endsWith(".heic") || file.name.toLowerCase().endsWith(".heif");
-    if (isHEIC) {
-      try { file = await convertHeicToJpeg(file); } catch(e) { console.warn("HEIC conversion failed, trying anyway:", e); }
-    }
-    return new Promise((resolve) => {
-    if (file.size <= maxSizeMB * 1024 * 1024) {
-      // If already small enough, skip compression
-      
-        fileToBase64(file).then(resolve);
-        return;
-      }
+  // Decodes any image format the browser supports (including HEIC on WebKit/Safari/Chrome-Mac),
+  // draws it to a canvas, and returns a clean standard JPEG base64 string.
+  // This strips EXIF, ICC profiles, and wide-gamut colour spaces at the client side.
+  async function convertToJpegViaCanvas(file, quality = 0.75, maxDimension = 1600) {
+    return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
       img.onload = () => {
         URL.revokeObjectURL(url);
         let { width, height } = img;
-        // Scale down if too large
         if (width > maxDimension || height > maxDimension) {
           const ratio = Math.min(maxDimension / width, maxDimension / height);
           width = Math.round(width * ratio);
@@ -464,23 +455,32 @@ export default function DM3AGraderV5() {
         const canvas = document.createElement("canvas");
         canvas.width = width;
         canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
-        // Try quality 0.85 first, then lower if still too big
-        let quality = 0.85;
-        let dataUrl = canvas.toDataURL("image/jpeg", quality);
-        while (dataUrl.length > maxSizeMB * 1024 * 1024 * 1.37 && quality > 0.3) {
-          quality -= 0.1;
-          dataUrl = canvas.toDataURL("image/jpeg", quality);
-        }
-        resolve(dataUrl.split(",")[1]);
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        canvas.toBlob(blob => {
+          if (!blob) { reject(new Error("canvas.toBlob returned null")); return; }
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        }, "image/jpeg", quality);
       };
       img.onerror = () => {
-        // Fallback to uncompressed if something goes wrong
-        fileToBase64(file).then(resolve);
+        URL.revokeObjectURL(url);
+        reject(new Error(`Browser could not decode image: ${file.name}`));
       };
       img.src = url;
     });
+  }
+
+  async function compressImage(file, maxSizeMB = 1.0, maxDimension = 1600) {
+    // Always route through canvas — this natively handles HEIC on WebKit, strips EXIF/ICC,
+    // and produces a clean JPEG regardless of the input format or colour profile.
+    try {
+      return await convertToJpegViaCanvas(file, 0.85, maxDimension);
+    } catch(e) {
+      console.warn("convertToJpegViaCanvas failed, falling back to fileToBase64:", e.message);
+      return fileToBase64(file);
+    }
   }
 
   async function pdfToImages(file, maxPages = 16, maxDimension = 1200, quality = 0.75) {
