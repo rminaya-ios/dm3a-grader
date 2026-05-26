@@ -624,11 +624,8 @@ export default function DM3AGraderV5() {
         const batchEstMin = Math.max(1, Math.ceil(batchPageImages.length / 3));
         setLoadingMsg(`${batchPageImages.length} pages detected · Compressed to ~${batchCompressedMB} MB · Est. ~${batchEstMin} min`);
         const sharedBlocks = [];
-        if (assignmentFile) {
-          const blocks = await fileToImageBlocks(assignmentFile);
-          sharedBlocks.push(...blocks);
-          sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
-        }
+        // Assignment prompt intentionally excluded — it confuses Claude into counting only
+        // the printed problems on the cover sheet rather than grading all student work.
         if (answerKeyFile) {
           const blocks = await fileToImageBlocks(answerKeyFile);
           sharedBlocks.push(...blocks);
@@ -759,11 +756,7 @@ Return a JSON array with exactly ONE student object.`;
 
         // Build shared context blocks (assignment + answer key) — images only, no raw PDF base64
         const sharedBlocks = [];
-        if (assignmentFile) {
-          const blocks = await fileToImageBlocks(assignmentFile);
-          sharedBlocks.push(...blocks);
-          sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
-        }
+        // Assignment prompt intentionally excluded — only answer key + student work sent.
         if (answerKeyFile) {
           const blocks = await fileToImageBlocks(answerKeyFile);
           sharedBlocks.push(...blocks);
@@ -881,11 +874,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
 
           // Build shared context blocks — images only, no raw PDF base64
           const sharedBlocks = [];
-          if (assignmentFile) {
-            const blocks = await fileToImageBlocks(assignmentFile);
-            sharedBlocks.push(...blocks);
-            sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
-          }
+          // Assignment prompt intentionally excluded — only answer key + student work sent.
           if (answerKeyFile) {
             const blocks = await fileToImageBlocks(answerKeyFile);
             sharedBlocks.push(...blocks);
@@ -1569,11 +1558,7 @@ Return a JSON array with one object per student found in the submission.`;
               const studentLabel = `Student_${group.studentId}`;
               try {
                 const sharedBlocks = [];
-                if (assignmentFile) {
-                  const blocks = await fileToImageBlocks(assignmentFile);
-                  sharedBlocks.push(...blocks);
-                  sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
-                }
+                // Assignment prompt intentionally excluded — only answer key + student work sent.
                 if (answerKeyFile) {
                   const blocks = await fileToImageBlocks(answerKeyFile);
                   sharedBlocks.push(...blocks);
