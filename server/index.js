@@ -7,7 +7,16 @@ const Anthropic = require('@anthropic-ai/sdk');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: '*' }));
+app.use(cors({
+  origin: ['https://dm3a-grader.vercel.app',
+           'https://dm3a-grader-f4cld6wk8-ralph-minayas-projects.vercel.app',
+           'http://localhost:5173'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false
+}));
+
+app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
