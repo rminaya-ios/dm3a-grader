@@ -34,18 +34,14 @@ app.post('/grade', async (req, res) => {
         const buf = Buffer.from(src.data, 'base64');
         const jpegBuf = await sharp(buf).rotate().toColorspace('srgb').withMetadata(false).jpeg({ quality: 75, force: true }).toBuffer();
         console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
-        if (jpegBuf[0] !== 0xFF || jpegBuf[1] !== 0xD8) {
-          console.warn(`[sharp] Invalid JPEG magic bytes: 0x${jpegBuf[0].toString(16)} 0x${jpegBuf[1].toString(16)} — dropping block`);
+        if (jpegBuf.length < 1000 || jpegBuf[0] !== 0xFF || jpegBuf[1] !== 0xD8) {
+          console.warn(`[sharp] JPEG validation failed (length=${jpegBuf.length}, magic=0x${jpegBuf[0]?.toString(16)} 0x${jpegBuf[1]?.toString(16)}) — dropping block`);
           return null;
         }
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
       } catch(e) {
-        if (isHEIC) {
-          console.warn('[sharp] HEIC conversion failed — skipping block\n', e.stack);
-          return null;
-        }
-        console.warn('[sharp] Image conversion failed — sending as-is\n', e.stack);
-        return block;
+        console.warn('[sharp] Conversion failed — dropping block\n', e.stack);
+        return null;
       }
     }));
     const droppedCount = convertedRaw.filter(b => b === null).length;
@@ -87,8 +83,15 @@ app.post('/grade', async (req, res) => {
 
     console.log('GRADE HIT - blocks received:', clientBlocks.length, 'system:', systemPrompt.slice(0, 50));
 
+    const hasImages = finalImageBlocks.some(b => b.type === 'image');
+    const inputHadImages = clientBlocks.some(b => b.type === 'image');
+    const allImagesDropped = inputHadImages && !hasImages;
+    if (allImagesDropped) {
+      console.warn('[grade] All image blocks were dropped — injecting fallback text block');
+    }
+    const fallbackBlock = { type: 'text', text: '[Note: Student submitted images in a format that could not be processed. Grade based on text content only if available, otherwise return P1 with feedback asking student to resubmit in JPG or PDF format.]' };
     const finalBlocks = clientBlocks.length > 0
-      ? [...finalImageBlocks, { type: 'text', text: userPrompt }]
+      ? [...finalImageBlocks, ...(allImagesDropped ? [fallbackBlock] : []), { type: 'text', text: userPrompt }]
       : [{ type: 'text', text: userPrompt || 'No content provided' }];
 
     let response;
