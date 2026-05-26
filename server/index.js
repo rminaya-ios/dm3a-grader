@@ -23,20 +23,27 @@ app.post('/grade', async (req, res) => {
   try {
     const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
 
-    // Step 1: Convert ALL images to sRGB JPEG
-    const convertedBlocks = await Promise.all(clientBlocks.map(async (block) => {
+    // Step 1: Convert ALL images to sRGB JPEG; skip (null) unprocessable HEIC/HEIF on error
+    const convertedRaw = await Promise.all(clientBlocks.map(async (block) => {
       if (block.type !== 'image') return block;
       const src = block.source;
       if (!src || src.type !== 'base64') return block;
+      const isHEIC = src.media_type === 'image/heic' || src.media_type === 'image/heif';
+      console.log('Processing image:', src.media_type, 'size:', (src.data.length * 0.75 / 1024).toFixed(0), 'KB');
       try {
         const buf = Buffer.from(src.data, 'base64');
         const jpegBuf = await sharp(buf).toColorspace('srgb').jpeg({ quality: 75, mozjpeg: false }).toBuffer();
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
       } catch(e) {
+        if (isHEIC) {
+          console.warn('HEIC conversion failed — skipping block:', e.message);
+          return null;
+        }
         console.warn('Image conversion failed, sending as-is:', e.message);
         return block;
       }
     }));
+    const convertedBlocks = convertedRaw.filter(b => b !== null);
 
     // Step 2: Deduplicate image blocks by fingerprinting first 100 chars of base64
     const seen = new Set();
@@ -101,4 +108,7 @@ app.post('/delete-file', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`DM3A Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`DM3A Server running on port ${PORT}`);
+  console.log(`sharp version: 0.34.5`);
+});
