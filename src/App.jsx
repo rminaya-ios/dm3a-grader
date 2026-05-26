@@ -1559,7 +1559,7 @@ Return a JSON array with one object per student found in the submission.`;
                       const imgs = await pdfToImages(f, 8, 1000, false);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else {
-                      const b64 = await compressImage(f);
+                      const b64 = await compressImage(f, 0.5, 900);
                       pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
                     }
                   } catch (err) { console.error("Error processing file", f.name, err); }
