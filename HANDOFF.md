@@ -176,3 +176,15 @@ cd ~/dm3a-grader/local-converter && node server.js &
 ### Files
 - ~/dm3a-grader/local-converter/server.js — Express server on port 3333
 - Uses /Applications/LibreOffice.app/Contents/MacOS/soffice --headless
+
+---
+
+## Stress Test 3 — May 26, 2026 (Real Production Test)
+
+- Course: MATH 1010-04 Intermediate Algebra
+- Assignment: Test 3 - HW 5.1 Exercises
+- Students: 28
+- Time: ~3 minutes (parallel grading)
+- Result: PASSED — full score distribution P2/P3/P4, problem breakdowns working
+- Per-student average: ~6.4 seconds
+- Notes: Largest batch tested. No errors. .docx conversion available but not needed this session.
