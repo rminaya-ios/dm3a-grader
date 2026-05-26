@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const sharp = require('sharp');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 
@@ -21,13 +22,30 @@ app.post('/upload-pdf', (req, res) => {
 app.post('/grade', async (req, res) => {
   try {
     const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
+
+    // Convert any HEIC/HEIF images to JPEG transparently
+    const convertedBlocks = await Promise.all(clientBlocks.map(async (block) => {
+      if (block.type !== 'image') return block;
+      const src = block.source;
+      if (!src || src.type !== 'base64') return block;
+      const isHEIC = src.media_type === 'image/heic' || src.media_type === 'image/heif';
+      if (!isHEIC) return block;
+      try {
+        const buf = Buffer.from(src.data, 'base64');
+        const jpegBuf = await sharp(buf).jpeg({ quality: 85 }).toBuffer();
+        return { ...block, source: { ...src, media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
+      } catch(e) {
+        console.warn('HEIC conversion failed for block, sending as-is:', e.message);
+        return block;
+      }
+    }));
     const systemPrompt = req.body.systemPrompt || '';
     const userPrompt = req.body.userPrompt || '';
 
     console.log('GRADE HIT - blocks received:', clientBlocks.length, 'system:', systemPrompt.slice(0, 50));
 
     const finalBlocks = clientBlocks.length > 0
-      ? [...clientBlocks, { type: 'text', text: userPrompt }]
+      ? [...convertedBlocks, { type: 'text', text: userPrompt }]
       : [{ type: 'text', text: userPrompt || 'No content provided' }];
 
     const response = await anthropic.messages.create({

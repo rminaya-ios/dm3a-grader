@@ -1206,7 +1206,7 @@ Return a JSON array with one object per student found in the submission.`;
         <div>
           <label style={styles.label}>③ Student Work * (PDF or images — one file per student, or one batch PDF)</label>
           <div style={styles.uploadZone(studentFiles.length > 0)} onClick={() => studentRef.current.click()}>
-            <input ref={studentRef} type="file" accept="application/pdf,image/jpeg,image/jpg,image/png,image/gif,image/webp,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple style={{ display: "none" }}
+            <input ref={studentRef} type="file" accept="application/pdf,image/jpeg,image/jpg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple style={{ display: "none" }}
               onChange={e => {
                 const files = Array.from(e.target.files);
                 setStudentFiles(files);
