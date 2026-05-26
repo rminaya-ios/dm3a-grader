@@ -103,7 +103,7 @@ app.post('/grade', async (req, res) => {
     try {
       response = await anthropic.messages.create({
         model: 'claude-sonnet-4-6',
-        max_tokens: 16000,
+        max_tokens: 64000,
         system: systemPrompt,
         messages: [{ role: 'user', content: finalBlocks }],
       });

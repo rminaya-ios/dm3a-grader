@@ -291,7 +291,9 @@ Each student object:
   "growthAreas": ["string"],
   "feedback": "2-3 sentence personalized, growth-oriented feedback",
   "instructorNote": "any concerns or observations for the instructor"
-}`;
+}
+
+You MUST grade ALL problems visible in the student work. Do not stop early. If there are 42 problems, return all 42. Complete the full JSON array before stopping.`;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
