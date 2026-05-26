@@ -341,6 +341,28 @@ export default function DM3AGraderV5() {
     return { studentId: match[2], timestamp: match[3], originalName: match[4] };
   }
 
+  function isDocx(file) {
+    return file.name.toLowerCase().endsWith('.docx') || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+
+  async function convertDocxToPdf(file) {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const res = await fetch('http://localhost:3333/convert-docx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64, filename: file.name })
+    });
+    if (!res.ok) throw new Error('Converter error: ' + await res.text());
+    const { pdf, pdfName } = await res.json();
+    const bytes = Uint8Array.from(atob(pdf), c => c.charCodeAt(0));
+    return new File([bytes], pdfName, { type: 'application/pdf' });
+  }
+
   function groupBBFiles(files) {
     const groups = {};
     files.forEach(f => {
@@ -1184,7 +1206,7 @@ Return a JSON array with one object per student found in the submission.`;
         <div>
           <label style={styles.label}>③ Student Work * (PDF or images — one file per student, or one batch PDF)</label>
           <div style={styles.uploadZone(studentFiles.length > 0)} onClick={() => studentRef.current.click()}>
-            <input ref={studentRef} type="file" accept="application/pdf,image/jpeg,image/jpg,image/png,image/gif,image/webp" multiple style={{ display: "none" }}
+            <input ref={studentRef} type="file" accept="application/pdf,image/jpeg,image/jpg,image/png,image/gif,image/webp,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple style={{ display: "none" }}
               onChange={e => {
                 const files = Array.from(e.target.files);
                 setStudentFiles(files);
@@ -1428,12 +1450,33 @@ Return a JSON array with one object per student found in the submission.`;
           {bbGroups.map((group, gi) => (
             <div key={group.studentId} style={{ ...styles.card, borderLeft: "4px solid #185FA5" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontWeight: 700, fontSize: 15 }}>
                     {group.studentId === "UNRECOGNIZED" ? "⚠ Unrecognized Files" : `Student ID: ${group.studentId}`}
                   </span>
-                  <span style={{ marginLeft: 10, fontSize: 12, color: "#5A5A55" }}>{group.files.length} file(s)</span>
+                  <span style={{ fontSize: 12, color: "#5A5A55" }}>{group.files.length} file(s)</span>
+                  {group.files.some(item => isDocx(item.file)) && (
+                    <span style={{ background: "#FFF3CD", border: "1px solid #FFCA2C", borderRadius: 4, fontSize: 11, fontWeight: 700, padding: "2px 8px", color: "#856404" }}>⚠ Word doc</span>
+                  )}
                 </div>
+                {group.files.some(item => isDocx(item.file)) && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const updated = await Promise.all(group.files.map(async item => {
+                          if (!isDocx(item.file)) return item;
+                          const pdf = await convertDocxToPdf(item.file);
+                          return { ...item, file: pdf };
+                        }));
+                        setBbGroups(prev => prev.map((g, idx) => idx !== gi ? g : { ...g, files: updated }));
+                      } catch(err) {
+                        alert('Conversion failed: ' + err.message + '\n\nMake sure the local converter is running:\ncd ~/dm3a-grader/local-converter && node server.js');
+                      }
+                    }}
+                    style={{ background: "#856404", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                    Convert .docx → PDF
+                  </button>
+                )}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {group.files.map((item, fi) => (
