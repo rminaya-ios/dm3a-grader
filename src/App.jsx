@@ -624,8 +624,11 @@ export default function DM3AGraderV5() {
         const batchEstMin = Math.max(1, Math.ceil(batchPageImages.length / 3));
         setLoadingMsg(`${batchPageImages.length} pages detected · Compressed to ~${batchCompressedMB} MB · Est. ~${batchEstMin} min`);
         const sharedBlocks = [];
-        // Assignment prompt intentionally excluded — it confuses Claude into counting only
-        // the printed problems on the cover sheet rather than grading all student work.
+        if (assignmentFile) {
+          const blocks = await fileToImageBlocks(assignmentFile);
+          sharedBlocks.push(...blocks);
+          sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
+        }
         if (answerKeyFile) {
           const blocks = await fileToImageBlocks(answerKeyFile);
           sharedBlocks.push(...blocks);
@@ -756,7 +759,11 @@ Return a JSON array with exactly ONE student object.`;
 
         // Build shared context blocks (assignment + answer key) — images only, no raw PDF base64
         const sharedBlocks = [];
-        // Assignment prompt intentionally excluded — only answer key + student work sent.
+        if (assignmentFile) {
+          const blocks = await fileToImageBlocks(assignmentFile);
+          sharedBlocks.push(...blocks);
+          sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+        }
         if (answerKeyFile) {
           const blocks = await fileToImageBlocks(answerKeyFile);
           sharedBlocks.push(...blocks);
@@ -874,7 +881,11 @@ Return a JSON array with exactly ONE student object covering only the problems o
 
           // Build shared context blocks — images only, no raw PDF base64
           const sharedBlocks = [];
-          // Assignment prompt intentionally excluded — only answer key + student work sent.
+          if (assignmentFile) {
+            const blocks = await fileToImageBlocks(assignmentFile);
+            sharedBlocks.push(...blocks);
+            sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+          }
           if (answerKeyFile) {
             const blocks = await fileToImageBlocks(answerKeyFile);
             sharedBlocks.push(...blocks);
@@ -1558,16 +1569,31 @@ Return a JSON array with one object per student found in the submission.`;
               const studentLabel = `Student_${group.studentId}`;
               try {
                 const sharedBlocks = [];
-                // Assignment prompt intentionally excluded — only answer key + student work sent.
+                if (assignmentFile) {
+                  const blocks = await fileToImageBlocks(assignmentFile);
+                  sharedBlocks.push(...blocks);
+                  sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+                }
                 if (answerKeyFile) {
                   const blocks = await fileToImageBlocks(answerKeyFile);
                   sharedBlocks.push(...blocks);
                   sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
                 }
+                // Fingerprint Zone 1 to skip student files that are the same document
+                const assignFingerprint = assignmentFile
+                  ? (await fileToBase64(assignmentFile)).slice(0, 200)
+                  : null;
                 const pageBlocks = [];
                 for (let fi = 0; fi < groupFiles.length; fi++) {
                   const f = groupFiles[fi];
                   try {
+                    if (assignFingerprint) {
+                      const fp = (await fileToBase64(f)).slice(0, 200);
+                      if (fp === assignFingerprint) {
+                        console.log(`Skipping ${f.name} — matches Zone 1 assignment prompt`);
+                        continue;
+                      }
+                    }
                     if (f.type === "application/pdf") {
                       const imgs = await pdfToImages(f, 8, 1000, false);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
