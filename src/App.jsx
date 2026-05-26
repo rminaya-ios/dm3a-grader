@@ -296,7 +296,7 @@ Each student object:
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
-const SERVER_URL = 'https://dm3a-grader-server.onrender.com';
+const SERVER_URL = 'https://dm3a-grader-production.up.railway.app';
 
 export default function DM3AGraderV5() {
   const [step, setStep] = useState("login");
