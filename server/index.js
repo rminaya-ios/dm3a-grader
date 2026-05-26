@@ -29,21 +29,24 @@ app.post('/grade', async (req, res) => {
       const src = block.source;
       if (!src || src.type !== 'base64') return block;
       const isHEIC = src.media_type === 'image/heic' || src.media_type === 'image/heif';
-      console.log('Processing image:', src.media_type, 'size:', (src.data.length * 0.75 / 1024).toFixed(0), 'KB');
+      console.log(`[sharp] media_type="${src.media_type}" first20="${src.data.slice(0, 20)}" size=${(src.data.length * 0.75 / 1024).toFixed(0)}KB`);
       try {
         const buf = Buffer.from(src.data, 'base64');
         const jpegBuf = await sharp(buf).toColorspace('srgb').jpeg({ quality: 75, mozjpeg: false }).toBuffer();
+        console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
       } catch(e) {
         if (isHEIC) {
-          console.warn('HEIC conversion failed — skipping block:', e.message);
+          console.warn('[sharp] HEIC conversion failed — skipping block\n', e.stack);
           return null;
         }
-        console.warn('Image conversion failed, sending as-is:', e.message);
+        console.warn('[sharp] Image conversion failed — sending as-is\n', e.stack);
         return block;
       }
     }));
+    const droppedCount = convertedRaw.filter(b => b === null).length;
     const convertedBlocks = convertedRaw.filter(b => b !== null);
+    console.log(`[step1] kept: ${convertedBlocks.length}, dropped (null): ${droppedCount}`);
 
     // Step 2: Deduplicate image blocks by fingerprinting first 100 chars of base64
     const seen = new Set();
@@ -72,6 +75,7 @@ app.post('/grade', async (req, res) => {
         }))
       : dedupedBlocks;
 
+    console.log(`[step2] after dedup: ${dedupedBlocks.length} blocks (was ${convertedBlocks.length})`);
     console.log(`GRADE HIT — blocks in: ${clientBlocks.length}, after dedup: ${dedupedBlocks.length}, payload: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
 
     const systemPrompt = req.body.systemPrompt || '';
