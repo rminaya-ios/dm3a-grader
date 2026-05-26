@@ -322,6 +322,8 @@ export default function DM3AGraderV5() {
   const [overrides, setOverrides] = useState({});
   const [problemOverrides, setProblemOverrides] = useState({});
   const [activeStudent, setActiveStudent] = useState(0);
+  const [rosterMap, setRosterMap] = useState({}); // studentId -> "Last, First"
+  const rosterInputRef = useRef(null);
   const [isBBBatch, setIsBBBatch] = useState(false);
   const [bbGroups, setBbGroups] = useState([]);
 
@@ -376,6 +378,28 @@ export default function DM3AGraderV5() {
       g.files.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     });
     return Object.values(groups);
+  }
+
+  function parseRoster(text) {
+    // Supports UTF-16 TSV (Blackboard export) and plain CSV/TSV
+    // Columns we care about: Last Name, First Name, Student ID
+    const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim());
+    if (lines.length < 2) return {};
+    const sep = lines[0].includes("\t") ? "\t" : ",";
+    const headers = lines[0].split(sep).map(h => h.replace(/"/g, "").trim().toLowerCase());
+    const lastIdx = headers.findIndex(h => h.includes("last"));
+    const firstIdx = headers.findIndex(h => h.includes("first"));
+    const idIdx = headers.findIndex(h => h.includes("student id") || h === "id");
+    if (lastIdx === -1 || firstIdx === -1 || idIdx === -1) return {};
+    const map = {};
+    lines.slice(1).forEach(line => {
+      const cols = line.split(sep).map(c => c.replace(/"/g, "").trim());
+      const id = cols[idIdx]?.replace(/\D/g, "").padStart(8, "0");
+      const last = cols[lastIdx] || "";
+      const first = cols[firstIdx] || "";
+      if (id && last) map[id] = `${last}, ${first}`;
+    });
+    return map;
   }
 
   function handleLogin(e) {
@@ -1612,6 +1636,37 @@ Return a JSON array with exactly ONE student object.`;
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button style={styles.btnOutline} onClick={() => setStep("setup")}>← Back to Setup</button>
               <button style={styles.btnOutline} onClick={exportCSV}>Export CSV</button>
+              <button style={styles.btnOutline} onClick={() => rosterInputRef.current.click()}>
+                👥 Load Roster
+              </button>
+              <input ref={rosterInputRef} type="file" accept=".xls,.xlsx,.csv,.tsv,.txt" style={{ display: "none" }}
+                onChange={e => {
+                  const file = e.target.files[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = ev => {
+                    const text = ev.target.result;
+                    const map = parseRoster(text);
+                    const count = Object.keys(map).length;
+                    if (count === 0) { alert("Could not parse roster. Make sure it has Last Name, First Name, and Student ID columns."); return; }
+                    setRosterMap(map);
+                    // Auto-rename all students
+                    const newOverrides = { ...overrides };
+                    results.forEach(s => {
+                      const idMatch = s.studentName.match(/(\d{6,10})/);
+                      if (!idMatch) return;
+                      const id = idMatch[1].padStart(8, "0");
+                      if (map[id]) {
+                        newOverrides[s.studentName] = { ...(newOverrides[s.studentName] || {}), renamedName: map[id] };
+                      }
+                    });
+                    setOverrides(newOverrides);
+                    alert(`Roster loaded — ${count} students matched. All tabs renamed.`);
+                  };
+                  reader.readAsText(file, "utf-16");
+                  e.target.value = "";
+                }}
+              />
               <button style={styles.btnOutline} onClick={() => downloadPDF(student)}>⬇ Download Report</button>
               <button style={styles.btn} onClick={() => { setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
             </div>
