@@ -32,12 +32,8 @@ app.post('/grade', async (req, res) => {
       console.log(`[sharp] media_type="${src.media_type}" first20="${src.data.slice(0, 20)}" size=${(src.data.length * 0.75 / 1024).toFixed(0)}KB`);
       try {
         const buf = Buffer.from(src.data, 'base64');
-        const jpegBuf = await sharp(buf).rotate().toColorspace('srgb').withMetadata(false).jpeg({ quality: 75, force: true }).toBuffer();
+        const jpegBuf = await sharp(buf).jpeg({ quality: 85 }).toBuffer();
         console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
-        if (jpegBuf.length < 1000 || jpegBuf[0] !== 0xFF || jpegBuf[1] !== 0xD8) {
-          console.warn(`[sharp] JPEG validation failed (length=${jpegBuf.length}, magic=0x${jpegBuf[0]?.toString(16)} 0x${jpegBuf[1]?.toString(16)}) — dropping block`);
-          return null;
-        }
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
       } catch(e) {
         console.warn('[sharp] Conversion failed — dropping block\n', e.stack);
