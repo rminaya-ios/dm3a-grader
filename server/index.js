@@ -32,7 +32,7 @@ app.post('/grade', async (req, res) => {
       console.log(`[sharp] media_type="${src.media_type}" first20="${src.data.slice(0, 20)}" size=${(src.data.length * 0.75 / 1024).toFixed(0)}KB`);
       try {
         const buf = Buffer.from(src.data, 'base64');
-        const jpegBuf = await sharp(buf).toColorspace('srgb').jpeg({ quality: 75, mozjpeg: false }).toBuffer();
+        const jpegBuf = await sharp(buf).rotate().toColorspace('srgb').withMetadata(false).jpeg({ quality: 75, force: true }).toBuffer();
         console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
         if (jpegBuf[0] !== 0xFF || jpegBuf[1] !== 0xD8) {
           console.warn(`[sharp] Invalid JPEG magic bytes: 0x${jpegBuf[0].toString(16)} 0x${jpegBuf[1].toString(16)} — dropping block`);
