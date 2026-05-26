@@ -442,8 +442,12 @@ export default function DM3AGraderV5() {
   // Decodes any image format the browser supports (including HEIC on WebKit/Safari/Chrome-Mac),
   // draws it to a canvas, and returns a clean standard JPEG base64 string.
   // This strips EXIF, ICC profiles, and wide-gamut colour spaces at the client side.
-  async function convertToJpegViaCanvas(file, quality = 0.75, maxDimension = 1600) {
-    return new Promise((resolve, reject) => {
+  async function convertToJpegViaCanvas(file, quality = 0.75, maxDimension = 1600, { index, total } = {}) {
+    const label = index != null ? `${index} of ${total}` : "";
+    const originalKB = (file.size / 1024).toFixed(0);
+    console.log(`Converting image ${label}: ${file.name} (${originalKB} KB)`);
+
+    const conversionPromise = new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
       img.onload = () => {
@@ -472,6 +476,20 @@ export default function DM3AGraderV5() {
       };
       img.src = url;
     });
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), 10000)
+    );
+
+    try {
+      const b64 = await Promise.race([conversionPromise, timeoutPromise]);
+      const outKB = (b64.length * 0.75 / 1024).toFixed(0);
+      console.log(`Converted ${file.name}: ${originalKB}KB -> ${outKB}KB`);
+      return b64;
+    } catch(e) {
+      console.log(`Fallback for ${file.name}: sending original (${e.message})`);
+      return fileToBase64(file);
+    }
   }
 
   async function compressImage(file, maxSizeMB = 1.0, maxDimension = 1600) {
@@ -1579,6 +1597,7 @@ INSTRUCTIONS:
 6. Use "${studentLabel}" as the studentName in your response.
 Return a JSON array with exactly ONE student object.`;
                 const contentBlocks = [...sharedBlocks, ...pageBlocks];
+                console.log(`Sending ${contentBlocks.length} blocks to server for student ${studentLabel}`);
                 const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
                 const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
                 const jsonMatch = cleaned.match(/(\[\s*\{[\s\S]*\}\s*\])/);
