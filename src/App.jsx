@@ -293,7 +293,8 @@ Each student object:
   "instructorNote": "any concerns or observations for the instructor"
 }
 
-You MUST grade ALL problems visible in the student work. Do not stop early. If there are 42 problems, return all 42. Complete the full JSON array before stopping.`;
+You MUST grade ALL problems visible in the student work. Do not stop early. If there are 42 problems, return all 42. Complete the full JSON array before stopping.
+The student submission contains 6 pages of work covering problems 2 through 84 (even numbers only = 42 problems). Grade ALL 42 problems.`;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
@@ -556,7 +557,7 @@ export default function DM3AGraderV5() {
 
   // Converts any file (PDF or image) into Anthropic image content blocks.
   // All PDFs go through pdfToImages so Claude can read handwritten/scanned content.
-  async function fileToImageBlocks(file, maxPages = 4) {
+  async function fileToImageBlocks(file, maxPages = 10) {
     if (isImage(file)) {
       const b64 = await compressImage(file, 0.5, 1200);
       return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }];
