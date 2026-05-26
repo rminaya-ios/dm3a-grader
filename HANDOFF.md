@@ -156,3 +156,23 @@ find ~/Downloads -name "*_attempt_*.HEIC" | while read f; do sips -s format jpeg
 - Group Preview: shows student ID groupings, allows file removal before grading
 - Sequential mode (single PDF batch): still available and unchanged
 - Backend: still on Render free tier (Railway migration paused)
+
+---
+
+## .docx Conversion — Local Converter Server
+
+LibreOffice is installed at /Applications/LibreOffice.app.
+A local Express server (port 3333) handles .docx → PDF conversion.
+
+### Startup command (run once before grading sessions with Word docs)
+cd ~/dm3a-grader/local-converter && node server.js &
+
+### How it works
+1. Drop BB files including .docx into Zone 3
+2. BB Batch Mode detects .docx — shows orange Word doc badge in preview
+3. Click "Convert .docx → PDF" — file is converted in-place
+4. Grade All proceeds normally with the PDF
+
+### Files
+- ~/dm3a-grader/local-converter/server.js — Express server on port 3333
+- Uses /Applications/LibreOffice.app/Contents/MacOS/soffice --headless
