@@ -34,6 +34,10 @@ app.post('/grade', async (req, res) => {
         const buf = Buffer.from(src.data, 'base64');
         const jpegBuf = await sharp(buf).toColorspace('srgb').jpeg({ quality: 75, mozjpeg: false }).toBuffer();
         console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
+        if (jpegBuf[0] !== 0xFF || jpegBuf[1] !== 0xD8) {
+          console.warn(`[sharp] Invalid JPEG magic bytes: 0x${jpegBuf[0].toString(16)} 0x${jpegBuf[1].toString(16)} — dropping block`);
+          return null;
+        }
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
       } catch(e) {
         if (isHEIC) {
@@ -87,17 +91,25 @@ app.post('/grade', async (req, res) => {
       ? [...finalImageBlocks, { type: 'text', text: userPrompt }]
       : [{ type: 'text', text: userPrompt || 'No content provided' }];
 
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 16000,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: finalBlocks }],
-    });
+    let response;
+    try {
+      response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 16000,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: finalBlocks }],
+      });
+    } catch (apiErr) {
+      console.error('[anthropic] API call failed\n', apiErr.stack);
+      console.error('[anthropic] status:', apiErr.status, 'headers:', JSON.stringify(apiErr.headers ?? {}));
+      console.error('[anthropic] error body:', JSON.stringify(apiErr.error ?? apiErr.message));
+      throw apiErr;
+    }
     const text = response.content?.[0]?.text ?? '';
     console.log('Sending result, length:', text?.length);
     res.json({ result: text });
   } catch (err) {
-    console.error('Grade error:', err);
+    console.error('Grade error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
