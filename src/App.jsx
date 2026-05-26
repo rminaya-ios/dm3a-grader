@@ -1565,7 +1565,8 @@ Return a JSON array with one object per student found in the submission.`;
 
             // Build all grading promises simultaneously
             const gradingPromises = bbGroups.map(async (group, gi) => {
-              const groupFiles = group.files.map(item => item.file);
+              // Reverse so later-uploaded files (notebook pages) come before cover sheet
+              const groupFiles = group.files.map(item => item.file).reverse();
               const studentLabel = `Student_${group.studentId}`;
               try {
                 const sharedBlocks = [];
