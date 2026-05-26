@@ -896,8 +896,14 @@ Return a JSON array with exactly ONE student object covering only the problems o
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
 
+The student submission consists of multiple images in this order:
+- Image 1: Assignment cover sheet (problems 2-24, printed form)
+- Images 2-6: Handwritten notebook pages with work for ALL problems including 26 through 84
+
+Please grade problems from ALL images including the notebook pages. The notebook pages contain the bulk of the work (problems 26-84).
+
 INSTRUCTIONS:
-1. First, identify ALL problems and sub-parts (a, b, c, d, etc.) visible. List them ALL before grading.
+1. First, identify ALL problems and sub-parts (a, b, c, d, etc.) visible across ALL images. List them ALL before grading.
 2. Grade EVERY identified problem/sub-part. Do not skip any.
 3. Use the answer key if provided. If not, use your subject expertise.
 4. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
@@ -908,6 +914,7 @@ Return a JSON array with one object per student found in the submission.`;
           const pageBlocks = isPDF
             ? pdfPageImages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }))
             : [{ type: "image", source: { type: "base64", media_type: studentMediaType, data: studentB64 } }];
+          // Order: assignment prompt → answer key → student work (sharedBlocks already in this order)
           const contentBlocks = [...sharedBlocks, ...pageBlocks];
           const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
