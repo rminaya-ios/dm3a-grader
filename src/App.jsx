@@ -1281,7 +1281,7 @@ Return a JSON array with one object per student found in the submission.`;
     ];
 
     const HelpAccordion = () => {
-      const [open, setOpen] = React.useState(new Set([0]));
+      const [open, setOpen] = useState(new Set([0]));
       const toggle = i => setOpen(prev => { const s = new Set(prev); s.has(i) ? s.delete(i) : s.add(i); return s; });
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
