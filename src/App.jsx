@@ -327,6 +327,7 @@ export default function DM3AGraderV5() {
   const [activeStudent, setActiveStudent] = useState(0);
   const [rosterMap, setRosterMap] = useState({}); // studentId -> "Last, First"
   const [skipCoverSheet, setSkipCoverSheet] = useState(new Set()); // studentIds to skip last file (cover sheet)
+  const [problemScope, setProblemScope] = useState(""); // e.g. "even problems 2–84"
   const rosterInputRef = useRef(null);
   const [isBBBatch, setIsBBBatch] = useState(false);
   const [bbGroups, setBbGroups] = useState([]);
@@ -1499,6 +1500,16 @@ Return a JSON array with one object per student found in the submission.`;
           </div>
         </div>
 
+        <div style={{ ...styles.card, marginBottom: 16 }}>
+          <label style={styles.label}>Problems to grade (e.g. even 2–84, all, 1–20)</label>
+          <input
+            style={styles.input}
+            placeholder="e.g. even problems 2–84, problems 1–20, all problems"
+            value={problemScope}
+            onChange={e => setProblemScope(e.target.value)}
+          />
+        </div>
+
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
           {bbGroups.map((group, gi) => (
             <div key={group.studentId} style={{ ...styles.card, borderLeft: "4px solid #185FA5" }}>
@@ -1629,7 +1640,7 @@ Return a JSON array with one object per student found in the submission.`;
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? "Instructor Rubric Notes: " + rubric : ""}
 Student ID: ${group.studentId}
-INSTRUCTIONS:
+${problemScope.trim() ? `The student was assigned the following problems: ${problemScope.trim()}. Grade ALL of these problems across ALL submitted images. Do not stop until every assigned problem has been graded or confirmed missing.\n` : ""}INSTRUCTIONS:
 1. Identify ALL problems and sub-parts visible. List them ALL before grading.
 2. Grade EVERY identified problem/sub-part. Do not skip any.
 3. Use the answer key if provided. If not, use your subject expertise.
