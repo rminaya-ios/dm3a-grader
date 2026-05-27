@@ -330,6 +330,7 @@ export default function DM3AGraderV5() {
   const [rosterMap, setRosterMap] = useState({}); // studentId -> "Last, First"
   const [skipCoverSheet, setSkipCoverSheet] = useState(new Set()); // studentIds to skip last file (cover sheet)
   const [problemScope, setProblemScope] = useState(""); // e.g. "even problems 2–84"
+  const [showHelp, setShowHelp] = useState(false);
   const rosterInputRef = useRef(null);
   const [isBBBatch, setIsBBBatch] = useState(false);
   const [bbGroups, setBbGroups] = useState([]);
@@ -1202,6 +1203,124 @@ Return a JSON array with one object per student found in the submission.`;
   );
 
   // ── SETUP SCREEN ──────────────────────────────────────────────────────────
+  // ── HELP PAGE ─────────────────────────────────────────────────────────────
+  if (showHelp) {
+    const sections = [
+      {
+        title: "Getting Started",
+        body: "DM3A Grader uses AI to assess student work against your answer key using the P1–P4 mastery scale. It accepts multiple file formats — JPEGs, HEICs, and PDFs — so students can submit however they work best."
+      },
+      {
+        title: "Uploading Files",
+        body: (
+          <div>
+            <p style={{ margin: "0 0 8px" }}><strong>Assignment Prompt:</strong> Upload your assignment instructions as a PDF. This tells the AI what was assigned.</p>
+            <p style={{ margin: "0 0 8px" }}><strong>Answer Key:</strong> Upload your answer key as a PDF. This is used to evaluate correctness.</p>
+            <p style={{ margin: 0 }}><strong>Student Work:</strong> Upload student files from your Blackboard batch export. Supported formats: JPEG, HEIC, PNG, PDF.</p>
+          </div>
+        )
+      },
+      {
+        title: "Getting the Best Results from Student Submissions",
+        body: (
+          <div>
+            <p style={{ margin: "0 0 12px", fontWeight: 600 }}>Best Format for Students</p>
+            <p style={{ margin: "0 0 8px" }}>The most reliable submissions are:</p>
+            <ul style={{ margin: "0 0 12px", paddingLeft: 20, lineHeight: 1.8 }}>
+              <li>A single clearly photographed notebook page per session, or</li>
+              <li>A single scanned PDF of all work in order.</li>
+            </ul>
+            <p style={{ margin: "0 0 12px" }}>Encourage students to label each problem clearly and photograph pages straight-on with good lighting.</p>
+            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Printed Forms with Handwriting</p>
+            <p style={{ margin: "0 0 12px" }}>Some students write answers directly onto printed assignment sheets. Claude can read these, but accuracy improves when the photo is taken straight-on, handwriting is dark and clear, and each page is submitted as a separate image.</p>
+            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Multiple Image Submissions</p>
+            <p style={{ margin: "0 0 12px" }}>When a student submits several images, use the <strong>Problem Scope</strong> field in Group Preview to tell the AI exactly which problems to expect (e.g. "even problems 2–84"). This prevents the AI from stopping early.</p>
+            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Mixed Submissions (Notebook + Printed Sheet)</p>
+            <p style={{ margin: "0 0 12px" }}>In the Group Preview panel, use the <strong>Remove</strong> button to keep only the clearest, most complete pages before grading.</p>
+            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Cover Sheets</p>
+            <p style={{ margin: 0 }}>If a student's first uploaded file is a printed cover sheet with no work on it, check the <strong>"Skip first uploaded file (cover sheet / printed assignment)"</strong> checkbox for that student in Group Preview.</p>
+          </div>
+        )
+      },
+      {
+        title: "How DM3A Grader Compares to Other Tools",
+        body: "Most AI grading tools (including Gradescope) require students to submit work as a PDF in a specific format, with pre-defined page regions. DM3A Grader accepts JPEGs, HEICs, and PDFs in any order — matching how students actually work. The tradeoff: more flexibility means submissions vary more. Use the Group Preview tools (Remove, Cover Sheet checkbox, Problem Scope) to clean up submissions before grading for best results."
+      },
+      {
+        title: "The P1–P4 Mastery Scale",
+        body: (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[
+              { tier: "P4", label: "Mastery (90%+)", desc: "Correct answer with clear process", color: "#0F6E56", bg: "#E1F5EE" },
+              { tier: "P3", label: "Approaching Mastery (80–89%)", desc: "Mostly correct, minor errors", color: "#185FA5", bg: "#E6F1FB" },
+              { tier: "P2", label: "Developing (60–79%)", desc: "Partial understanding, significant errors", color: "#854F0B", bg: "#FAEEDA" },
+              { tier: "P1", label: "Beginning (Below 60%)", desc: "Attempted but little correct reasoning shown", color: "#A32D2D", bg: "#FCEBEB" },
+            ].map(({ tier, label, desc, color, bg }) => (
+              <div key={tier} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: bg, borderRadius: 6, border: `1px solid ${color}30` }}>
+                <span style={{ fontWeight: 700, fontSize: 18, color, minWidth: 28 }}>{tier}</span>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, color }}>{label}</div>
+                  <div style={{ fontSize: 12, color: "#5A5A55" }}>{desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      },
+      {
+        title: "Tips for Instructors",
+        body: (
+          <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 2 }}>
+            <li>Always upload an answer key for best grading accuracy.</li>
+            <li>Use the Problem Scope field for any assignment with more than 10 problems.</li>
+            <li>If a student's grade seems off, check the Group Preview and remove irrelevant images before regrading.</li>
+            <li>The AI grades what it can see — clear, well-lit photos always produce better results.</li>
+          </ul>
+        )
+      }
+    ];
+
+    const HelpAccordion = () => {
+      const [open, setOpen] = React.useState(new Set([0]));
+      const toggle = i => setOpen(prev => { const s = new Set(prev); s.has(i) ? s.delete(i) : s.add(i); return s; });
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {sections.map((sec, i) => (
+            <div key={i} style={{ border: "1px solid #D8D6CE", borderRadius: 8, overflow: "hidden" }}>
+              <button
+                onClick={() => toggle(i)}
+                style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", background: open.has(i) ? "#F5F4EF" : "#fff", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                <span style={{ fontWeight: 700, fontSize: 14, color: "#1A1A18" }}>{sec.title}</span>
+                <span style={{ fontSize: 16, color: "#888", marginLeft: 8 }}>{open.has(i) ? "−" : "+"}</span>
+              </button>
+              {open.has(i) && (
+                <div style={{ padding: "14px 18px", borderTop: "1px solid #E8E6DE", fontSize: 13, color: "#3A3A35", lineHeight: 1.7, background: "#fff" }}>
+                  {typeof sec.body === "string" ? <p style={{ margin: 0 }}>{sec.body}</p> : sec.body}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    };
+
+    return (
+      <div style={styles.root}>
+        <div style={styles.header}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <span style={styles.badge}>DM3A Grader v5</span>
+              <h1 style={styles.h1}>Instructor Help Guide</h1>
+              <p style={styles.sub}>University of Saint Joseph · Dr. Ralph Minaya, Ed.D.</p>
+            </div>
+            <button onClick={() => setShowHelp(false)} style={styles.btnOutline}>← Back</button>
+          </div>
+        </div>
+        <HelpAccordion />
+      </div>
+    );
+  }
+
   if (step === "setup") return (
     <div style={styles.root}>
       <TierGuideModal />
@@ -1212,7 +1331,10 @@ Return a JSON array with one object per student found in the submission.`;
             <h1 style={styles.h1}>Mastery-Based AI Grading</h1>
             <p style={styles.sub}>University of Saint Joseph · Dr. Ralph Minaya, Ed.D.</p>
           </div>
-          <button onClick={() => setShowTierGuide(true)} style={styles.btnOutline}>Course Coverage Guide</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setShowTierGuide(true)} style={styles.btnOutline}>Course Coverage Guide</button>
+            <button onClick={() => setShowHelp(true)} style={styles.btnOutline}>Help</button>
+          </div>
         </div>
       </div>
 
