@@ -326,6 +326,7 @@ export default function DM3AGraderV5() {
   const [problemOverrides, setProblemOverrides] = useState({});
   const [activeStudent, setActiveStudent] = useState(0);
   const [rosterMap, setRosterMap] = useState({}); // studentId -> "Last, First"
+  const [skipCoverSheet, setSkipCoverSheet] = useState(new Set()); // studentIds to skip last file (cover sheet)
   const rosterInputRef = useRef(null);
   const [isBBBatch, setIsBBBatch] = useState(false);
   const [bbGroups, setBbGroups] = useState([]);
@@ -1548,6 +1549,21 @@ Return a JSON array with one object per student found in the submission.`;
                   </div>
                 ))}
               </div>
+              {group.files.length > 1 && (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 12, color: "#5A5A55", cursor: "pointer", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={skipCoverSheet.has(group.studentId)}
+                    onChange={e => setSkipCoverSheet(prev => {
+                      const next = new Set(prev);
+                      e.target.checked ? next.add(group.studentId) : next.delete(group.studentId);
+                      return next;
+                    })}
+                    style={{ accentColor: "#185FA5", width: 14, height: 14 }}
+                  />
+                  Skip first uploaded file (cover sheet / printed assignment)
+                </label>
+              )}
             </div>
           ))}
         </div>
@@ -1565,8 +1581,13 @@ Return a JSON array with one object per student found in the submission.`;
 
             // Build all grading promises simultaneously
             const gradingPromises = bbGroups.map(async (group, gi) => {
-              // Reverse so later-uploaded files (notebook pages) come before cover sheet
-              const groupFiles = group.files.map(item => item.file).reverse();
+              // Reverse so later-uploaded files (notebook pages) come before cover sheet.
+              // If instructor checked "skip cover sheet", drop the last file (earliest upload).
+              let groupFiles = group.files.map(item => item.file).reverse();
+              if (skipCoverSheet.has(group.studentId) && groupFiles.length > 1) {
+                console.log(`[${group.studentId}] Skipping cover sheet: ${groupFiles[groupFiles.length - 1].name}`);
+                groupFiles = groupFiles.slice(0, -1);
+              }
               const studentLabel = `Student_${group.studentId}`;
               try {
                 const sharedBlocks = [];
