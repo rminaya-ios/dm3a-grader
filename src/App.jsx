@@ -1627,12 +1627,16 @@ Return a JSON array with one object per student found in the submission.`;
                         continue;
                       }
                     }
-                    if (f.type === "application/pdf") {
-                      const imgs = await pdfToImages(f, 8, 1000, false);
+                    const isPDFFile = f.type === "application/pdf";
+                    const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
+                    if (isPDFFile) {
+                      const imgs = await pdfToImages(f, 8, 1000, 0.6);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
-                    } else {
-                      const b64 = await compressImage(f, 0.5, 900);
+                    } else if (isImgFile) {
+                      const b64 = await convertToJpegViaCanvas(f, 0.75, 1200);
                       pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+                    } else {
+                      console.warn(`Skipping unrecognised file type: ${f.name} (${f.type})`);
                     }
                   } catch (err) { console.error("Error processing file", f.name, err); }
                 }
