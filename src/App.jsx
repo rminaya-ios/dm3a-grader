@@ -294,7 +294,9 @@ Each student object:
 }
 
 You are grading a student's homework. The answer key covers problems 2 through 84 (even numbers only). The student's work is spread across multiple pages/images. You MUST examine EVERY image carefully and grade EVERY problem the student attempted. Do not stop after the first page. Check all 6 pages of student work. Return one JSON entry for each problem found — there should be approximately 42 entries total.
-You MUST grade ALL problems visible in the student work. Do not stop early. Complete the full JSON array before stopping.`;
+You MUST grade ALL problems visible in the student work. Do not stop early. Complete the full JSON array before stopping.
+
+Student work may appear as handwritten answers written directly onto a printed assignment sheet. In these cases, the printed sheet serves as both the assignment and the submission. Look carefully for handwritten numbers, expressions, or work written next to or between the printed problems. Any handwriting visible on the page is student work and must be graded. Do not conclude that no work was submitted simply because the page appears to be a printed form.`;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
