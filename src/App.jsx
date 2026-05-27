@@ -662,7 +662,12 @@ export default function DM3AGraderV5() {
               { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
               { type: "text", text: `Page ${c * pagesPerStudent + i + 1}` }
             ]);
-            const contentBlocks = [...sharedBlocks, ...chunkBlocks];
+            const contentBlocks = [
+              ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
+              { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
+              ...chunkBlocks,
+              { type: "text", text: "=== END OF STUDENT WORK ===" }
+            ];
             const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
@@ -793,12 +798,16 @@ Return a JSON array with exactly ONE student object.`;
           const totalChunks = Math.ceil(compressedPages.length / chunkSize);
           setLoadingMsg(`Grading ${studentLabel} — part ${chunkNum} of ${totalChunks}...`);
 
-          const contentBlocks = [...sharedBlocks];
+          const contentBlocks = [
+            ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
+            { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
+          ];
           contentBlocks.push({ type: "text", text: `STUDENT SUBMISSION — pages ${c + 1} to ${c + chunk.length} of ${compressedPages.length} total. This is part ${chunkNum} of ${totalChunks}.` });
           chunk.forEach((b64, idx) => {
             contentBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
             contentBlocks.push({ type: "text", text: `Page ${c + idx + 1}` });
           });
+          contentBlocks.push({ type: "text", text: "=== END OF STUDENT WORK ===" });
 
           const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
@@ -930,7 +939,12 @@ Return a JSON array with one object per student found in the submission.`;
             ? pdfPageImages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }))
             : [{ type: "image", source: { type: "base64", media_type: studentMediaType, data: studentB64 } }];
           // Order: assignment prompt → answer key → student work (sharedBlocks already in this order)
-          const contentBlocks = [...sharedBlocks, ...pageBlocks];
+          const contentBlocks = [
+            ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
+            { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
+            ...pageBlocks,
+            { type: "text", text: "=== END OF STUDENT WORK ===" }
+          ];
           const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
           const parsed = JSON.parse(cleaned);
@@ -1666,7 +1680,12 @@ ${problemScope.trim() ? `The student was assigned the following problems: ${prob
 5. Weight process and reasoning heavily.
 6. Use "${studentLabel}" as the studentName in your response.
 Return a JSON array with exactly ONE student object.`;
-                const contentBlocks = [...sharedBlocks, ...pageBlocks];
+                const contentBlocks = [
+                  ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
+                  { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
+                  ...pageBlocks,
+                  { type: "text", text: "=== END OF STUDENT WORK ===" }
+                ];
                 console.log(`Sending ${contentBlocks.length} blocks to server for student ${studentLabel}`);
                 const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
                 const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
