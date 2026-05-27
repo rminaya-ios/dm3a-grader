@@ -506,7 +506,17 @@ export default function DM3AGraderV5() {
     }
   }
 
+  function looksLikeImage(file) {
+    return file?.type?.startsWith("image/") ||
+      /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(file?.name || "");
+  }
+
   async function pdfToImages(file, maxPages = 16, maxDimension = 1200, quality = 0.75) {
+    console.log(`[pdfToImages] called: "${file?.name}" type="${file?.type}" maxPages=${maxPages}`);
+    if (looksLikeImage(file)) {
+      console.warn(`[pdfToImages] BLOCKED — image file passed to pdfToImages: ${file.name} — returning empty array`);
+      return [];
+    }
     try {
       const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs");
       pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
@@ -560,8 +570,9 @@ export default function DM3AGraderV5() {
   // Converts any file (PDF or image) into Anthropic image content blocks.
   // All PDFs go through pdfToImages so Claude can read handwritten/scanned content.
   async function fileToImageBlocks(file, maxPages = 10) {
-    if (isImage(file)) {
-      const b64 = await compressImage(file, 0.5, 1200);
+    console.log(`[fileToImageBlocks] "${file?.name}" type="${file?.type}" looksLikeImage=${looksLikeImage(file)}`);
+    if (looksLikeImage(file)) {
+      const b64 = await convertToJpegViaCanvas(file, 0.75, 1200);
       return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }];
     }
     const pages = await pdfToImages(file, maxPages, 1200, 0.75);
@@ -617,6 +628,7 @@ export default function DM3AGraderV5() {
         const isLarge = fileMB > 5;
         const isVeryLarge = fileMB > 20;
         setLoadingMsg(`Converting batch PDF to images${isLarge ? " (compressing — large file)..." : "..."}`);
+        console.log(`[pdfToImages call] batch PDF: "${file?.name}" type="${file?.type}"`);
         const batchPageImages = await pdfToImages(file, 60, isVeryLarge ? 800 : isLarge ? 1000 : 1200, isVeryLarge ? 0.5 : isLarge ? 0.6 : 0.75);
         console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
         if (!batchPageImages || batchPageImages.length === 0) {
@@ -868,6 +880,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
             const fVeryLarge = fMB > 20;
             console.log(`[grading] individual PDF — file: "${f.name}", size: ${fMB.toFixed(1)} MB`);
             setLoadingMsg(`Converting ${f.name} to images${fLarge ? " (compressing — large file)..." : "..."}`);
+            console.log(`[pdfToImages call] individual: "${f?.name}" type="${f?.type}"`);
             pdfPageImages = await pdfToImages(f, 8, fVeryLarge ? 800 : fLarge ? 1000 : 1200, fVeryLarge ? 0.5 : fLarge ? 0.6 : 0.75);
             console.log(`[PDF→images] ${f.name}: ${pdfPageImages.length} pages`);
             if (!pdfPageImages || pdfPageImages.length === 0) {
@@ -1630,7 +1643,8 @@ Return a JSON array with one object per student found in the submission.`;
                     const isPDFFile = f.type === "application/pdf";
                     const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
                     if (isPDFFile) {
-                      const imgs = await pdfToImages(f, 8, 1000, 0.6);
+                      console.log(`[pdfToImages call] BB batch student: "${f?.name}" type="${f?.type}"`);
+                    const imgs = await pdfToImages(f, 8, 1000, 0.6);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isImgFile) {
                       const b64 = await convertToJpegViaCanvas(f, 0.75, 1200);
