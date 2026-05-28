@@ -1997,6 +1997,18 @@ Return a JSON array with exactly ONE student object.`;
             <div style={{ textAlign: "right" }}>
               <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>OVERALL MASTERY</div>
               <span style={{ ...styles.mastery(ov.overall || student.overallTier), fontSize: 20, padding: "4px 16px" }}>{ov.overall || student.overallTier}</span>
+              {(() => {
+                const probs = student.problems || [];
+                const graded = probs.filter(p => p.tier && p.tier !== "N/A");
+                const mastery = graded.filter(p => p.tier === "P3" || p.tier === "P4").length;
+                const total = graded.length;
+                const pct = total > 0 ? Math.round(mastery / total * 100) : null;
+                return total > 0 ? (
+                  <div style={{ fontSize: 12, color: "#5A5A55", marginTop: 6 }}>
+                    P3/P4 Rate: <strong>{pct}%</strong> ({mastery} of {total} problems)
+                  </div>
+                ) : null;
+              })()}
               <div style={{ marginTop: 6 }}>
                 <select style={{ fontSize: 12, padding: "3px 8px", border: "1px solid #C8C6BE", borderRadius: 4, background: "#FAFAF7" }}
                   value={ov.overall || student.overallTier}
@@ -2099,6 +2111,22 @@ Return a JSON array with exactly ONE student object.`;
               );
             })}
           </div>
+          {(() => {
+            const rates = results.map(s => {
+              const probs = (s.problems || []).filter(p => p.tier && p.tier !== "N/A");
+              const total = probs.length;
+              const mastery = probs.filter(p => p.tier === "P3" || p.tier === "P4").length;
+              return total > 0 ? mastery / total : null;
+            }).filter(r => r !== null);
+            if (!rates.length) return null;
+            const avg = Math.round(rates.reduce((a, b) => a + b, 0) / rates.length * 100);
+            return (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #E8E6DE", fontSize: 13, color: "#5A5A55", textAlign: "center" }}>
+                Class P3/P4 Rate: <strong style={{ color: "#185FA5" }}>{avg}%</strong>
+                <span style={{ color: "#888", fontSize: 12, marginLeft: 6 }}>(average across {rates.length} student{rates.length !== 1 ? "s" : ""} with graded problems)</span>
+              </div>
+            );
+          })()}
         </div>
       </div>
     );
