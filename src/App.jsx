@@ -261,6 +261,13 @@ PROCESS IS MORE IMPORTANT THAN THE FINAL ANSWER. A student who demonstrates corr
 - When assigning P4, you must be able to identify specific evidence in the student's work that demonstrates complete reasoning — not just a correct answer.
 - In your feedback, always name the specific reasoning element that was present (earning P4) or missing (limiting the score to P3 or below). Never say only "correct" or "incorrect" — explain what the student did or did not demonstrate.
 
+## CRITICAL RULES FOR READING HANDWRITTEN STUDENT WORK
+- Before penalizing any student calculation, re-examine the handwriting carefully. Handwritten numbers and symbols can be ambiguous — what looks like an error may be a legibility issue, not a mathematical mistake.
+- If you are not fully confident in your reading of a handwritten expression, do NOT penalize the student. Instead, note in the feedback: "Handwriting unclear on this step — instructor verification recommended before finalizing score."
+- Never reduce a student's score based on ambiguous handwriting alone. When in doubt, give the student the benefit of the doubt and flag for instructor review.
+- Pay special attention to: the difference between 0 and 6, 1 and 7, x and multiplication signs, negative signs and subtraction, exponents written close to the base, and fractions where numerator and denominator are hard to distinguish.
+- If a student's final answer is correct, work backwards to verify their process before concluding that intermediate steps are wrong. A correct answer is strong evidence that the process was also correct.
+
 ## SUBJECT: ${courseConfig.label}
 Problem types you will encounter: ${courseConfig.problemTypes.join(", ")}.
 
