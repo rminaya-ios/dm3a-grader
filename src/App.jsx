@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import LandingPage from "./LandingPage";
 
 // ─── COURSE KNOWLEDGE CONFIGS ────────────────────────────────────────────────
 
@@ -331,6 +332,7 @@ export default function DM3AGraderV5() {
   const [skipCoverSheet, setSkipCoverSheet] = useState(new Set()); // studentIds to skip last file (cover sheet)
   const [problemScope, setProblemScope] = useState(""); // e.g. "even problems 2–84"
   const [showHelp, setShowHelp] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
   const rosterInputRef = useRef(null);
   const [isBBBatch, setIsBBBatch] = useState(false);
   const [bbGroups, setBbGroups] = useState([]);
@@ -1124,6 +1126,9 @@ Return a JSON array with one object per student found in the submission.`;
   };
 
   // ── LOGIN SCREEN ──────────────────────────────────────────────────────────
+  if (step === "login" && showLanding)
+    return <LandingPage onSignIn={() => setShowLanding(false)} />;
+
   if (step === "login") return (
     <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{ width: "100%", maxWidth: 400 }}>
