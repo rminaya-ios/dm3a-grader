@@ -354,6 +354,7 @@ export default function DM3AGraderV5() {
   const [rosterMap, setRosterMap] = useState({}); // studentId -> "Last, First"
   const [skipCoverSheet, setSkipCoverSheet] = useState(new Set()); // studentIds to skip last file (cover sheet)
   const [problemScope, setProblemScope] = useState(""); // e.g. "even problems 2–84"
+  const [courseContext, setCourseContext] = useState(""); // e.g. "unit covers matrix operations only"
   const [showHelp, setShowHelp] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
   const rosterInputRef = useRef(null);
@@ -699,6 +700,7 @@ export default function DM3AGraderV5() {
             const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
+${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.` : ""}
 
 BATCH FIXED-PAGES: This is student ${studentNum} of ~${chunks.length} in a batch scan (${pagesPerStudent} page(s) per student).
 Find the student's name on the first page. If no name found, label them "Unknown Student ${studentNum}".
@@ -840,7 +842,7 @@ Return a JSON array with exactly ONE student object.`;
           const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
-Student: ${studentLabel}
+${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}Student: ${studentLabel}
 This is part ${chunkNum} of ${totalChunks} of this student's submission (pages ${c + 1}–${c + chunk.length} of ${compressedPages.length}).
 
 INSTRUCTIONS:
@@ -947,7 +949,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
           const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
-
+${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}
 The student submission consists of multiple images in this order:
 - Image 1: Assignment cover sheet (problems 2-24, printed form)
 - Images 2-6: Handwritten notebook pages with work for ALL problems including 26 through 84
@@ -1687,6 +1689,14 @@ Return a JSON array with one object per student found in the submission.`;
             value={problemScope}
             onChange={e => setProblemScope(e.target.value)}
           />
+          <label style={{ ...styles.label, marginTop: 12 }}>Course Context (optional)</label>
+          <textarea
+            style={{ ...styles.input, minHeight: 72, resize: "vertical" }}
+            placeholder="e.g. Students have not yet covered eigenvalues or determinants. Unit covers matrix operations and row reduction only."
+            value={courseContext}
+            onChange={e => setCourseContext(e.target.value)}
+            rows={3}
+          />
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
@@ -1823,7 +1833,7 @@ Return a JSON array with one object per student found in the submission.`;
                 const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? "Instructor Rubric Notes: " + rubric : ""}
-Student ID: ${group.studentId}
+${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}Student ID: ${group.studentId}
 ${problemScope.trim() ? `The student was assigned the following problems: ${problemScope.trim()}. Grade ALL of these problems across ALL submitted images. Do not stop until every assigned problem has been graded or confirmed missing.\n` : ""}INSTRUCTIONS:
 1. Identify ALL problems and sub-parts visible. List them ALL before grading.
 2. Grade EVERY identified problem/sub-part. Do not skip any.
