@@ -19,9 +19,11 @@ const Logo = () => (
       style={{
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
-        gap: 2,
-        width: 36,
-        height: 36,
+        gap: 3,
+        width: 44,
+        height: 44,
+        borderRadius: 10,
+        overflow: "hidden",
       }}
     >
       <div style={{ background: "#065f46", borderRadius: 4 }} />
