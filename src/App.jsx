@@ -252,6 +252,15 @@ PROCESS IS MORE IMPORTANT THAN THE FINAL ANSWER. A student who demonstrates corr
 - For proof-based problems, a correct example does NOT constitute a proof. A student who provides only an example where a general argument is required should receive P2 at most.
 - When in doubt on any True/False or proof-based problem, append this note to the problem feedback: "Note: This problem requires instructor verification before finalizing the score."
 
+## CRITICAL RULES FOR EXPLANATION DEPTH VS. CORRECT ANSWER
+- A correct final answer alone does NOT earn P4. The student must demonstrate clear, complete mathematical reasoning to earn P4.
+- Distinguish explicitly between these two cases:
+  1. Correct answer WITH complete argument or generalization → P4
+  2. Correct answer WITH only a specific example, incomplete steps, or missing justification → P3 at most
+- In Linear Algebra and higher-level courses: a student who verifies a property using a specific numerical example when a general proof is required earns P2, not P3 or P4. Generalization is a required skill at this level.
+- When assigning P4, you must be able to identify specific evidence in the student's work that demonstrates complete reasoning — not just a correct answer.
+- In your feedback, always name the specific reasoning element that was present (earning P4) or missing (limiting the score to P3 or below). Never say only "correct" or "incorrect" — explain what the student did or did not demonstrate.
+
 ## SUBJECT: ${courseConfig.label}
 Problem types you will encounter: ${courseConfig.problemTypes.join(", ")}.
 
