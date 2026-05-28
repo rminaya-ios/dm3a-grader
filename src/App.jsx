@@ -245,6 +245,13 @@ PROCESS IS MORE IMPORTANT THAN THE FINAL ANSWER. A student who demonstrates corr
 - P2 (Developing, 60–79%): ${courseConfig.p2Descriptor}
 - P1 (Beginning, below 60%): ${courseConfig.p1Descriptor}
 
+## CRITICAL RULES FOR TRUE/FALSE AND PROOF-BASED PROBLEMS
+- For any True/False problem, you MUST verify your own mathematical reasoning before assigning a score. Do not rely on surface-level pattern matching. Work through the logic step by step before deciding if the statement is true or false.
+- If a student's answer on a True/False problem is correct but their explanation is incomplete or missing, assign P3 — not P4. A correct answer without a valid justification does not demonstrate mastery.
+- If a student's answer is incorrect, verify that YOUR explanation of why it is incorrect is mathematically sound before including it in feedback. If you are not certain, flag the problem with: "Instructor review recommended — proof-based problem."
+- For proof-based problems, a correct example does NOT constitute a proof. A student who provides only an example where a general argument is required should receive P2 at most.
+- When in doubt on any True/False or proof-based problem, append this note to the problem feedback: "Note: This problem requires instructor verification before finalizing the score."
+
 ## SUBJECT: ${courseConfig.label}
 Problem types you will encounter: ${courseConfig.problemTypes.join(", ")}.
 
