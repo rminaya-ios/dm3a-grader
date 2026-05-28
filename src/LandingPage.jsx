@@ -23,11 +23,10 @@ const Logo = () => (
         width: 44,
         height: 44,
         borderRadius: 10,
-        overflow: "hidden",
       }}
     >
-      <div style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 4 }} />
       <div style={{ background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 4 }} />
+      <div style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 4 }} />
       <div style={{ background: "#ffe4e6", border: "1px solid #fda4af", borderRadius: 4 }} />
       <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 4 }} />
     </div>
