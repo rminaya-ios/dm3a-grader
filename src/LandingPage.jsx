@@ -10,8 +10,7 @@ const C = {
   white: "#ffffff",
 };
 
-const GOOGLE_FORM_URL =
-  "https://docs.google.com/forms/d/e/1FAIpQLSf5uZLB9OEIyx-8azAWug3w7kafmUFTmC6us_zh6UR0BCqt8Q/viewform";
+const GOOGLE_FORM_URL = "https://forms.gle/bjDohfTU6FiGTGHs7";
 
 const Logo = () => (
   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
