@@ -132,7 +132,7 @@ export default function LandingPage({ onSignIn }) {
             Sign In
           </Btn>
           <Btn onClick={scrollToWaitlist} style={{ padding: "8px 18px", fontSize: 14 }}>
-            Join Waitlist
+            Claim Your Founding Spot
           </Btn>
         </div>
       </nav>
@@ -177,8 +177,8 @@ export default function LandingPage({ onSignIn }) {
             letterSpacing: "-0.02em",
           }}
         >
-          Grade smarter.{" "}
-          <em style={{ color: C.accent, fontStyle: "italic" }}>Not harder.</em>
+          You grade alone.{" "}
+          <em style={{ color: C.accent, fontStyle: "italic" }}>Your students deserve better than a percentage.</em>
         </h1>
 
         <p
@@ -191,13 +191,12 @@ export default function LandingPage({ onSignIn }) {
             fontWeight: 400,
           }}
         >
-          Upload your students' handwritten work — JPEGs, HEICs, PDFs — and get
-          full P1–P4 mastery scores with personalized feedback in minutes.
+          DM3A Grader is the mastery-based grading tool built by a community college math professor — for instructors who grade alone, without institutional support.
         </p>
 
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap", marginBottom: 32 }}>
           <Btn onClick={scrollToWaitlist} style={{ padding: "14px 32px", fontSize: 16 }}>
-            Join Waitlist →
+            Claim Your Founding Spot →
           </Btn>
           <Btn
             variant="outline"
@@ -209,7 +208,7 @@ export default function LandingPage({ onSignIn }) {
         </div>
 
         <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>
-          Tested across 3 college courses · 100+ student submissions graded
+          Validated across Elementary Statistics · Intermediate Algebra · Precalculus (Beta) · 100+ student submissions graded
         </p>
       </section>
 
@@ -381,6 +380,7 @@ export default function LandingPage({ onSignIn }) {
           <p style={{ textAlign: "center", color: C.muted, fontSize: 16, margin: "0 0 40px" }}>
             Built for real classroom submissions, not ideal ones.
           </p>
+
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
               <thead>
@@ -412,6 +412,119 @@ export default function LandingPage({ onSignIn }) {
         </div>
       </section>
 
+      {/* ── FOUNDER SECTION ──────────────────────────────────────────── */}
+      <section style={{ background: C.white, borderTop: `1px solid ${C.border}`, padding: "80px 24px" }}>
+        <div style={{ maxWidth: 720, margin: "0 auto" }}>
+          <h2
+            style={{
+              fontFamily: "'Instrument Serif', Georgia, serif",
+              fontSize: 38,
+              fontWeight: 400,
+              margin: "0 0 24px",
+              letterSpacing: "-0.01em",
+              color: C.ink,
+            }}
+          >
+            Built by a professor who still teaches your courses
+          </h2>
+          <p style={{ fontSize: 16, color: C.muted, lineHeight: 1.8, margin: "0 0 28px" }}>
+            Dr. Ralph Minaya, Ed.D. is a mathematics professor at the University of Saint Joseph and Capital Community College. He built DM3A Grader because he needed it — grading Elementary Statistics and Intermediate Algebra sections alone, with no TA and no institutional grading support. He still teaches these courses every semester. When you send a feature request, you are talking directly to the person who will decide whether to build it — often by next semester.
+          </p>
+          <blockquote
+            style={{
+              margin: 0,
+              padding: "20px 28px",
+              borderLeft: `4px solid ${C.accent}`,
+              background: "#eff6ff",
+              borderRadius: "0 8px 8px 0",
+              fontFamily: "'Instrument Serif', Georgia, serif",
+              fontSize: 18,
+              fontStyle: "italic",
+              color: C.ink,
+              lineHeight: 1.7,
+            }}
+          >
+            "Community college students — many of them first-generation, working full-time, balancing families — deserve individualized feedback. DM3A Grader gives instructors the time to provide it."
+          </blockquote>
+        </div>
+      </section>
+
+      {/* ── PRICING ──────────────────────────────────────────────────── */}
+      <section style={{ padding: "80px 24px", background: C.surface }}>
+        <div style={{ maxWidth: 640, margin: "0 auto", textAlign: "center" }}>
+          <h2
+            style={{
+              fontFamily: "'Instrument Serif', Georgia, serif",
+              fontSize: 38,
+              fontWeight: 400,
+              margin: "0 0 12px",
+              letterSpacing: "-0.01em",
+            }}
+          >
+            Founding Member Pricing
+          </h2>
+          <p style={{ color: C.muted, fontSize: 16, margin: "0 0 40px" }}>
+            Simple, honest pricing. Your rate is locked permanently — no matter when you join.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 28 }}>
+            <div
+              style={{
+                background: C.white,
+                border: `2px solid ${C.accent}`,
+                borderRadius: 16,
+                padding: "32px 24px",
+                textAlign: "center",
+                position: "relative",
+              }}
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  top: -14,
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  background: C.accent,
+                  color: C.white,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  padding: "4px 14px",
+                  borderRadius: 100,
+                  whiteSpace: "nowrap",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                FOUNDING 25 SPOTS
+              </div>
+              <div style={{ fontFamily: "'Instrument Serif', Georgia, serif", fontSize: 52, fontWeight: 400, color: C.accent, lineHeight: 1 }}>$9</div>
+              <div style={{ fontSize: 14, color: C.muted, marginBottom: 8 }}>/month</div>
+              <div style={{ fontSize: 14, color: C.ink, fontWeight: 600 }}>First 25 subscribers</div>
+              <div style={{ fontSize: 13, color: C.muted, marginTop: 6 }}>Rate locked permanently</div>
+            </div>
+            <div
+              style={{
+                background: C.white,
+                border: `1px solid ${C.border}`,
+                borderRadius: 16,
+                padding: "32px 24px",
+                textAlign: "center",
+              }}
+            >
+              <div style={{ fontFamily: "'Instrument Serif', Georgia, serif", fontSize: 52, fontWeight: 400, color: C.muted, lineHeight: 1 }}>$12</div>
+              <div style={{ fontSize: 14, color: C.muted, marginBottom: 8 }}>/month</div>
+              <div style={{ fontSize: 14, color: C.ink, fontWeight: 600 }}>After 25 founding spots</div>
+              <div style={{ fontSize: 13, color: C.muted, marginTop: 6 }}>Rate locked permanently</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 20, flexWrap: "wrap", fontSize: 13, color: C.muted }}>
+            {["No contract", "No institutional approval required", "Cancel anytime"].map(s => (
+              <span key={s} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ color: "#065f46", fontWeight: 700 }}>✓</span> {s}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ── WAITLIST ─────────────────────────────────────────────────── */}
       <section
         ref={waitlistRef}
@@ -434,7 +547,7 @@ export default function LandingPage({ onSignIn }) {
           Ready to grade smarter?
         </h2>
         <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 17, margin: "0 0 40px", maxWidth: 480, marginLeft: "auto", marginRight: "auto" }}>
-          Join the waitlist and be first to access DM3A Grader when it opens to new instructors.
+          You are one of 25 founding members at $9/month. After 25 spots, the price becomes $12/month — but your rate is locked permanently either way.
         </p>
 
         {submitted ? (
@@ -485,7 +598,7 @@ export default function LandingPage({ onSignIn }) {
               }}
             />
             <Btn onClick={handleWaitlist} style={{ padding: "13px 28px", fontSize: 15, whiteSpace: "nowrap" }}>
-              Join Waitlist
+              Claim Your Founding Spot
             </Btn>
           </div>
         )}
