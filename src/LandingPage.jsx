@@ -544,7 +544,7 @@ export default function LandingPage({ onSignIn }) {
             letterSpacing: "-0.01em",
           }}
         >
-          Ready to grade smarter?
+          Your founding spot is waiting.
         </h2>
         <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 17, margin: "0 0 40px", maxWidth: 480, marginLeft: "auto", marginRight: "auto" }}>
           You are one of 25 founding members at $9/month. After 25 spots, the price becomes $12/month — but your rate is locked permanently either way.
