@@ -599,7 +599,7 @@ export default function DM3AGraderV5() {
 
   // Converts any file (PDF or image) into Anthropic image content blocks.
   // All PDFs go through pdfToImages so Claude can read handwritten/scanned content.
-  async function fileToImageBlocks(file, maxPages = 10) {
+  async function fileToImageBlocks(file, maxPages = 3) {
     console.log(`[fileToImageBlocks] "${file?.name}" type="${file?.type}" looksLikeImage=${looksLikeImage(file)}`);
     if (looksLikeImage(file)) {
       const b64 = await convertToJpegViaCanvas(file, 0.75, 1200);
@@ -671,12 +671,12 @@ export default function DM3AGraderV5() {
         setLoadingMsg(`${batchPageImages.length} pages detected · Compressed to ~${batchCompressedMB} MB · Est. ~${batchEstMin} min`);
         const sharedBlocks = [];
         if (assignmentFile) {
-          const blocks = await fileToImageBlocks(assignmentFile);
+          const blocks = await fileToImageBlocks(assignmentFile, 3);
           sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
         }
         if (answerKeyFile) {
-          const blocks = await fileToImageBlocks(answerKeyFile);
+          const blocks = await fileToImageBlocks(answerKeyFile, 3);
           sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
@@ -813,12 +813,12 @@ Return a JSON array with exactly ONE student object.`;
         // Build shared context blocks (assignment + answer key) — images only, no raw PDF base64
         const sharedBlocks = [];
         if (assignmentFile) {
-          const blocks = await fileToImageBlocks(assignmentFile);
+          const blocks = await fileToImageBlocks(assignmentFile, 3);
           sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
         }
         if (answerKeyFile) {
-          const blocks = await fileToImageBlocks(answerKeyFile);
+          const blocks = await fileToImageBlocks(answerKeyFile, 3);
           sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
@@ -941,12 +941,12 @@ Return a JSON array with exactly ONE student object covering only the problems o
           // Build shared context blocks — images only, no raw PDF base64
           const sharedBlocks = [];
           if (assignmentFile) {
-            const blocks = await fileToImageBlocks(assignmentFile);
+            const blocks = await fileToImageBlocks(assignmentFile, 3);
             sharedBlocks.push(...blocks);
             sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
           }
           if (answerKeyFile) {
-            const blocks = await fileToImageBlocks(answerKeyFile);
+            const blocks = await fileToImageBlocks(answerKeyFile, 3);
             sharedBlocks.push(...blocks);
             sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
           }
@@ -1806,12 +1806,12 @@ Return a JSON array with one object per student found in the submission.`;
               try {
                 const sharedBlocks = [];
                 if (assignmentFile) {
-                  const blocks = await fileToImageBlocks(assignmentFile);
+                  const blocks = await fileToImageBlocks(assignmentFile, 3);
                   sharedBlocks.push(...blocks);
                   sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
                 }
                 if (answerKeyFile) {
-                  const blocks = await fileToImageBlocks(answerKeyFile);
+                  const blocks = await fileToImageBlocks(answerKeyFile, 3);
                   sharedBlocks.push(...blocks);
                   sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
                 }
