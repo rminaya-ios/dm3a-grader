@@ -532,7 +532,7 @@ export default function DM3AGraderV5() {
     }
   }
 
-  async function compressImage(file, maxSizeMB = 1.0, maxDimension = 1600) {
+  async function compressImage(file, maxSizeMB = 3.0, maxDimension = 2400) {
     // Always route through canvas — this natively handles HEIC on WebKit, strips EXIF/ICC,
     // and produces a clean JPEG regardless of the input format or colour profile.
     try {
