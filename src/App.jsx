@@ -1783,6 +1783,14 @@ Return a JSON array with one object per student found in the submission.`;
             const allResults = [];
             const courseConf = COURSE_CONFIGS[subject] || {};
             const systemPrompt = "You are an expert mathematics grader using the DM3A mastery-based rubric. P4 = 90%+ mastery, P3 = 80-89%, P2 = 60-79%, P1 = below 60%. Always return valid JSON only. No markdown fences. Return a JSON array with exactly ONE student object per call with this shape: {\"studentName\":\"...\",\"overallTier\":\"P3\",\"dimensions\":{\"conceptualUnderstanding\":\"P3\",\"problemSolving\":\"P3\",\"workShown\":\"P2\",\"accuracy\":\"P3\"},\"problems\":[{\"id\":\"1\",\"description\":\"...\",\"tier\":\"P3\",\"processAssessment\":\"...\",\"reasoning\":\"...\"}],\"feedback\":\"...\",\"strengths\":[\"...\"],\"growthAreas\":[\"...\"]}";
+            function chunkArray(arr, size) {
+              const chunks = [];
+              for (let i = 0; i < arr.length; i += size) {
+                chunks.push(arr.slice(i, i + size));
+              }
+              return chunks;
+            }
+
             setLoadingMsg(`Preparing all ${bbGroups.length} students for parallel grading...`);
 
             // Build all grading promises simultaneously
@@ -1867,9 +1875,13 @@ Return a JSON array with exactly ONE student object.`;
               }
             });
 
-            setLoadingMsg(`Grading all ${bbGroups.length} students in parallel — this will be faster...`);
-            const allResultArrays = await Promise.all(gradingPromises);
-            allResultArrays.forEach(arr => allResults.push(...arr));
+            const CHUNK_SIZE = 5;
+            const chunks = chunkArray(gradingPromises, CHUNK_SIZE);
+            for (let ci = 0; ci < chunks.length; ci++) {
+              setLoadingMsg(`Grading students ${ci * CHUNK_SIZE + 1}–${Math.min((ci + 1) * CHUNK_SIZE, bbGroups.length)} of ${bbGroups.length}...`);
+              const chunkResults = await Promise.all(chunks[ci]);
+              chunkResults.forEach(arr => allResults.push(...arr));
+            }
             setResults(allResults);
             setOverrides({});
             setActiveStudent(0);
