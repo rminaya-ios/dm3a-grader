@@ -1838,7 +1838,7 @@ Return a JSON array with one object per student found in the submission.`;
                     const imgs = await pdfToImages(f, 8, 1000, 0.6);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isImgFile) {
-                      const b64 = await convertToJpegViaCanvas(f, 0.75, 1200);
+                      const b64 = await convertToJpegViaCanvas(f, 0.92, 2400);
                       if (b64 === null) { heicFailed.push(f.name); }
                       else { pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }); }
                     } else {
