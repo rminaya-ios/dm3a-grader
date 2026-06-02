@@ -1782,6 +1782,7 @@ Return a JSON array with one object per student found in the submission.`;
             setStep("grading");
             setLoading(true);
             const allResults = [];
+            const heicFailed = [];
             const courseConf = COURSE_CONFIGS[subject] || {};
             const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"]);
             function chunkArray(arr, size) {
@@ -1835,7 +1836,7 @@ Return a JSON array with one object per student found in the submission.`;
                     const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
                     if (isPDFFile) {
                       console.log(`[pdfToImages call] BB batch student: "${f?.name}" type="${f?.type}"`);
-                    const imgs = await pdfToImages(f, 8, 1000, 0.6);
+                    const imgs = await pdfToImages(f, 8, 2400, 0.92);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isImgFile) {
                       const b64 = await convertToJpegViaCanvas(f, 0.92, 2400);
