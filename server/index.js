@@ -57,6 +57,11 @@ app.post('/grade', async (req, res) => {
         console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
       } catch(e) {
+        const isHEIC = buf.slice(0, 12).toString('binary').includes('ftyp');
+        if (isHEIC) {
+          console.warn(`[sharp] HEIC conversion failed — dropping block: ${e.message}`);
+          return null;
+        }
         console.warn(`[sharp] Conversion failed for ${src.media_type} — passing original through: ${e.message}`);
         return block;
       }
