@@ -401,8 +401,15 @@ export default function DM3AGraderV5() {
   }
 
   function groupBBFiles(files) {
+    const isGradable = f =>
+      looksLikeImage(f) ||
+      f.type === "application/pdf" ||
+      f.name.toLowerCase().endsWith(".pdf") ||
+      f.name.toLowerCase().endsWith(".docx") ||
+      f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
     const groups = {};
-    files.forEach(f => {
+    files.filter(isGradable).forEach(f => {
       const parsed = parseBBFilename(f.name);
       const key = parsed ? parsed.studentId : "UNRECOGNIZED";
       if (!groups[key]) groups[key] = { studentId: key, files: [] };
