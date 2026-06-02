@@ -1132,8 +1132,8 @@ Return a JSON array with one object per student found in the submission.`;
 
   // ─── COLORS ───────────────────────────────────────────────────────────────
 
-  // Top-level systemPrompt — available in all screens including BB preview
-  const systemPrompt = "CRITICAL: Your response must be ONLY a valid JSON array. No prose. No explanation. No markdown. Start your response with [ and end with ]. You are a mathematics grader using DM3A mastery rubric: P4=90%+, P3=80-89%, P2=60-79%, P1=below 60%. Return exactly: [{\"studentName\":\"...\",\"overallTier\":\"P3\",\"dimensions\":{\"conceptualUnderstanding\":\"P3\",\"problemSolving\":\"P3\",\"workShown\":\"P2\",\"accuracy\":\"P3\"},\"problems\":[{\"id\":\"1\",\"description\":\"...\",\"tier\":\"P3\",\"processAssessment\":\"...\",\"reasoning\":\"...\"}],\"feedback\":\"...\",\"strengths\":[\"...\"],\"growthAreas\":[\"...\"]}]";
+  // Top-level systemPrompt — used by BB batch preview screen (subject may not be set yet at render time)
+  const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"]);
 
   const tierColor = { P4: "#0F6E56", P3: "#185FA5", P2: "#854F0B", P1: "#A32D2D" };
   const tierBg = { P4: "#E1F5EE", P3: "#E6F1FB", P2: "#FAEEDA", P1: "#FCEBEB" };
@@ -1783,7 +1783,7 @@ Return a JSON array with one object per student found in the submission.`;
             setLoading(true);
             const allResults = [];
             const courseConf = COURSE_CONFIGS[subject] || {};
-            const systemPrompt = "You are an expert mathematics grader using the DM3A mastery-based rubric. P4 = 90%+ mastery, P3 = 80-89%, P2 = 60-79%, P1 = below 60%. Always return valid JSON only. No markdown fences. Return a JSON array with exactly ONE student object per call with this shape: {\"studentName\":\"...\",\"overallTier\":\"P3\",\"dimensions\":{\"conceptualUnderstanding\":\"P3\",\"problemSolving\":\"P3\",\"workShown\":\"P2\",\"accuracy\":\"P3\"},\"problems\":[{\"id\":\"1\",\"description\":\"...\",\"tier\":\"P3\",\"processAssessment\":\"...\",\"reasoning\":\"...\"}],\"feedback\":\"...\",\"strengths\":[\"...\"],\"growthAreas\":[\"...\"]}";
+            const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"]);
             function chunkArray(arr, size) {
               const chunks = [];
               for (let i = 0; i < arr.length; i += size) {
