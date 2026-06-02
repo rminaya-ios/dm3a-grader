@@ -36,13 +36,23 @@ app.post('/grade', async (req, res) => {
 
     // Step 1: Attempt sharp conversion on ALL image blocks regardless of media_type.
     // If sharp succeeds, use the converted JPEG. If it fails, pass the original block through.
-    const convertedBlocks = await Promise.all(clientBlocks.map(async (block) => {
+    const convertedRaw = await Promise.all(clientBlocks.map(async (block) => {
       if (block.type !== 'image') return block;
       const src = block.source;
       if (!src || src.type !== 'base64') return block;
       console.log(`[sharp] media_type="${src.media_type}" size=${(src.data.length * 0.75 / 1024).toFixed(0)}KB`);
       try {
         const buf = Buffer.from(src.data, 'base64');
+        // Filter: skip ZIP/DOCX files (PK magic bytes 0x50 0x4B)
+        if (buf[0] === 0x50 && buf[1] === 0x4B) {
+          console.warn(`[sharp] SKIPPED — block starts with PK magic bytes (DOCX/ZIP), not an image`);
+          return null;
+        }
+        // Filter: skip raw PDFs mislabeled as images (%PDF magic bytes 0x25 0x50 0x44 0x46)
+        if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {
+          console.warn(`[sharp] SKIPPED — block starts with %PDF magic bytes, mislabeled as ${src.media_type}`);
+          return null;
+        }
         const jpegBuf = await sharp(buf).jpeg({ quality: 85 }).toBuffer();
         console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
@@ -51,7 +61,8 @@ app.post('/grade', async (req, res) => {
         return block;
       }
     }));
-    console.log(`[step1] processed ${convertedBlocks.length} blocks`);
+    const convertedBlocks = convertedRaw.filter(b => b !== null);
+    console.log(`[step1] processed ${convertedBlocks.length} blocks (${convertedRaw.length - convertedBlocks.length} skipped)`);
 
     // Step 2: Deduplicate image blocks by fingerprinting first 100 chars of base64
     const seen = new Set();
