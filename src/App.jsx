@@ -955,12 +955,6 @@ Return a JSON array with exactly ONE student object covering only the problems o
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
 ${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}
-The student submission consists of multiple images in this order:
-- Image 1: Assignment cover sheet (problems 2-24, printed form)
-- Images 2-6: Handwritten notebook pages with work for ALL problems including 26 through 84
-
-Please grade problems from ALL images including the notebook pages. The notebook pages contain the bulk of the work (problems 26-84).
-
 INSTRUCTIONS:
 1. First, identify ALL problems and sub-parts (a, b, c, d, etc.) visible across ALL images. List them ALL before grading.
 2. Grade EVERY identified problem/sub-part. Do not skip any.
@@ -1869,7 +1863,13 @@ Return a JSON array with exactly ONE student object.`;
                 const jsonMatch = cleaned.match(/(\[\s*\{[\s\S]*\}\s*\])/);
                 const jsonStr = jsonMatch ? jsonMatch[1] : cleaned;
                 const parsed = JSON.parse(jsonStr);
-                return Array.isArray(parsed) ? parsed : [parsed];
+                const students = Array.isArray(parsed) ? parsed : [parsed];
+                // Ensure studentName is always the BB label — never "Unknown" or empty
+                const UNKNOWN_NAMES = new Set(["unknown", "unknown student", "", "n/a"]);
+                return students.map(s => ({
+                  ...s,
+                  studentName: (!s.studentName || UNKNOWN_NAMES.has(s.studentName.toLowerCase())) ? studentLabel : s.studentName
+                }));
               } catch (err) {
                 return [{ studentName: studentLabel, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message || "Error processing this student.", strengths: [], growthAreas: [] }];
               }
