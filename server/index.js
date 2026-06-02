@@ -10,6 +10,8 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({
   origin: ['https://dm3a-grader.vercel.app',
            'https://dm3a-grader-f4cld6wk8-ralph-minayas-projects.vercel.app',
+           'https://dm3agrader.com',
+           'https://www.dm3agrader.com',
            'http://localhost:5173'],
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
