@@ -344,6 +344,7 @@ export default function DM3AGraderV5() {
   const [combineImages, setCombineImages] = useState(false);
   const [combinedStudentName, setCombinedStudentName] = useState("");
   const [fileSizeWarnings, setFileSizeWarnings] = useState([]);
+  const [heicFailedFiles, setHeicFailedFiles] = useState([]);
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
@@ -519,8 +520,8 @@ export default function DM3AGraderV5() {
       console.log(`Converted ${file.name}: ${originalKB}KB -> ${outKB}KB`);
       return b64;
     } catch(e) {
-      console.log(`Fallback for ${file.name}: sending original (${e.message})`);
-      return fileToBase64(file);
+      console.warn(`[HEIC fallback skipped] ${file.name}: canvas conversion failed (${e.message}). Returning null.`);
+      return null;
     }
   }
 
@@ -638,9 +639,11 @@ export default function DM3AGraderV5() {
       return;
     }
     setError("");
+    setHeicFailedFiles([]);
     setLoading(true);
     setStep("grading");
     const courseConfig = COURSE_CONFIGS[subject];
+    const heicFailed = [];
     const systemPrompt = buildSystemPrompt(courseConfig);
     const allResults = [];
 
@@ -803,6 +806,7 @@ Return a JSON array with exactly ONE student object.`;
         for (let i = 0; i < studentFiles.length; i++) {
           setLoadingMsg(`Compressing page ${i + 1} of ${studentFiles.length}...`);
           const b64 = await compressImage(studentFiles[i], 0.5, 1000);
+          if (b64 === null) { heicFailed.push(studentFiles[i].name); continue; }
           compressedPages.push(b64);
         }
 
@@ -930,6 +934,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
             setLoadingMsg(`${pdfPageImages.length} pages detected · Compressed to ~${indivCompressedMB} MB · Est. ~${indivEstMin} min`);
           } else {
             studentB64 = await compressImage(f);
+            if (studentB64 === null) { heicFailed.push(f.name); continue; }
           }
           const studentMediaType = isImage(f) ? "image/jpeg" : f.type;
 
@@ -997,6 +1002,7 @@ Return a JSON array with one object per student found in the submission.`;
     setResults(allResults);
     setOverrides({});
     setActiveStudent(0);
+    if (heicFailed.length > 0) setHeicFailedFiles(heicFailed);
     setLoading(false);
     setStep("results");
   }
@@ -1824,7 +1830,8 @@ Return a JSON array with one object per student found in the submission.`;
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isImgFile) {
                       const b64 = await convertToJpegViaCanvas(f, 0.75, 1200);
-                      pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+                      if (b64 === null) { heicFailed.push(f.name); }
+                      else { pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }); }
                     } else {
                       console.warn(`Skipping unrecognised file type: ${f.name} (${f.type})`);
                     }
@@ -1949,6 +1956,16 @@ Return a JSON array with exactly ONE student object.`;
         {isBeta && (
           <div style={{ background: "#E6F1FB", border: "1px solid #A3C4E8", borderRadius: 6, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#185FA5" }}>
             <strong>β Beta Subject:</strong> {TIER_META.beta.description} Use the override controls below to adjust any score before finalizing.
+          </div>
+        )}
+
+        {/* HEIC Conversion Warning */}
+        {heicFailedFiles.length > 0 && (
+          <div style={{ background: "#FFF3CD", border: "2px solid #FFCA2C", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#856404" }}>
+            <strong>⚠️ {heicFailedFiles.length} file(s) could not be processed (HEIC conversion failed).</strong> Ask those students to resubmit as JPG or PDF.
+            <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+              {heicFailedFiles.map((name, i) => <li key={i}>{name}</li>)}
+            </ul>
           </div>
         )}
 
