@@ -520,8 +520,8 @@ export default function DM3AGraderV5() {
       console.log(`Converted ${file.name}: ${originalKB}KB -> ${outKB}KB`);
       return b64;
     } catch(e) {
-      console.warn(`[HEIC fallback skipped] ${file.name}: canvas conversion failed (${e.message}). Returning null.`);
-      return null;
+      console.warn(`[canvas failed] ${file.name}: ${e.message} — sending raw for server-side conversion`);
+      return fileToBase64(file);
     }
   }
 

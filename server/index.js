@@ -32,26 +32,24 @@ app.post('/grade', async (req, res) => {
   try {
     const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
 
-    // Step 1: Convert ALL images to sRGB JPEG; skip (null) unprocessable HEIC/HEIF on error
-    const convertedRaw = await Promise.all(clientBlocks.map(async (block) => {
+    // Step 1: Attempt sharp conversion on ALL image blocks regardless of media_type.
+    // If sharp succeeds, use the converted JPEG. If it fails, pass the original block through.
+    const convertedBlocks = await Promise.all(clientBlocks.map(async (block) => {
       if (block.type !== 'image') return block;
       const src = block.source;
       if (!src || src.type !== 'base64') return block;
-      const isHEIC = src.media_type === 'image/heic' || src.media_type === 'image/heif';
-      console.log(`[sharp] media_type="${src.media_type}" first20="${src.data.slice(0, 20)}" size=${(src.data.length * 0.75 / 1024).toFixed(0)}KB`);
+      console.log(`[sharp] media_type="${src.media_type}" size=${(src.data.length * 0.75 / 1024).toFixed(0)}KB`);
       try {
         const buf = Buffer.from(src.data, 'base64');
         const jpegBuf = await sharp(buf).jpeg({ quality: 85 }).toBuffer();
         console.log(`[sharp] SUCCESS — output: ${(jpegBuf.length / 1024).toFixed(0)} KB`);
         return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
       } catch(e) {
-        console.warn('[sharp] Conversion failed — dropping block\n', e.stack);
-        return null;
+        console.warn(`[sharp] Conversion failed for ${src.media_type} — passing original through: ${e.message}`);
+        return block;
       }
     }));
-    const droppedCount = convertedRaw.filter(b => b === null).length;
-    const convertedBlocks = convertedRaw.filter(b => b !== null);
-    console.log(`[step1] kept: ${convertedBlocks.length}, dropped (null): ${droppedCount}`);
+    console.log(`[step1] processed ${convertedBlocks.length} blocks`);
 
     // Step 2: Deduplicate image blocks by fingerprinting first 100 chars of base64
     const seen = new Set();
