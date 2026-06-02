@@ -126,7 +126,27 @@ app.post('/grade', async (req, res) => {
     }
     const text = response.content?.[0]?.text ?? '';
     console.log('Sending result, length:', text?.length);
-    res.json({ result: text });
+    console.log('AI response preview:', text.slice(0, 200));
+
+    // Validate that the AI returned parseable JSON before sending to client
+    const cleaned = text.replace(/```json|```/g, '').trim();
+    try {
+      JSON.parse(cleaned);
+      res.json({ result: text });
+    } catch (parseErr) {
+      console.error('[parse] AI returned non-JSON response. Full text:', text.slice(0, 500));
+      const fallback = JSON.stringify([{
+        studentName: 'Unknown',
+        overallTier: 'P1',
+        dimensions: { conceptualUnderstanding: 'P1', problemSolving: 'P1', workShown: 'P1', accuracy: 'P1' },
+        problems: [],
+        strengths: [],
+        growthAreas: [],
+        feedback: 'Grading error: AI returned an unexpected response. Please resubmit this student.',
+        instructorNote: 'Server could not parse AI response as JSON. Raw preview: ' + text.slice(0, 200)
+      }]);
+      res.json({ result: fallback });
+    }
   } catch (err) {
     console.error('Grade error:', err.message);
     res.status(500).json({ error: err.message });
