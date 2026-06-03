@@ -653,6 +653,7 @@ export default function DM3AGraderV5() {
   // ─── GRADING ─────────────────────────────────────────────────────────────
 
   async function handleGrade() {
+    console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.map(f => f.name));
     if (!subject || !studentFiles.length) {
       setError("Please select a subject and upload at least one student file.");
       return;
@@ -1708,7 +1709,7 @@ Return a JSON array with one object per student found in the submission.`;
         return (
           <button
             style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15, opacity: blocked ? 0.4 : 1, cursor: blocked ? "not-allowed" : "pointer" }}
-            onClick={blocked ? undefined : isBBBatch ? () => setStep('preview') : handleGrade}
+            onClick={blocked ? undefined : isBBBatch ? () => { console.log('[BB GROUPS START] setup button → preview (isBBBatch=true)'); setStep('preview'); } : (...args) => { console.log('[BB GROUPS START] setup button → handleGrade (isBBBatch=false)'); return handleGrade(...args); }}
             disabled={blocked}>
             {blocked ? "⚠ Acknowledge the large file warning above to continue" : isBBBatch ? "Review Student Groups →" : "Grade with DM3A →"}
           </button>
@@ -1824,7 +1825,8 @@ Return a JSON array with one object per student found in the submission.`;
           style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15 }}
           onClick={async () => {
             // Grade each BB group sequentially using individual files mode
-            console.log('[BB GROUPS]', bbGroups.map(g => ({ studentId: g.studentId, files: g.files.map(f => f.file.name) })));
+            console.log('[BB GROUPS START] preview-screen Grade All button clicked');
+            console.log('[BB GROUPS]', JSON.stringify(bbGroups.map(g => ({ id: g.studentId, n: g.files.length }))));
             setStep("grading");
             setLoading(true);
             const allResults = [];
