@@ -386,22 +386,38 @@ export default function DM3AGraderV5() {
     return file.name.toLowerCase().endsWith('.docx') || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   }
 
-  async function convertDocxToPdf(file) {
-    const base64 = await new Promise((resolve, reject) => {
+  async function convertOnServer(file, endpoint) {
+    return new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(',')[1]);
-      reader.onerror = reject;
+      reader.onload = async () => {
+        try {
+          const base64 = reader.result.split(',')[1];
+          const res = await fetch(`${SERVER_URL}/${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base64, filename: file.name })
+          });
+          const data = await res.json();
+          if (data.error) { console.warn(`[${endpoint}] server error:`, data.error); resolve(null); return; }
+          const isHeic = endpoint === 'convert-heic';
+          const b64 = isHeic ? data.jpeg : data.pdf;
+          const newFilename = isHeic
+            ? file.name.replace(/\.(heic|heif)$/i, '.jpg')
+            : file.name.replace(/\.docx$/i, '.pdf');
+          const mimeType = isHeic ? 'image/jpeg' : 'application/pdf';
+          const byteArr = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+          resolve(new File([byteArr], newFilename, { type: mimeType }));
+        } catch (e) { console.warn(`[${endpoint}] failed:`, e.message); resolve(null); }
+      };
+      reader.onerror = () => resolve(null);
       reader.readAsDataURL(file);
     });
-    const res = await fetch('http://localhost:3333/convert-docx', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base64, filename: file.name })
-    });
-    if (!res.ok) throw new Error('Converter error: ' + await res.text());
-    const { pdf, pdfName } = await res.json();
-    const bytes = Uint8Array.from(atob(pdf), c => c.charCodeAt(0));
-    return new File([bytes], pdfName, { type: 'application/pdf' });
+  }
+
+  async function convertDocxToPdf(file) {
+    const converted = await convertOnServer(file, 'convert-docx');
+    if (!converted) throw new Error('Server DOCX conversion failed — check Railway logs');
+    return converted;
   }
 
   function groupBBFiles(files) {
@@ -925,10 +941,23 @@ Return a JSON array with exactly ONE student object covering only the problems o
     } else {
       // ── INDIVIDUAL FILES MODE ─────────────────────────────────────────────
       for (let i = 0; i < studentFiles.length; i++) {
-        const f = studentFiles[i];
-        setLoadingMsg(`${isImage(f) ? "Compressing and grading" : "Grading"} ${f.name} (${i + 1} of ${studentFiles.length})...`);
+        setLoadingMsg(`Grading file ${i + 1} of ${studentFiles.length}...`);
 
         try {
+          let f = studentFiles[i]; // may be reassigned after server-side HEIC/DOCX conversion
+          const isHEICIndiv = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
+          const isDocxIndiv = /\.docx$/i.test(f.name) || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+          if (isHEICIndiv) {
+            setLoadingMsg(`Converting ${f.name} (HEIC) via server...`);
+            const conv = await convertOnServer(f, 'convert-heic');
+            if (conv) { f = conv; }
+            else { heicFailed.push(f.name); continue; }
+          } else if (isDocxIndiv) {
+            setLoadingMsg(`Converting ${f.name} (Word doc) via server...`);
+            const conv = await convertOnServer(f, 'convert-docx');
+            if (conv) { f = conv; }
+            else { continue; }
+          }
           const isPDF = f.type === "application/pdf";
           const fileSize = f.size;
           // All PDFs: convert pages to JPEG images so Claude can read handwritten/scanned content.
@@ -1878,14 +1907,26 @@ Return a JSON array with one object per student found in the submission.`;
                     const imgs = await pdfToImages(f, 8, 2400, 0.92);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isDocxFile) {
-                      // Skip DOCX — unreadable by API, causes false P1
-                      console.warn(`[BB batch] Skipping DOCX: ${f.name} — ask student to resubmit as JPG or PDF`);
-                      docxFailedForStudent.push(f.name);
+                      setLoadingMsg(`Converting ${f.name} (Word doc) via server...`);
+                      const converted = await convertOnServer(f, 'convert-docx');
+                      if (converted) {
+                        const imgs = await pdfToImages(converted, 8, 2400, 0.92);
+                        imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+                      } else {
+                        console.warn(`[BB batch] DOCX conversion failed, marking as badge: ${f.name}`);
+                        docxFailedForStudent.push(f.name);
+                      }
                     } else if (isHEICFile) {
-                      // Skip HEIC entirely — raw bytes are useless to the API and cause false P1
-                      console.warn(`[BB batch] Skipping HEIC: ${f.name} — ask student to resubmit as JPG or PDF`);
-                      heicFailed.push(f.name);
-                      heicFailedForStudent.push(f.name);
+                      setLoadingMsg(`Converting ${f.name} (HEIC) via server...`);
+                      const converted = await convertOnServer(f, 'convert-heic');
+                      if (converted) {
+                        const b64 = await fileToBase64(converted);
+                        pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+                      } else {
+                        console.warn(`[BB batch] HEIC conversion failed, marking as badge: ${f.name}`);
+                        heicFailed.push(f.name);
+                        heicFailedForStudent.push(f.name);
+                      }
                     } else if (isImgFile) {
                       const b64 = await convertToJpegViaCanvas(f, 0.92, 2400);
                       if (b64 === null) {
