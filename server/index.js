@@ -99,7 +99,12 @@ app.post('/grade', async (req, res) => {
     console.log(`[step2] after dedup: ${dedupedBlocks.length} blocks (was ${convertedBlocks.length})`);
     console.log(`GRADE HIT — blocks in: ${clientBlocks.length}, after dedup: ${dedupedBlocks.length}, payload: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
 
-    const systemPrompt = req.body.systemPrompt || '';
+    const IMAGE_READING_PREFIX = `You will receive one or more images of a student's handwritten or typed math assignment. The images may be photos, scans, or PDF pages rendered as JPEGs. Even if the image appears faint, low-contrast, or partially legible, attempt to read and grade all visible work. Do not report that no student work is found unless the image is completely blank (solid white or black with no marks whatsoever).
+
+If handwriting is difficult to read, give the student benefit of the doubt and attempt a best-effort interpretation before assigning a score.
+
+`;
+    const systemPrompt = IMAGE_READING_PREFIX + (req.body.systemPrompt || '');
     const userPrompt = req.body.userPrompt || '';
 
     console.log('GRADE HIT - blocks received:', clientBlocks.length, 'system:', systemPrompt.slice(0, 50));
