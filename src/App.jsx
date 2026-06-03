@@ -579,7 +579,10 @@ export default function DM3AGraderV5() {
         canvas.width = scaledViewport.width;
         canvas.height = scaledViewport.height;
         await page.render({ canvasContext: canvas.getContext("2d"), viewport: scaledViewport }).promise;
-        images.push(canvas.toDataURL("image/jpeg", quality).split(",")[1]);
+        console.log('[pdfToImages] canvas size:', canvas.width, 'x', canvas.height, 'scale:', scale);
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        console.log('[pdfToImages] page', pageNum, 'b64 preview:', dataUrl.split(",")[1].slice(0, 50), 'isJpeg:', dataUrl.split(",")[1].startsWith('/9j/'));
+        images.push(dataUrl.split(",")[1]);
       }
       console.log(`[pdfToImages] produced ${images.length} images`);
       return images;
