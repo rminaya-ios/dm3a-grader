@@ -37,12 +37,15 @@ app.post('/upload-pdf', (req, res) => {
 app.post('/convert-heic', async (req, res) => {
   try {
     const { base64, filename } = req.body;
+    console.log('[convert-heic] received:', filename, 'base64 length:', base64?.length);
     const buffer = Buffer.from(base64, 'base64');
+    console.log('[convert-heic] buffer size:', buffer.length, 'first4bytes:', buffer.slice(0, 4).toString('hex'));
     const jpegBuf = await sharp(buffer).jpeg({ quality: 92 }).toBuffer();
+    console.log('[convert-heic] success, output size:', jpegBuf.length);
     const jpegName = (filename || 'image').replace(/\.(heic|heif)$/i, '.jpg');
     res.json({ jpeg: jpegBuf.toString('base64'), filename: jpegName });
   } catch (err) {
-    console.error('[convert-heic] error:', err.message);
+    console.error('[convert-heic] error:', err.message, err.stack);
     res.status(500).json({ error: err.message });
   }
 });

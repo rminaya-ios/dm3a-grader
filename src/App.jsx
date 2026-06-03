@@ -392,13 +392,16 @@ export default function DM3AGraderV5() {
       reader.onload = async () => {
         try {
           const base64 = reader.result.split(',')[1];
+          console.log('[convertOnServer] calling', endpoint, 'for', file.name, 'base64 length:', base64?.length);
           const res = await fetch(`${SERVER_URL}/${endpoint}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ base64, filename: file.name })
           });
+          console.log('[convertOnServer] response status:', res.status);
           const data = await res.json();
-          if (data.error) { console.warn(`[${endpoint}] server error:`, data.error); resolve(null); return; }
+          console.log('[convertOnServer] response data keys:', Object.keys(data));
+          if (data.error) { console.error('[convertOnServer] server error:', data.error); resolve(null); return; }
           const isHeic = endpoint === 'convert-heic';
           const b64 = isHeic ? data.jpeg : data.pdf;
           const newFilename = isHeic
