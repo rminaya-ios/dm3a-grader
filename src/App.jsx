@@ -1824,6 +1824,7 @@ Return a JSON array with one object per student found in the submission.`;
           style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15 }}
           onClick={async () => {
             // Grade each BB group sequentially using individual files mode
+            console.log('[BB GROUPS]', bbGroups.map(g => ({ studentId: g.studentId, files: g.files.map(f => f.file.name) })));
             setStep("grading");
             setLoading(true);
             const allResults = [];
