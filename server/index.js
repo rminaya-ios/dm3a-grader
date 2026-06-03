@@ -5,6 +5,7 @@ const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 const mammoth = require('mammoth');
 const htmlPdfNode = require('html-pdf-node');
+const heicConvert = require('heic-convert');
 const fs = require('fs');
 const path = require('path');
 
@@ -37,15 +38,15 @@ app.post('/upload-pdf', (req, res) => {
 app.post('/convert-heic', async (req, res) => {
   try {
     const { base64, filename } = req.body;
-    console.log('[convert-heic] received:', filename, 'base64 length:', base64?.length);
-    const buffer = Buffer.from(base64, 'base64');
-    console.log('[convert-heic] buffer size:', buffer.length, 'first4bytes:', buffer.slice(0, 4).toString('hex'));
-    const jpegBuf = await sharp(buffer).jpeg({ quality: 92 }).toBuffer();
-    console.log('[convert-heic] success, output size:', jpegBuf.length);
-    const jpegName = (filename || 'image').replace(/\.(heic|heif)$/i, '.jpg');
-    res.json({ jpeg: jpegBuf.toString('base64'), filename: jpegName });
+    if (!base64 || !filename) return res.status(400).json({ error: 'Missing base64 or filename' });
+    const inputBuffer = Buffer.from(base64, 'base64');
+    const outputBuffer = await heicConvert({ buffer: inputBuffer, format: 'JPEG', quality: 0.92 });
+    const jpegBase64 = Buffer.from(outputBuffer).toString('base64');
+    const newFilename = filename.replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg');
+    console.log('[convert-heic] success, output size:', outputBuffer.length);
+    res.json({ jpeg: jpegBase64, filename: newFilename });
   } catch (err) {
-    console.error('[convert-heic] error:', err.message, err.stack);
+    console.error('[convert-heic] error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
