@@ -709,10 +709,10 @@ export default function DM3AGraderV5() {
               { type: "text", text: `Page ${c * pagesPerStudent + i + 1}` }
             ]);
             const contentBlocks = [
-              ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
               { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
               ...chunkBlocks,
-              { type: "text", text: "=== END OF STUDENT WORK ===" }
+              { type: "text", text: "=== END OF STUDENT WORK ===" },
+              ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
             ];
             const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
@@ -847,7 +847,6 @@ Return a JSON array with exactly ONE student object.`;
           setLoadingMsg(`Grading ${studentLabel} — part ${chunkNum} of ${totalChunks}...`);
 
           const contentBlocks = [
-            ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
             { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
           ];
           contentBlocks.push({ type: "text", text: `STUDENT SUBMISSION — pages ${c + 1} to ${c + chunk.length} of ${compressedPages.length} total. This is part ${chunkNum} of ${totalChunks}.` });
@@ -985,13 +984,13 @@ Return a JSON array with one object per student found in the submission.`;
           const answerKeyImageCount = sharedBlocks.filter(b => b.type === "image").length;
           const studentImageCount = pageBlocks.filter(b => b.type === "image").length;
           console.log(`[contentBlocks] answer key images: ${answerKeyImageCount}, student images: ${studentImageCount}`);
-          console.log(`[contentBlocks] ORDER: ${sharedBlocks.length ? "ANSWER KEY → " : ""}STUDENT WORK`);
+          console.log(`[contentBlocks] ORDER: STUDENT WORK → END${sharedBlocks.length ? " → ANSWER KEY" : ""}`);
           console.log(`[contentBlocks] student pageBlocks types:`, pageBlocks.map(b => b.type));
           const contentBlocks = [
-            ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
             { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
             ...pageBlocks,
-            { type: "text", text: "=== END OF STUDENT WORK ===" }
+            { type: "text", text: "=== END OF STUDENT WORK ===" },
+            ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
           ];
           console.log(`[contentBlocks] total blocks sent to API: ${contentBlocks.length} (${contentBlocks.filter(b=>b.type==="image").length} images, ${contentBlocks.filter(b=>b.type==="text").length} text)`);
           const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
@@ -1910,10 +1909,10 @@ ${problemScope.trim() ? `The student was assigned the following problems: ${prob
 6. Use "${studentLabel}" as the studentName in your response.
 Return a JSON array with exactly ONE student object.`;
                 const contentBlocks = [
-                  ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
                   { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
                   ...pageBlocks,
-                  { type: "text", text: "=== END OF STUDENT WORK ===" }
+                  { type: "text", text: "=== END OF STUDENT WORK ===" },
+                  ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
                 ];
                 console.log(`Sending ${contentBlocks.length} blocks to server for student ${studentLabel}`);
                 const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
