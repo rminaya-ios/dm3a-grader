@@ -363,7 +363,7 @@ export default function DM3AGraderV5() {
   const rosterInputRef = useRef(null);
   const [isBBBatch, setIsBBBatch] = useState(false);
   const [bbGroups, setBbGroups] = useState([]);
-  const [debugImages, setDebugImages] = useState([]);
+
 
   const assignmentRef = useRef();
   const answerKeyRef = useRef();
@@ -592,7 +592,6 @@ export default function DM3AGraderV5() {
         images.push(dataUrl.split(",")[1]);
       }
       console.log(`[pdfToImages] produced ${images.length} images`);
-      setDebugImages(prev => [...prev, { filename: file.name, pages: images }]);
       return images;
     } catch (err) {
       console.error(`[pdfToImages] failed for file "${file?.name}":`, err);
@@ -1176,32 +1175,7 @@ Return a JSON array with one object per student found in the submission.`;
     mastery: (t) => ({ background: tierBg[t] || "#F5F5F0", color: tierColor[t] || "#333", border: `1px solid ${tierBorder[t] || "#DDD"}`, borderRadius: 4, padding: "3px 10px", fontSize: 13, fontWeight: 700, display: "inline-block" }),
   };
 
-  // ── DEBUG PANEL — declared before any early return to avoid TDZ ──────────
-  const DebugPanel = () => debugImages.length === 0 ? null : (
-    <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999, background: "#FFFDE7", borderTop: "2px solid #F9A825", padding: "12px 16px", fontSize: 12, maxHeight: "40vh", overflowY: "auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={{ fontWeight: 700, fontSize: 13 }}>🛠 Debug Tools — Rendered PDF Pages ({debugImages.reduce((s, d) => s + d.pages.length, 0)} total)</span>
-        <button onClick={() => setDebugImages([])} style={{ background: "#F9A825", border: "none", borderRadius: 4, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Clear Debug Images</button>
-      </div>
-      {debugImages.map((entry, ei) => (
-        <div key={ei} style={{ marginBottom: 8 }}>
-          <span style={{ fontWeight: 600, marginRight: 10 }}>{entry.filename}</span>
-          {entry.pages.map((b64, pi) => (
-            <button key={pi} onClick={() => {
-              const link = document.createElement('a');
-              link.href = 'data:image/jpeg;base64,' + b64;
-              link.download = entry.filename + '_page' + (pi + 1) + '_debug.jpg';
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-            }} style={{ marginRight: 6, background: "#fff", border: "1px solid #F9A825", borderRadius: 4, padding: "2px 8px", fontSize: 11, cursor: "pointer" }}>
-              Download Page {pi + 1}
-            </button>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
+
 
   // ── LOGIN SCREEN ──────────────────────────────────────────────────────────
   if (step === "login" && showLanding)
@@ -1719,7 +1693,7 @@ Return a JSON array with one object per student found in the submission.`;
           </button>
         );
       })()}
-      <DebugPanel />
+
     </div>
   );
 
@@ -2241,7 +2215,7 @@ Return a JSON array with exactly ONE student object.`;
             );
           })()}
         </div>
-        <DebugPanel />
+  
       </div>
     );
   }
