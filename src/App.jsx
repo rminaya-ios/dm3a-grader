@@ -436,7 +436,9 @@ export default function DM3AGraderV5() {
       const parsed = parseBBFilename(f.name);
       const key = parsed ? parsed.studentId : "UNRECOGNIZED";
       if (!groups[key]) groups[key] = { studentId: key, files: [] };
-      groups[key].files.push({ file: f, timestamp: parsed ? parsed.timestamp : "0" });
+      if (!groups[key].files.some(existing => existing.file.name === f.name)) {
+        groups[key].files.push({ file: f, timestamp: parsed ? parsed.timestamp : "0" });
+      }
     });
     // Sort each group's files by timestamp ascending
     Object.values(groups).forEach(g => {
