@@ -376,7 +376,8 @@ export default function DM3AGraderV5() {
   // ─── BB FILENAME PARSER ───────────────────────────────────────────────────
   function parseBBFilename(filename) {
     // Pattern: anything_STUDENTID_attempt_YYYY-MM-DD-HH-MM-SS_originalname.ext
-    const match = filename.match(/^(.+?)_(\d{6,12})_attempt_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_(.+)$/i);
+    // studentId may be numeric (01560658) or alphanumeric username (mdecker)
+    const match = filename.match(/^(.+?)_([a-zA-Z0-9_]{2,20})_attempt_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_(.+)$/i);
     if (!match) return null;
     return { studentId: match[2], timestamp: match[3], originalName: match[4] };
   }
@@ -1498,7 +1499,10 @@ Return a JSON array with one object per student found in the submission.`;
                 const files = Array.from(e.target.files);
                 setStudentFiles(files);
                 // ── BB Batch Mode detection ──────────────────────────────
-                const hasBBFiles = files.length > 1 && files.some(f => parseBBFilename(f.name));
+                // Detect by presence of "_attempt_" — works for both numeric and username-based BB filenames
+                const hasBBFiles = files.length > 1 && files.some(f => f.name.includes("_attempt_"));
+                console.log('[BB DETECT] first filename:', files[0]?.name);
+                console.log('[BB DETECT] hasBBFiles:', hasBBFiles, '(any file contains "_attempt_":', files.some(f => f.name.includes("_attempt_")), ')');
                 setIsBBBatch(hasBBFiles);
                 if (hasBBFiles) {
                   setBbGroups(groupBBFiles(files));
