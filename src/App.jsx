@@ -1850,6 +1850,7 @@ Return a JSON array with one object per student found in the submission.`;
                 const pageBlocks = [];
                 const seenOriginalNames = new Set();
                 const heicFailedForStudent = [];
+                const docxFailedForStudent = [];
                 for (let fi = 0; fi < groupFiles.length; fi++) {
                   const f = groupFiles[fi];
                   try {
@@ -1871,10 +1872,15 @@ Return a JSON array with one object per student found in the submission.`;
                     const isPDFFile = f.type === "application/pdf";
                     const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
                     const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
+                    const isDocxFile = /\.docx$/i.test(f.name) || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
                     if (isPDFFile) {
                       console.log(`[pdfToImages call] BB batch student: "${f?.name}" type="${f?.type}"`);
                     const imgs = await pdfToImages(f, 8, 2400, 0.92);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+                    } else if (isDocxFile) {
+                      // Skip DOCX — unreadable by API, causes false P1
+                      console.warn(`[BB batch] Skipping DOCX: ${f.name} — ask student to resubmit as JPG or PDF`);
+                      docxFailedForStudent.push(f.name);
                     } else if (isHEICFile) {
                       // Skip HEIC entirely — raw bytes are useless to the API and cause false P1
                       console.warn(`[BB batch] Skipping HEIC: ${f.name} — ask student to resubmit as JPG or PDF`);
@@ -1893,6 +1899,10 @@ Return a JSON array with one object per student found in the submission.`;
                   } catch (err) { console.error("Error processing file", f.name, err); }
                 }
                 // If all files failed as HEIC, return a special unprocessable result instead of grading
+                if (pageBlocks.length === 0 && docxFailedForStudent.length > 0) {
+                  console.warn(`[BB batch] ${studentLabel}: all files are DOCX — returning DOCX badge`);
+                  return [{ studentName: studentLabel, overallTier: "DOCX", dimensions: { conceptualUnderstanding: "DOCX", problemSolving: "DOCX", workShown: "DOCX", accuracy: "DOCX" }, problems: [], feedback: "Submission could not be processed — Word documents are not supported. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `DOCX files: ${docxFailedForStudent.join(", ")}` }];
+                }
                 if (pageBlocks.length === 0 && heicFailedForStudent.length > 0) {
                   console.warn(`[BB batch] ${studentLabel}: all files are unprocessable HEIC — returning HEIC badge`);
                   return [{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }];
@@ -2029,13 +2039,20 @@ Return a JSON array with exactly ONE student object.`;
           </div>
         )}
 
-        {/* HEIC Conversion Warning */}
-        {heicFailedFiles.length > 0 && (
+        {/* HEIC/DOCX Conversion Warning */}
+        {(heicFailedFiles.length > 0 || results.some(s => s.overallTier === "DOCX")) && (
           <div style={{ background: "#FFF3CD", border: "2px solid #FFCA2C", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#856404" }}>
-            <strong>⚠️ {heicFailedFiles.length} file(s) could not be processed (HEIC conversion failed).</strong> Ask those students to resubmit as JPG or PDF.
-            <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
-              {heicFailedFiles.map((name, i) => <li key={i}>{name}</li>)}
-            </ul>
+            {(() => {
+              const docxStudents = results.filter(s => s.overallTier === "DOCX").map(s => s.studentName);
+              const total = heicFailedFiles.length + docxStudents.length;
+              return (<>
+                <strong>⚠️ {total} file(s) could not be processed (HEIC/DOCX format not supported).</strong> Ask those students to resubmit as JPG or PDF.
+                <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+                  {heicFailedFiles.map((name, i) => <li key={"h" + i}>{name} (HEIC)</li>)}
+                  {docxStudents.map((name, i) => <li key={"d" + i}>{name} (DOCX)</li>)}
+                </ul>
+              </>);
+            })()}
           </div>
         )}
 
@@ -2046,7 +2063,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {overrides[s.studentName]?.renamedName || s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t}</span>
+                {overrides[s.studentName]?.renamedName || s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>
               </button>
             );
           })}
@@ -2082,8 +2099,14 @@ Return a JSON array with exactly ONE student object.`;
               <p style={{ margin: 0, fontSize: 13, color: "#5A5A55" }}>{subject} · {assignment}</p>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{(ov.overall || student.overallTier) === "HEIC" ? "UNPROCESSABLE" : "OVERALL MASTERY"}</div>
-              <span style={{ ...(ov.overall || student.overallTier) === "HEIC" ? { background: "#F5F5F0", color: "#888", border: "1px solid #DDD", borderRadius: 4, fontWeight: 700, display: "inline-block" } : styles.mastery(ov.overall || student.overallTier), fontSize: 20, padding: "4px 16px" }}>{(ov.overall || student.overallTier) === "HEIC" ? "HEIC ⚠" : (ov.overall || student.overallTier)}</span>
+              {(() => {
+                const tier = ov.overall || student.overallTier;
+                const isUnprocessable = tier === "HEIC" || tier === "DOCX";
+                return (<>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{isUnprocessable ? "UNPROCESSABLE" : "OVERALL MASTERY"}</div>
+                  <span style={{ ...(isUnprocessable ? { background: "#F5F5F0", color: "#888", border: "1px solid #DDD", borderRadius: 4, fontWeight: 700, display: "inline-block" } : styles.mastery(tier)), fontSize: 20, padding: "4px 16px" }}>{isUnprocessable ? `${tier} ⚠` : tier}</span>
+                </>);
+              })()}
               {(() => {
                 const probs = student.problems || [];
                 const graded = probs.filter(p => p.tier && p.tier !== "N/A");
