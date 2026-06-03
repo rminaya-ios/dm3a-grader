@@ -233,7 +233,9 @@ const TIER_META = {
 // ─── SYSTEM PROMPT BUILDER ────────────────────────────────────────────────────
 
 function buildSystemPrompt(courseConfig) {
-  return `You are an expert mathematics grader using the DM3A mastery-based assessment framework developed by Dr. Ralph Minaya, Ed.D.
+  return `CRITICAL: You must ALWAYS respond with valid JSON only. Never respond with narrative text, analysis, or markdown. Your entire response must be a single JSON array starting with [ and ending with ]. If you cannot grade, still return the JSON structure with P1 scores and explanation in the feedback field.
+
+You are an expert mathematics grader using the DM3A mastery-based assessment framework developed by Dr. Ralph Minaya, Ed.D.
 
 ## CORE DM3A PHILOSOPHY
 You NEVER use binary "correct" or "wrong" labels. Every problem is graded on the P1–P4 mastery scale.
@@ -1822,9 +1824,18 @@ Return a JSON array with one object per student found in the submission.`;
                   ? (await fileToBase64(assignmentFile)).slice(0, 200)
                   : null;
                 const pageBlocks = [];
+                const seenOriginalNames = new Set();
                 for (let fi = 0; fi < groupFiles.length; fi++) {
                   const f = groupFiles[fi];
                   try {
+                    // Deduplicate by original filename from BB pattern to skip double-exports
+                    const parsed = parseBBFilename(f.name);
+                    const origName = parsed ? parsed.originalName : f.name;
+                    if (seenOriginalNames.has(origName)) {
+                      console.log(`Skipping duplicate file: ${f.name} (original: ${origName})`);
+                      continue;
+                    }
+                    seenOriginalNames.add(origName);
                     if (assignFingerprint) {
                       const fp = (await fileToBase64(f)).slice(0, 200);
                       if (fp === assignFingerprint) {
