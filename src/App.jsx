@@ -937,9 +937,9 @@ Return a JSON array with exactly ONE student object covering only the problems o
             const fVeryLarge = fMB > 20;
             console.log(`[grading] individual PDF — file: "${f.name}", size: ${fMB.toFixed(1)} MB`);
             setLoadingMsg(`Converting ${f.name} to images${fLarge ? " (compressing — large file)..." : "..."}`);
-            console.log(`[pdfToImages call] individual: "${f?.name}" type="${f?.type}"`);
+            console.log(`[pdfToImages call] individual: "${f?.name}" type="${f?.type}" — calling with maxPages=8`);
             pdfPageImages = await pdfToImages(f, 8, fVeryLarge ? 800 : fLarge ? 1000 : 1200, fVeryLarge ? 0.5 : fLarge ? 0.6 : 0.75);
-            console.log(`[PDF→images] ${f.name}: ${pdfPageImages.length} pages`);
+            console.log(`[PDF→images] ${f.name}: pdfToImages returned ${pdfPageImages.length} page(s) (maxPages was 8)`);
             if (!pdfPageImages || pdfPageImages.length === 0) {
               throw new Error("Could not convert PDF to images — please try a different file");
             }
@@ -982,12 +982,18 @@ Return a JSON array with one object per student found in the submission.`;
             ? pdfPageImages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }))
             : [{ type: "image", source: { type: "base64", media_type: studentMediaType, data: studentB64 } }];
           // Order: assignment prompt → answer key → student work (sharedBlocks already in this order)
+          const answerKeyImageCount = sharedBlocks.filter(b => b.type === "image").length;
+          const studentImageCount = pageBlocks.filter(b => b.type === "image").length;
+          console.log(`[contentBlocks] answer key images: ${answerKeyImageCount}, student images: ${studentImageCount}`);
+          console.log(`[contentBlocks] ORDER: ${sharedBlocks.length ? "ANSWER KEY → " : ""}STUDENT WORK`);
+          console.log(`[contentBlocks] student pageBlocks types:`, pageBlocks.map(b => b.type));
           const contentBlocks = [
             ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference only — do not grade this) ===" }, ...sharedBlocks] : []),
             { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
             ...pageBlocks,
             { type: "text", text: "=== END OF STUDENT WORK ===" }
           ];
+          console.log(`[contentBlocks] total blocks sent to API: ${contentBlocks.length} (${contentBlocks.filter(b=>b.type==="image").length} images, ${contentBlocks.filter(b=>b.type==="text").length} text)`);
           const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
           const parsed = JSON.parse(cleaned);
