@@ -447,7 +447,7 @@ export default function DM3AGraderV5() {
 
   function parseRoster(text) {
     // Supports UTF-16 TSV (Blackboard export) and plain CSV/TSV
-    // Columns we care about: Last Name, First Name, Student ID
+    // Indexes by both numeric Student ID and Username so either format matches
     const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim());
     if (lines.length < 2) return {};
     const sep = lines[0].includes("\t") ? "\t" : ",";
@@ -455,14 +455,25 @@ export default function DM3AGraderV5() {
     const lastIdx = headers.findIndex(h => h.includes("last"));
     const firstIdx = headers.findIndex(h => h.includes("first"));
     const idIdx = headers.findIndex(h => h.includes("student id") || h === "id");
-    if (lastIdx === -1 || firstIdx === -1 || idIdx === -1) return {};
+    const usernameIdx = headers.findIndex(h => h === "username" || h.includes("user name"));
+    if (lastIdx === -1 || firstIdx === -1) return {};
     const map = {};
     lines.slice(1).forEach(line => {
       const cols = line.split(sep).map(c => c.replace(/"/g, "").trim());
-      const id = cols[idIdx]?.replace(/\D/g, "").padStart(8, "0");
       const last = cols[lastIdx] || "";
       const first = cols[firstIdx] || "";
-      if (id && last) map[id] = `${last}, ${first}`;
+      if (!last) return;
+      const fullName = `${last}, ${first}`;
+      // Index by numeric student ID (for ID-based BB filenames)
+      if (idIdx !== -1) {
+        const id = cols[idIdx]?.replace(/\D/g, "").padStart(8, "0");
+        if (id) map[id] = fullName;
+      }
+      // Also index by username (for username-based BB filenames like "mdecker")
+      if (usernameIdx !== -1) {
+        const username = cols[usernameIdx]?.trim().toLowerCase();
+        if (username) map[username] = fullName;
+      }
     });
     return map;
   }
@@ -2053,18 +2064,32 @@ Return a JSON array with exactly ONE student object.`;
                     const count = Object.keys(map).length;
                     if (count === 0) { alert("Could not parse roster. Make sure it has Last Name, First Name, and Student ID columns."); return; }
                     setRosterMap(map);
-                    // Auto-rename all students
+                    // Auto-rename all students — try numeric ID first, then username
                     const newOverrides = { ...overrides };
+                    let matched = 0;
                     results.forEach(s => {
+                      let found = null;
+                      // Try numeric ID (e.g. Student_01234567)
                       const idMatch = s.studentName.match(/(\d{6,10})/);
-                      if (!idMatch) return;
-                      const id = idMatch[1].padStart(8, "0");
-                      if (map[id]) {
-                        newOverrides[s.studentName] = { ...(newOverrides[s.studentName] || {}), renamedName: map[id] };
+                      if (idMatch) found = map[idMatch[1].padStart(8, "0")];
+                      // Try username extracted from "Student_mdecker" pattern
+                      if (!found) {
+                        const uMatch = s.studentName.match(/^Student_(.+)$/i);
+                        if (uMatch) found = map[uMatch[1].toLowerCase()];
+                      }
+                      // Try contains match across all map keys
+                      if (!found) {
+                        const lower = s.studentName.toLowerCase();
+                        const key = Object.keys(map).find(k => lower.includes(k.toLowerCase()));
+                        if (key) found = map[key];
+                      }
+                      if (found) {
+                        newOverrides[s.studentName] = { ...(newOverrides[s.studentName] || {}), renamedName: found };
+                        matched++;
                       }
                     });
                     setOverrides(newOverrides);
-                    alert(`Roster loaded — ${count} students matched. All tabs renamed.`);
+                    alert(`Roster loaded — ${matched} of ${results.length} students matched and renamed.`);
                   };
                   reader.readAsText(file, "utf-16");
                   e.target.value = "";
