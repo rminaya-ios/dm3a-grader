@@ -1863,6 +1863,7 @@ Return a JSON array with one object per student found in the submission.`;
                   : null;
                 const pageBlocks = [];
                 const seenOriginalNames = new Set();
+                const heicFailedForStudent = [];
                 for (let fi = 0; fi < groupFiles.length; fi++) {
                   const f = groupFiles[fi];
                   try {
@@ -1883,18 +1884,28 @@ Return a JSON array with one object per student found in the submission.`;
                     }
                     const isPDFFile = f.type === "application/pdf";
                     const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
+                    const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
                     if (isPDFFile) {
                       console.log(`[pdfToImages call] BB batch student: "${f?.name}" type="${f?.type}"`);
                     const imgs = await pdfToImages(f, 8, 2400, 0.92);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isImgFile) {
                       const b64 = await convertToJpegViaCanvas(f, 0.92, 2400);
-                      if (b64 === null) { heicFailed.push(f.name); }
-                      else { pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }); }
+                      if (b64 === null) {
+                        heicFailed.push(f.name);
+                        if (isHEICFile) heicFailedForStudent.push(f.name);
+                      } else {
+                        pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+                      }
                     } else {
                       console.warn(`Skipping unrecognised file type: ${f.name} (${f.type})`);
                     }
                   } catch (err) { console.error("Error processing file", f.name, err); }
+                }
+                // If all files failed as HEIC, return a special unprocessable result instead of grading
+                if (pageBlocks.length === 0 && heicFailedForStudent.length > 0) {
+                  console.warn(`[BB batch] ${studentLabel}: all files are unprocessable HEIC — returning HEIC badge`);
+                  return [{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }];
                 }
                 const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
@@ -2045,7 +2056,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {overrides[s.studentName]?.renamedName || s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t}</span>
+                {overrides[s.studentName]?.renamedName || s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t}</span>
               </button>
             );
           })}
@@ -2081,8 +2092,8 @@ Return a JSON array with exactly ONE student object.`;
               <p style={{ margin: 0, fontSize: 13, color: "#5A5A55" }}>{subject} · {assignment}</p>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>OVERALL MASTERY</div>
-              <span style={{ ...styles.mastery(ov.overall || student.overallTier), fontSize: 20, padding: "4px 16px" }}>{ov.overall || student.overallTier}</span>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{(ov.overall || student.overallTier) === "HEIC" ? "UNPROCESSABLE" : "OVERALL MASTERY"}</div>
+              <span style={{ ...(ov.overall || student.overallTier) === "HEIC" ? { background: "#F5F5F0", color: "#888", border: "1px solid #DDD", borderRadius: 4, fontWeight: 700, display: "inline-block" } : styles.mastery(ov.overall || student.overallTier), fontSize: 20, padding: "4px 16px" }}>{(ov.overall || student.overallTier) === "HEIC" ? "HEIC ⚠" : (ov.overall || student.overallTier)}</span>
               {(() => {
                 const probs = student.problems || [];
                 const graded = probs.filter(p => p.tier && p.tier !== "N/A");
