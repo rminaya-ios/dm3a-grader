@@ -582,6 +582,12 @@ export default function DM3AGraderV5() {
         console.log('[pdfToImages] canvas size:', canvas.width, 'x', canvas.height, 'scale:', scale);
         const dataUrl = canvas.toDataURL("image/jpeg", quality);
         console.log('[pdfToImages] page', pageNum, 'b64 preview:', dataUrl.split(",")[1].slice(0, 50), 'isJpeg:', dataUrl.split(",")[1].startsWith('/9j/'));
+        const link = document.createElement('a');
+        link.href = 'data:image/jpeg;base64,' + dataUrl.split(',')[1];
+        link.download = 'debug_page_' + pageNum + '.jpg';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
         images.push(dataUrl.split(",")[1]);
       }
       console.log(`[pdfToImages] produced ${images.length} images`);
