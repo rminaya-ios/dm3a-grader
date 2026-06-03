@@ -1885,15 +1885,20 @@ Return a JSON array with one object per student found in the submission.`;
                     const isPDFFile = f.type === "application/pdf";
                     const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
                     const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
+                    if (isHEICFile) console.log('[HEIC DEBUG] detected HEIC file:', f.name, 'for student:', group.studentId);
                     if (isPDFFile) {
                       console.log(`[pdfToImages call] BB batch student: "${f?.name}" type="${f?.type}"`);
                     const imgs = await pdfToImages(f, 8, 2400, 0.92);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isImgFile) {
                       const b64 = await convertToJpegViaCanvas(f, 0.92, 2400);
+                      console.log('[HEIC DEBUG] convertToJpegViaCanvas result for', f.name, '— b64 is null:', b64 === null, 'isHEICFile:', isHEICFile);
                       if (b64 === null) {
                         heicFailed.push(f.name);
-                        if (isHEICFile) heicFailedForStudent.push(f.name);
+                        if (isHEICFile) {
+                          heicFailedForStudent.push(f.name);
+                          console.log('[HEIC DEBUG] recording HEIC failure for student:', group.studentId, 'heicFailedForStudent state:', heicFailedForStudent);
+                        }
                       } else {
                         pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
                       }
@@ -1903,6 +1908,7 @@ Return a JSON array with one object per student found in the submission.`;
                   } catch (err) { console.error("Error processing file", f.name, err); }
                 }
                 // If all files failed as HEIC, return a special unprocessable result instead of grading
+                console.log('[HEIC DEBUG] student', group.studentId, 'pageBlocks.length:', pageBlocks.length, 'heicFailedForStudent:', heicFailedForStudent);
                 if (pageBlocks.length === 0 && heicFailedForStudent.length > 0) {
                   console.warn(`[BB batch] ${studentLabel}: all files are unprocessable HEIC — returning HEIC badge`);
                   return [{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }];
