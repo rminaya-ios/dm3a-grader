@@ -573,7 +573,7 @@ export default function DM3AGraderV5() {
           break; // no more pages in the actual page tree
         }
         const viewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(maxDimension / viewport.width, maxDimension / viewport.height, 1);
+        const scale = Math.min(maxDimension / viewport.width, maxDimension / viewport.height);
         const scaledViewport = page.getViewport({ scale });
         const canvas = document.createElement("canvas");
         canvas.width = scaledViewport.width;
