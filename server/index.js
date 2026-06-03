@@ -3,6 +3,10 @@ const express = require('express');
 const sharp = require('sharp');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
+const mammoth = require('mammoth');
+const htmlPdfNode = require('html-pdf-node');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,6 +32,41 @@ app.get('/', (req, res) => res.json({ status: 'DM3A Grader Server running' }));
 app.post('/upload-pdf', (req, res) => {
   const { base64 } = req.body;
   res.json({ file_id: base64 });
+});
+
+app.post('/convert-heic', async (req, res) => {
+  try {
+    const { base64, filename } = req.body;
+    const buffer = Buffer.from(base64, 'base64');
+    const jpegBuf = await sharp(buffer).jpeg({ quality: 92 }).toBuffer();
+    const jpegName = (filename || 'image').replace(/\.(heic|heif)$/i, '.jpg');
+    res.json({ jpeg: jpegBuf.toString('base64'), filename: jpegName });
+  } catch (err) {
+    console.error('[convert-heic] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/convert-docx', async (req, res) => {
+  let tmpPath = null;
+  try {
+    const { base64, filename } = req.body;
+    const buffer = Buffer.from(base64, 'base64');
+    tmpPath = path.join('/tmp', `dm3a_${Date.now()}.docx`);
+    fs.writeFileSync(tmpPath, buffer);
+    const { value: html } = await mammoth.convertToHtml({ path: tmpPath });
+    const wrappedHtml = `<!DOCTYPE html><html><body style="font-family:sans-serif;font-size:14px;padding:20px">${html}</body></html>`;
+    const file = { content: wrappedHtml };
+    const options = { format: 'A4' };
+    const pdfBuf = await htmlPdfNode.generatePdf(file, options);
+    const pdfName = (filename || 'document').replace(/\.docx$/i, '.pdf');
+    res.json({ pdf: pdfBuf.toString('base64'), filename: pdfName });
+  } catch (err) {
+    console.error('[convert-docx] error:', err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (tmpPath && fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+  }
 });
 
 app.post('/grade', async (req, res) => {
