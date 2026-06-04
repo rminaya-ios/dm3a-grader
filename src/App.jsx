@@ -1291,7 +1291,7 @@ Return a JSON array with one object per student found in the submission.`;
       probs.forEach((prob, idx) => {
         doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(0, 0, 0); // hard reset every row
         doc.setFontSize(8); doc.setFont("helvetica", "normal");
-        const noteText = prob.processAssessment || prob.description || "";
+        const noteText = (prob.processAssessment || prob.description || "").replace(/[^\x00-\xFF]/g, '').replace(/°/g, ' deg').replace(/·/g, '-').replace(/≈/g, '~').replace(/"/g, '"');
         const noteLines = doc.splitTextToSize(noteText, NOTE_W);
         const rowH = Math.max(9, noteLines.length * LINE_H + 4);
         if (y + rowH > 270) { doc.addPage(); y = 20; }
@@ -1318,7 +1318,8 @@ Return a JSON array with one object per student found in the submission.`;
     doc.setTextColor(...NAVY); doc.text("PERSONALIZED FEEDBACK", M + 3, y + 3.5);
     doc.setTextColor(0, 0, 0); y += 8;
     doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-    const feedbackLines = doc.splitTextToSize(student.feedback || "", W - M * 2 - 4);
+    const feedbackText = (student.feedback || "").replace(/[^\x00-\xFF]/g, '').replace(/°/g, ' deg').replace(/·/g, '-').replace(/≈/g, '~').replace(/"/g, '"');
+    const feedbackLines = doc.splitTextToSize(feedbackText, W - M * 2 - 4);
     doc.text(feedbackLines, M + 2, y);
     y += feedbackLines.length * 5 + 4;
 
