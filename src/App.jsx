@@ -1287,8 +1287,9 @@ Return a JSON array with one object per student found in the submission.`;
       doc.text("PROBLEM BREAKDOWN", M + 3, y + 4.5);
       doc.setTextColor(0, 0, 0);
       y += 8;
-      const NOTE_X = M + 26; const NOTE_W = W - M * 2 - 28; const LINE_H = 4.5;
+      const NOTE_X = M + 26; const NOTE_W = W - M - NOTE_X - 2; const LINE_H = 4.5;
       probs.forEach((prob, idx) => {
+        doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(0, 0, 0); // hard reset every row
         doc.setFontSize(8); doc.setFont("helvetica", "normal");
         const noteText = prob.processAssessment || prob.description || "";
         const noteLines = doc.splitTextToSize(noteText, NOTE_W);
