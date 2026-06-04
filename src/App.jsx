@@ -1202,7 +1202,7 @@ Return a JSON array with one object per student found in the submission.`;
     const namePart = displayName.includes(",")
       ? displayName.split(",").map(p => p.trim()).reverse().join("_")
       : displayName.replace(/\s+/g, "_");
-    const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "");
+    const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "").replace(/_+$/, "");
     return `${namePart}_${assignPart}_${tier}.pdf`;
   }
 
@@ -1283,28 +1283,35 @@ Return a JSON array with one object per student found in the submission.`;
     if (probs.length > 0) {
       doc.setFontSize(9); doc.setFont("helvetica", "bold");
       doc.setFillColor(...NAVY); doc.rect(M, y, W - M * 2, 6, "F");
-      doc.setTextColor(...WHITE); doc.text("PROBLEM BREAKDOWN", M + 3, y + 4.5);
+      doc.setTextColor(...WHITE); doc.setFont("helvetica", "bold");
+      doc.text("PROBLEM BREAKDOWN", M + 3, y + 4.5);
       doc.setTextColor(0, 0, 0);
       y += 8;
+      const NOTE_X = M + 26; const NOTE_W = W - M * 2 - 28; const LINE_H = 4.5;
       probs.forEach((prob, idx) => {
-        if (y > 265) { doc.addPage(); y = 20; }
+        doc.setFontSize(8); doc.setFont("helvetica", "normal");
+        const noteText = prob.processAssessment || prob.description || "";
+        const noteLines = doc.splitTextToSize(noteText, NOTE_W);
+        const rowH = Math.max(9, noteLines.length * LINE_H + 4);
+        if (y + rowH > 270) { doc.addPage(); y = 20; }
         const ptc = tierColors[getProblemTier(student.studentName, prob.id, prob.tier)] || [80, 80, 80];
         doc.setFillColor(idx % 2 === 0 ? 248 : 255, idx % 2 === 0 ? 247 : 255, idx % 2 === 0 ? 244 : 255);
-        doc.rect(M, y, W - M * 2, 9, "F");
+        doc.rect(M, y, W - M * 2, rowH, "F");
+        const textY = y + LINE_H + 1;
         doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(...ptc);
-        doc.text(`${prob.id}`, M + 2, y + 6);
+        doc.text(`${prob.id}`, M + 2, textY);
         doc.setFont("helvetica", "bold"); doc.setTextColor(...ptc);
-        doc.text(getProblemTier(student.studentName, prob.id, prob.tier), M + 14, y + 6);
+        doc.text(getProblemTier(student.studentName, prob.id, prob.tier), M + 14, textY);
         doc.setFont("helvetica", "normal"); doc.setTextColor(50, 50, 50);
-        const note = (prob.processAssessment || prob.description || "").slice(0, 90);
-        doc.text(note, M + 24, y + 6);
-        y += 9;
+        doc.text(noteLines, NOTE_X, textY);
+        y += rowH;
       });
     }
 
     // Feedback
     y += 6;
     if (y > 240) { doc.addPage(); y = 20; }
+    doc.setFont("helvetica", "normal"); // explicit reset before feedback section
     doc.setFillColor(...LIGHT); doc.rect(M, y, W - M * 2, 5, "F");
     doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setFillColor(...NAVY);
     doc.setTextColor(...NAVY); doc.text("PERSONALIZED FEEDBACK", M + 3, y + 3.5);
