@@ -154,7 +154,7 @@ const COURSE_CONFIGS = {
   },
 
   "Precalculus": {
-    tier: "beta",
+    tier: "optimized",
     label: "Precalculus",
     description: "Functions, trigonometry, conics, sequences — bridges Algebra to Calculus",
     problemTypes: ["functions and transformations", "polynomial functions", "rational functions", "exponential and logarithmic functions", "trigonometric functions", "inverse trig", "analytic trigonometry", "conic sections", "sequences and series", "polar coordinates"],

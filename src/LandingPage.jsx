@@ -208,7 +208,7 @@ export default function LandingPage({ onSignIn }) {
         </div>
 
         <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>
-          Validated across Elementary Statistics · Intermediate Algebra · Precalculus (Beta) · 100+ student submissions graded
+          Validated across Elementary Statistics · Intermediate Algebra · Precalculus · 100+ student submissions graded
         </p>
       </section>
 
