@@ -1287,7 +1287,7 @@ Return a JSON array with one object per student found in the submission.`;
       doc.text("PROBLEM BREAKDOWN", M + 3, y + 4.5);
       doc.setTextColor(0, 0, 0);
       y += 8;
-      const NOTE_X = M + 26; const NOTE_W = W - M - NOTE_X - 2; const LINE_H = 4.5;
+      const NOTE_X = M + 26; const NOTE_W = W - M - NOTE_X - 6; const LINE_H = 4.5;
       probs.forEach((prob, idx) => {
         doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(0, 0, 0); // hard reset every row
         doc.setFontSize(8); doc.setFont("helvetica", "normal");
@@ -1303,7 +1303,7 @@ Return a JSON array with one object per student found in the submission.`;
         doc.text(`${prob.id}`, M + 2, textY);
         doc.setFont("helvetica", "bold"); doc.setTextColor(...ptc);
         doc.text(getProblemTier(student.studentName, prob.id, prob.tier), M + 14, textY);
-        doc.setFont("helvetica", "normal"); doc.setTextColor(50, 50, 50);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
         doc.text(noteLines, NOTE_X, textY);
         y += rowH;
       });
