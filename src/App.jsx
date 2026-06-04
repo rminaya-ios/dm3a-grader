@@ -1193,6 +1193,158 @@ Return a JSON array with one object per student found in the submission.`;
     a.click();
   }
 
+  // ─── PDF REPORT GENERATION ───────────────────────────────────────────────
+
+  function buildReportFilename(student) {
+    const ov = overrides[student.studentName] || {};
+    const displayName = ov.renamedName || student.studentName;
+    const tier = ov.overall || student.overallTier;
+    const namePart = displayName.includes(",")
+      ? displayName.split(",").map(p => p.trim()).reverse().join("_")
+      : displayName.replace(/\s+/g, "_");
+    const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "");
+    return `${namePart}_${assignPart}_${tier}.pdf`;
+  }
+
+  async function generateStudentPDF(student) {
+    const { jsPDF } = await import("jspdf");
+    const ov = overrides[student.studentName] || {};
+    const displayName = ov.renamedName || student.studentName;
+    const tier = ov.overall || student.overallTier;
+    const NAVY = [10, 22, 40];
+    const GOLD = [201, 168, 76];
+    const WHITE = [255, 255, 255];
+    const LIGHT = [248, 247, 244];
+    const tierColors = { P4: [15, 110, 86], P3: [24, 95, 165], P2: [133, 79, 11], P1: [163, 45, 45] };
+    const tc = tierColors[tier] || [80, 80, 80];
+
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const W = 210; const M = 15;
+
+    // Header bar
+    doc.setFillColor(...NAVY);
+    doc.rect(0, 0, W, 28, "F");
+    doc.setFillColor(...GOLD);
+    doc.rect(0, 28, W, 2, "F");
+    doc.setTextColor(...WHITE);
+    doc.setFontSize(16); doc.setFont("helvetica", "bold");
+    doc.text("DM3A Grader", M, 12);
+    doc.setFontSize(9); doc.setFont("helvetica", "normal");
+    doc.text("Mastery-Based Assessment Report", M, 19);
+    doc.text(`${subject} · ${assignment || "Assignment"}`, M, 25);
+    doc.setTextColor(0, 0, 0);
+
+    // Student name + tier badge
+    let y = 40;
+    doc.setFontSize(18); doc.setFont("helvetica", "bold");
+    doc.text(displayName, M, y);
+    doc.setFillColor(...tc);
+    doc.roundedRect(W - M - 22, y - 9, 22, 10, 2, 2, "F");
+    doc.setTextColor(...WHITE);
+    doc.setFontSize(11); doc.setFont("helvetica", "bold");
+    doc.text(tier, W - M - 11, y - 3, { align: "center" });
+    doc.setTextColor(0, 0, 0);
+
+    // P3/P4 rate
+    const probs = student.problems || [];
+    const graded = probs.filter(p => p.tier && p.tier !== "N/A");
+    const masteryCount = graded.filter(p => p.tier === "P3" || p.tier === "P4").length;
+    const pct = graded.length > 0 ? Math.round(masteryCount / graded.length * 100) : null;
+    y += 7;
+    doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(90, 90, 85);
+    doc.text(pct !== null ? `P3/P4 Rate: ${pct}% (${masteryCount} of ${graded.length} problems at mastery)` : "", M, y);
+    doc.setTextColor(0, 0, 0);
+
+    // Dimensions
+    y += 10;
+    doc.setFillColor(...LIGHT);
+    doc.rect(M, y, W - M * 2, 24, "F");
+    doc.setFontSize(7); doc.setFont("helvetica", "bold"); doc.setTextColor(90, 90, 85);
+    doc.text("DIMENSIONS", M + 3, y + 5);
+    const dims = [
+      ["Conceptual", ov.conceptual || student.dimensions?.conceptualUnderstanding],
+      ["Problem Solving", ov.problemSolving || student.dimensions?.problemSolving],
+      ["Work Shown", ov.workShown || student.dimensions?.workShown],
+      ["Accuracy", ov.accuracy || student.dimensions?.accuracy],
+    ];
+    const colW = (W - M * 2) / 4;
+    dims.forEach(([label, val], i) => {
+      const x = M + i * colW + colW / 2;
+      const dtc = tierColors[val] || [80, 80, 80];
+      doc.setFontSize(14); doc.setFont("helvetica", "bold"); doc.setTextColor(...dtc);
+      doc.text(val || "—", x, y + 16, { align: "center" });
+      doc.setFontSize(7); doc.setFont("helvetica", "normal"); doc.setTextColor(90, 90, 85);
+      doc.text(label, x, y + 22, { align: "center" });
+    });
+    doc.setTextColor(0, 0, 0);
+
+    // Problem breakdown
+    y += 32;
+    if (probs.length > 0) {
+      doc.setFontSize(9); doc.setFont("helvetica", "bold");
+      doc.setFillColor(...NAVY); doc.rect(M, y, W - M * 2, 6, "F");
+      doc.setTextColor(...WHITE); doc.text("PROBLEM BREAKDOWN", M + 3, y + 4.5);
+      doc.setTextColor(0, 0, 0);
+      y += 8;
+      probs.forEach((prob, idx) => {
+        if (y > 265) { doc.addPage(); y = 20; }
+        const ptc = tierColors[getProblemTier(student.studentName, prob.id, prob.tier)] || [80, 80, 80];
+        doc.setFillColor(idx % 2 === 0 ? 248 : 255, idx % 2 === 0 ? 247 : 255, idx % 2 === 0 ? 244 : 255);
+        doc.rect(M, y, W - M * 2, 9, "F");
+        doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(...ptc);
+        doc.text(`${prob.id}`, M + 2, y + 6);
+        doc.setFont("helvetica", "bold"); doc.setTextColor(...ptc);
+        doc.text(getProblemTier(student.studentName, prob.id, prob.tier), M + 14, y + 6);
+        doc.setFont("helvetica", "normal"); doc.setTextColor(50, 50, 50);
+        const note = (prob.processAssessment || prob.description || "").slice(0, 90);
+        doc.text(note, M + 24, y + 6);
+        y += 9;
+      });
+    }
+
+    // Feedback
+    y += 6;
+    if (y > 240) { doc.addPage(); y = 20; }
+    doc.setFillColor(...LIGHT); doc.rect(M, y, W - M * 2, 5, "F");
+    doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setFillColor(...NAVY);
+    doc.setTextColor(...NAVY); doc.text("PERSONALIZED FEEDBACK", M + 3, y + 3.5);
+    doc.setTextColor(0, 0, 0); y += 8;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+    const feedbackLines = doc.splitTextToSize(student.feedback || "", W - M * 2 - 4);
+    doc.text(feedbackLines, M + 2, y);
+    y += feedbackLines.length * 5 + 4;
+
+    // Footer
+    doc.setFontSize(7); doc.setTextColor(150, 150, 150);
+    doc.text(`Generated by DM3A Grader · Dr. Ralph Minaya, Ed.D. · ${new Date().toLocaleDateString()}`, M, 290);
+
+    return doc;
+  }
+
+  async function downloadStudentReport(student) {
+    const doc = await generateStudentPDF(student);
+    doc.save(buildReportFilename(student));
+  }
+
+  async function downloadAllReports() {
+    const { default: JSZip } = await import("jszip");
+    const gradeable = results.filter(s => !["HEIC", "DOCX"].includes(s.overallTier));
+    if (!gradeable.length) return;
+    setLoadingMsg("Generating reports...");
+    const zip = new JSZip();
+    for (const student of gradeable) {
+      const doc = await generateStudentPDF(student);
+      const pdfBytes = doc.output("arraybuffer");
+      zip.file(buildReportFilename(student), pdfBytes);
+    }
+    const blob = await zip.generateAsync({ type: "blob" });
+    const date = new Date().toISOString().slice(0, 10);
+    const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `DM3A_Reports_${assignPart}_${date}.zip`; a.click();
+    setLoadingMsg("");
+  }
+
   // ─── COLORS ───────────────────────────────────────────────────────────────
 
   // Top-level systemPrompt — used by BB batch preview screen (subject may not be set yet at render time)
@@ -2052,6 +2204,7 @@ Return a JSON array with exactly ONE student object.`;
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button style={styles.btnOutline} onClick={() => setStep("setup")}>← Back to Setup</button>
               <button style={styles.btnOutline} onClick={exportCSV}>Export CSV</button>
+              <button style={styles.btnOutline} onClick={downloadAllReports}>⬇ Download All Reports</button>
               <button style={styles.btnOutline} onClick={() => rosterInputRef.current.click()}>
                 👥 Load Roster
               </button>
@@ -2097,7 +2250,7 @@ Return a JSON array with exactly ONE student object.`;
                   e.target.value = "";
                 }}
               />
-              <button style={styles.btnOutline} onClick={() => downloadPDF(student)}>⬇ Download Report</button>
+              <button style={styles.btnOutline} onClick={() => downloadStudentReport(student)}>⬇ Download Report</button>
               <button style={styles.btn} onClick={() => { setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
             </div>
           </div>
