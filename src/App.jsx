@@ -319,8 +319,7 @@ Each student object:
   "instructorNote": "any concerns or observations for the instructor"
 }
 
-You are grading a student's homework. The answer key covers problems 2 through 84 (even numbers only). The student's work is spread across multiple pages/images. You MUST examine EVERY image carefully and grade EVERY problem the student attempted. Do not stop after the first page. Check all 6 pages of student work. Return one JSON entry for each problem found — there should be approximately 42 entries total.
-You MUST grade ALL problems visible in the student work. Do not stop early. Complete the full JSON array before stopping.
+You MUST grade ALL problems visible in the student work across ALL submitted images. Do not stop after the first image. Examine every image carefully and grade every problem the student attempted. Do not stop early. Complete the full JSON array before stopping.
 
 Student work may appear as handwritten answers written directly onto a printed assignment sheet. In these cases, the printed sheet serves as both the assignment and the submission. Look carefully for handwritten numbers, expressions, or work written next to or between the printed problems. Any handwriting visible on the page is student work and must be graded. Do not conclude that no work was submitted simply because the page appears to be a printed form.`;
 }
@@ -348,6 +347,7 @@ export default function DM3AGraderV5() {
   const [combinedStudentName, setCombinedStudentName] = useState("");
   const [fileSizeWarnings, setFileSizeWarnings] = useState([]);
   const [heicFailedFiles, setHeicFailedFiles] = useState([]);
+  const [generatingReports, setGeneratingReports] = useState(false);
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
@@ -1359,19 +1359,22 @@ Return a JSON array with one object per student found in the submission.`;
     const { default: JSZip } = await import("jszip");
     const gradeable = results.filter(s => !["HEIC", "DOCX"].includes(s.overallTier));
     if (!gradeable.length) return;
-    setLoadingMsg("Generating reports...");
-    const zip = new JSZip();
-    for (const student of gradeable) {
-      const doc = await generateStudentPDF(student);
-      const pdfBytes = doc.output("arraybuffer");
-      zip.file(buildReportFilename(student), pdfBytes);
+    setGeneratingReports(true);
+    try {
+      const zip = new JSZip();
+      for (const student of gradeable) {
+        const doc = await generateStudentPDF(student);
+        const pdfBytes = doc.output("arraybuffer");
+        zip.file(buildReportFilename(student), pdfBytes);
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      const date = new Date().toISOString().slice(0, 10);
+      const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "");
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+      a.download = `DM3A_Reports_${assignPart}_${date}.zip`; a.click();
+    } finally {
+      setGeneratingReports(false);
     }
-    const blob = await zip.generateAsync({ type: "blob" });
-    const date = new Date().toISOString().slice(0, 10);
-    const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "");
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-    a.download = `DM3A_Reports_${assignPart}_${date}.zip`; a.click();
-    setLoadingMsg("");
   }
 
   // ─── COLORS ───────────────────────────────────────────────────────────────
@@ -2241,7 +2244,9 @@ Return a JSON array with exactly ONE student object.`;
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button style={styles.btnOutline} onClick={() => setStep("setup")}>← Back to Setup</button>
               <button style={styles.btnOutline} onClick={exportCSV}>Export CSV</button>
-              <button style={styles.btnOutline} onClick={downloadAllReports}>⬇ Download All Reports</button>
+              <button style={{ ...styles.btnOutline, opacity: generatingReports ? 0.6 : 1 }} onClick={downloadAllReports} disabled={generatingReports}>
+                {generatingReports ? "Generating reports…" : "⬇ Download All Reports"}
+              </button>
               <button style={styles.btnOutline} onClick={() => rosterInputRef.current.click()}>
                 👥 Load Roster
               </button>

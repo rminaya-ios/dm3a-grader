@@ -246,8 +246,8 @@ app.post('/request-trial', async (req, res) => {
 
     await resend.emails.send({
       from: 'DM3A Grader <onboarding@resend.dev>',
-      to: 'ralph.minaya@drminaya.com',
-      replyTo: email,
+      to: email,
+      bcc: 'ralph.minaya@drminaya.com',
       subject: 'Your DM3A Grader Trial Access',
       html: `
         <div style="font-family:sans-serif;max-width:560px;margin:0 auto;">
