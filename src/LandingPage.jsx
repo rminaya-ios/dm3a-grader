@@ -144,7 +144,7 @@ export default function LandingPage({ onSignIn }) {
             Sign In
           </Btn>
           <Btn onClick={scrollToWaitlist} style={{ padding: "8px 18px", fontSize: 14 }}>
-            Claim Your Founding Spot
+            Start Free Trial
           </Btn>
         </div>
       </nav>
