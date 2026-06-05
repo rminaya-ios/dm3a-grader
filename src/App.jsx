@@ -333,6 +333,7 @@ export default function DM3AGraderV5() {
   const [step, setStep] = useState("login");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [showTierGuide, setShowTierGuide] = useState(false);
   const [subject, setSubject] = useState("");
   const [assignment, setAssignment] = useState("");
@@ -1417,14 +1418,22 @@ Return a JSON array with one object per student found in the submission.`;
         <div style={styles.card}>
           <form onSubmit={handleLogin}>
             <label style={styles.label}>Access Password</label>
-            <input
-              style={{ ...styles.input, marginBottom: 16 }}
-              type="password"
-              placeholder="Enter password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              autoFocus
-            />
+            <div style={{ position: "relative", marginBottom: 16 }}>
+              <input
+                style={{ ...styles.input, paddingRight: 44 }}
+                type={showPassword ? "text" : "password"}
+                placeholder="Enter password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(p => !p)}
+                style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#5A5A55", fontSize: 13, padding: "4px 6px" }}>
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </div>
             {loginError && <p style={{ color: "#A32D2D", fontSize: 13, marginBottom: 12 }}>{loginError}</p>}
             <button style={{ ...styles.btn, width: "100%" }} type="submit">Enter DM3A Grader →</button>
           </form>
