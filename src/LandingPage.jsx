@@ -78,7 +78,7 @@ const Btn = ({ children, onClick, variant = "primary", style = {} }) => {
 
 export default function LandingPage({ onSignIn }) {
   const [email, setEmail] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+  const [trialStatus, setTrialStatus] = useState("idle"); // idle | loading | success | error
   const waitlistRef = useRef(null);
 
   useEffect(() => {
@@ -93,9 +93,21 @@ export default function LandingPage({ onSignIn }) {
   const scrollToWaitlist = () =>
     waitlistRef.current?.scrollIntoView({ behavior: "smooth" });
 
-  const handleWaitlist = () => {
-    setSubmitted(true);
-    window.open(GOOGLE_FORM_URL, "_blank");
+  const handleTrialRequest = async () => {
+    if (!email || !email.includes("@")) return;
+    setTrialStatus("loading");
+    try {
+      const res = await fetch("https://dm3a-grader-production.up.railway.app/request-trial", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (data.success) { setTrialStatus("success"); }
+      else { setTrialStatus("error"); }
+    } catch {
+      setTrialStatus("error");
+    }
   };
 
   const body = {
@@ -194,18 +206,37 @@ export default function LandingPage({ onSignIn }) {
           DM3A Grader is the mastery-based grading tool built by a community college math professor — for instructors who grade alone, without institutional support.
         </p>
 
-        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap", marginBottom: 32 }}>
-          <Btn onClick={scrollToWaitlist} style={{ padding: "14px 32px", fontSize: 16 }}>
-            Claim Your Founding Spot →
-          </Btn>
-          <Btn
-            variant="outline"
-            onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })}
-            style={{ padding: "14px 28px", fontSize: 16 }}
-          >
-            See how it works
-          </Btn>
-        </div>
+        {trialStatus === "success" ? (
+          <div style={{ background: "#ecfdf5", border: "1px solid #6ee7b7", borderRadius: 10, padding: "18px 28px", marginBottom: 32, color: "#065f46", fontSize: 16, fontWeight: 500 }}>
+            ✓ Check your email for your trial password.
+          </div>
+        ) : (
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginBottom: 12 }}>
+              <input
+                type="email"
+                placeholder="your@email.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleTrialRequest()}
+                style={{ padding: "14px 18px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 15, fontFamily: "'DM Sans', sans-serif", minWidth: 220, outline: "none" }}
+              />
+              <Btn onClick={handleTrialRequest} style={{ padding: "14px 28px", fontSize: 15, whiteSpace: "nowrap" }}>
+                {trialStatus === "loading" ? "Sending..." : "Start Free Trial →"}
+              </Btn>
+            </div>
+            {trialStatus === "error" && (
+              <p style={{ color: "#9f1239", fontSize: 13, margin: 0, textAlign: "center" }}>
+                Something went wrong — email <a href="mailto:support@dm3agrader.com" style={{ color: "#9f1239" }}>support@dm3agrader.com</a>
+              </p>
+            )}
+            <div style={{ display: "flex", justifyContent: "center", marginTop: 8 }}>
+              <Btn variant="outline" onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })} style={{ padding: "10px 22px", fontSize: 14 }}>
+                See how it works
+              </Btn>
+            </div>
+          </div>
+        )}
 
         <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>
           Validated across Elementary Statistics · Intermediate Algebra · Precalculus · 100+ student submissions graded
@@ -550,56 +581,30 @@ export default function LandingPage({ onSignIn }) {
           You are one of 25 founding members at $9/month. After 25 spots, the price becomes $12/month — but your rate is locked permanently either way.
         </p>
 
-        {submitted ? (
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 10,
-              background: "rgba(255,255,255,0.1)",
-              border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 12,
-              padding: "20px 32px",
-              color: C.white,
-              fontSize: 17,
-              fontWeight: 500,
-            }}
-          >
-            ✓ You're on the list! We'll be in touch soon.
+        {trialStatus === "success" ? (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 10, background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 12, padding: "20px 32px", color: C.white, fontSize: 17, fontWeight: 500 }}>
+            ✓ Check your email for your trial password.
           </div>
         ) : (
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              justifyContent: "center",
-              flexWrap: "wrap",
-              maxWidth: 480,
-              margin: "0 auto",
-            }}
-          >
-            <input
-              type="email"
-              placeholder="your@email.com"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleWaitlist()}
-              style={{
-                flex: 1,
-                minWidth: 220,
-                padding: "13px 18px",
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,0.2)",
-                background: "rgba(255,255,255,0.08)",
-                color: C.white,
-                fontSize: 15,
-                fontFamily: "'DM Sans', sans-serif",
-                outline: "none",
-              }}
-            />
-            <Btn onClick={handleWaitlist} style={{ padding: "13px 28px", fontSize: 15, whiteSpace: "nowrap" }}>
-              Claim Your Founding Spot
-            </Btn>
+          <div style={{ maxWidth: 480, margin: "0 auto" }}>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+              <input
+                type="email"
+                placeholder="your@email.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleTrialRequest()}
+                style={{ flex: 1, minWidth: 220, padding: "13px 18px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)", color: C.white, fontSize: 15, fontFamily: "'DM Sans', sans-serif", outline: "none" }}
+              />
+              <Btn onClick={handleTrialRequest} style={{ padding: "13px 28px", fontSize: 15, whiteSpace: "nowrap" }}>
+                {trialStatus === "loading" ? "Sending..." : "Start Free Trial"}
+              </Btn>
+            </div>
+            {trialStatus === "error" && (
+              <p style={{ color: "rgba(255,180,180,0.9)", fontSize: 13, marginTop: 10, textAlign: "center" }}>
+                Something went wrong — email <a href="mailto:support@dm3agrader.com" style={{ color: "rgba(255,200,200,0.9)" }}>support@dm3agrader.com</a>
+              </p>
+            )}
           </div>
         )}
       </section>
