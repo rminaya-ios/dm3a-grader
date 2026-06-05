@@ -245,7 +245,7 @@ app.post('/request-trial', async (req, res) => {
     await redis.set(`trial:${password}`, JSON.stringify({ email, expiry, signupDate }), { ex: 7 * 24 * 60 * 60 });
 
     await resend.emails.send({
-      from: 'DM3A Grader <support@dm3agrader.com>',
+      from: 'DM3A Grader <onboarding@resend.dev>',
       to: email,
       bcc: 'ralph.minaya@drminaya.com',
       subject: 'Your DM3A Grader Trial Access',
