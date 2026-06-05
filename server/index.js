@@ -216,6 +216,84 @@ app.post('/delete-file', async (req, res) => {
   }
 });
 
+// ── TRIAL SYSTEM ──────────────────────────────────────────────
+const { Redis } = require('@upstash/redis');
+const { Resend } = require('resend');
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+function generateTrialPassword() {
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let pwd = 'trial-';
+  for (let i = 0; i < 6; i++) pwd += chars[Math.floor(Math.random() * chars.length)];
+  return pwd;
+}
+
+app.post('/request-trial', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email required' });
+
+    const password = generateTrialPassword();
+    const expiry = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+    const signupDate = new Date().toISOString();
+
+    await redis.set(`trial:${password}`, JSON.stringify({ email, expiry, signupDate }), { ex: 7 * 24 * 60 * 60 });
+
+    await resend.emails.send({
+      from: 'DM3A Grader <support@dm3agrader.com>',
+      to: email,
+      bcc: 'ralph.minaya@drminaya.com',
+      subject: 'Your DM3A Grader Trial Access',
+      html: `
+        <div style="font-family:sans-serif;max-width:560px;margin:0 auto;">
+          <div style="background:#1B2A4A;padding:24px;border-radius:8px 8px 0 0;">
+            <h2 style="color:#fff;margin:0;">DM3A Grader</h2>
+            <p style="color:#C9A84C;margin:4px 0 0;">Mastery-Based Grading for Math Instructors</p>
+          </div>
+          <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #eee;">
+            <p>Your 7-day free trial is ready. Use the password below to sign in at <a href="https://dm3agrader.com">dm3agrader.com</a>:</p>
+            <div style="background:#fff;border:2px solid #1B2A4A;border-radius:6px;padding:16px;text-align:center;margin:20px 0;">
+              <span style="font-size:24px;font-weight:bold;letter-spacing:2px;color:#1B2A4A;">${password}</span>
+            </div>
+            <p style="color:#666;font-size:14px;">This password expires in 7 days. No credit card required.</p>
+            <p style="color:#666;font-size:14px;">Questions? Reply to this email or contact <a href="mailto:support@dm3agrader.com">support@dm3agrader.com</a>.</p>
+            <p style="margin-top:24px;">— Dr. Ralph Minaya, Ed.D.<br>Creator, DM3A Grader</p>
+          </div>
+        </div>
+      `
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Trial request error:', err);
+    res.status(500).json({ error: 'Failed to create trial' });
+  }
+});
+
+app.post('/validate-trial', async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ valid: false });
+
+    const data = await redis.get(`trial:${password}`);
+    if (!data) return res.json({ valid: false, reason: 'not_found' });
+
+    const { expiry } = typeof data === 'string' ? JSON.parse(data) : data;
+    if (Date.now() > expiry) return res.json({ valid: false, reason: 'expired' });
+
+    res.json({ valid: true });
+  } catch (err) {
+    console.error('Validate trial error:', err);
+    res.status(500).json({ valid: false });
+  }
+});
+// ── END TRIAL SYSTEM ───────────────────────────────────────────
+
 app.listen(PORT, () => {
   console.log(`DM3A Server running on port ${PORT}`);
   console.log(`sharp version: 0.34.5`);
