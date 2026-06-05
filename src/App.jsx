@@ -480,13 +480,32 @@ export default function DM3AGraderV5() {
     return map;
   }
 
-  function handleLogin(e) {
+  async function handleLogin(e) {
     e.preventDefault();
     if (password === APP_PASSWORD) {
       setStep("setup");
       setShowTierGuide(true);
-    } else {
-      setLoginError("Incorrect password. Please contact Dr. Minaya for access.");
+      return;
+    }
+    // Check trial password via Railway
+    try {
+      setLoginError("Checking password...");
+      const res = await fetch(`${SERVER_URL}/validate-trial`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      const { valid, reason } = await res.json();
+      if (valid) {
+        setStep("setup");
+        setShowTierGuide(true);
+      } else {
+        setLoginError(reason === "expired"
+          ? "Trial password has expired. Contact support@dm3agrader.com to renew."
+          : "Incorrect password. Contact support@dm3agrader.com for access.");
+      }
+    } catch {
+      setLoginError("Could not verify password — check your connection and try again.");
     }
   }
 
