@@ -1557,9 +1557,6 @@ Return a JSON array with one object per student found in the submission.`;
         <div style={{ background: NAVY, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <span style={{ color: GOLD, fontWeight: 700, fontSize: 14, letterSpacing: "0.03em" }}>DM3A Grader — Help</span>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <a href="/DM3A_Grader_User_Manual.pdf" download="DM3A_Grader_User_Manual.pdf" style={{ color: "#f5c842", fontSize: "11px", fontWeight: "500", textDecoration: "none", border: "1px solid rgba(245,200,66,0.6)", borderRadius: "4px", padding: "3px 9px", marginRight: "8px", whiteSpace: "nowrap" }}>
-              ⬇ User Manual
-            </a>
             <button onClick={() => setShowHelp(false)} style={{ background: "none", border: "none", color: GOLD, fontSize: 20, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}>×</button>
           </div>
         </div>
