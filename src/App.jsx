@@ -1556,7 +1556,12 @@ Return a JSON array with one object per student found in the submission.`;
         {/* Header */}
         <div style={{ background: NAVY, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <span style={{ color: GOLD, fontWeight: 700, fontSize: 14, letterSpacing: "0.03em" }}>DM3A Grader — Help</span>
-          <button onClick={() => setShowHelp(false)} style={{ background: "none", border: "none", color: GOLD, fontSize: 20, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}>×</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <a href="/DM3A_Grader_User_Manual.pdf" download="DM3A_Grader_User_Manual.pdf" title="Download User Manual (PDF)" style={{ color: "#f5c842", fontSize: "11px", fontWeight: "500", textDecoration: "none", border: "1px solid #f5c842", borderRadius: "4px", padding: "3px 9px", whiteSpace: "nowrap" }}>
+              Download Manual (PDF)
+            </a>
+            <button onClick={() => setShowHelp(false)} style={{ background: "none", border: "none", color: GOLD, fontSize: 20, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}>×</button>
+          </div>
         </div>
         {/* Tab bar */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 2, padding: "8px 8px 0", background: "#f5f4ef", flexShrink: 0 }}>
