@@ -1496,127 +1496,102 @@ Return a JSON array with one object per student found in the submission.`;
     </div>
   );
 
-  // ── SETUP SCREEN ──────────────────────────────────────────────────────────
-  // ── HELP PAGE ─────────────────────────────────────────────────────────────
-  if (showHelp) {
-    const sections = [
-      {
-        title: "Getting Started",
-        body: "DM3A Grader uses AI to assess student work against your answer key using the P1–P4 mastery scale. It accepts multiple file formats — JPEGs, HEICs, and PDFs — so students can submit however they work best."
-      },
-      {
-        title: "Uploading Files",
-        body: (
-          <div>
-            <p style={{ margin: "0 0 8px" }}><strong>Assignment Prompt:</strong> Upload your assignment instructions as a PDF. This tells the AI what was assigned.</p>
-            <p style={{ margin: "0 0 8px" }}><strong>Answer Key:</strong> Upload your answer key as a PDF. This is used to evaluate correctness.</p>
-            <p style={{ margin: 0 }}><strong>Student Work:</strong> Upload student files from your Blackboard batch export. Supported formats: JPEG, HEIC, PNG, PDF.</p>
-          </div>
-        )
-      },
-      {
-        title: "Getting the Best Results from Student Submissions",
-        body: (
-          <div>
-            <p style={{ margin: "0 0 12px", fontWeight: 600 }}>Best Format for Students</p>
-            <p style={{ margin: "0 0 8px" }}>The most reliable submissions are:</p>
-            <ul style={{ margin: "0 0 12px", paddingLeft: 20, lineHeight: 1.8 }}>
-              <li>A single clearly photographed notebook page per session, or</li>
-              <li>A single scanned PDF of all work in order.</li>
-            </ul>
-            <p style={{ margin: "0 0 12px" }}>Encourage students to label each problem clearly and photograph pages straight-on with good lighting.</p>
-            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Printed Forms with Handwriting</p>
-            <p style={{ margin: "0 0 12px" }}>Some students write answers directly onto printed assignment sheets. Claude can read these, but accuracy improves when the photo is taken straight-on, handwriting is dark and clear, and each page is submitted as a separate image.</p>
-            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Multiple Image Submissions</p>
-            <p style={{ margin: "0 0 12px" }}>When a student submits several images, use the <strong>Problem Scope</strong> field in Group Preview to tell the AI exactly which problems to expect (e.g. "even problems 2–84"). This prevents the AI from stopping early.</p>
-            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Mixed Submissions (Notebook + Printed Sheet)</p>
-            <p style={{ margin: "0 0 12px" }}>In the Group Preview panel, use the <strong>Remove</strong> button to keep only the clearest, most complete pages before grading.</p>
-            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Cover Sheets</p>
-            <p style={{ margin: 0 }}>If a student's first uploaded file is a printed cover sheet with no work on it, check the <strong>"Skip first uploaded file (cover sheet / printed assignment)"</strong> checkbox for that student in Group Preview.</p>
-          </div>
-        )
-      },
-      {
-        title: "How DM3A Grader Compares to Other Tools",
-        body: "Most AI grading tools (including Gradescope) require students to submit work as a PDF in a specific format, with pre-defined page regions. DM3A Grader accepts JPEGs, HEICs, and PDFs in any order — matching how students actually work. The tradeoff: more flexibility means submissions vary more. Use the Group Preview tools (Remove, Cover Sheet checkbox, Problem Scope) to clean up submissions before grading for best results."
-      },
-      {
-        title: "The P1–P4 Mastery Scale",
-        body: (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {[
-              { tier: "P4", label: "Mastery (90%+)", desc: "Correct answer with clear process", color: "#0F6E56", bg: "#E1F5EE" },
-              { tier: "P3", label: "Approaching Mastery (80–89%)", desc: "Mostly correct, minor errors", color: "#185FA5", bg: "#E6F1FB" },
-              { tier: "P2", label: "Developing (60–79%)", desc: "Partial understanding, significant errors", color: "#854F0B", bg: "#FAEEDA" },
-              { tier: "P1", label: "Beginning (Below 60%)", desc: "Attempted but little correct reasoning shown", color: "#A32D2D", bg: "#FCEBEB" },
-            ].map(({ tier, label, desc, color, bg }) => (
-              <div key={tier} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: bg, borderRadius: 6, border: `1px solid ${color}30` }}>
-                <span style={{ fontWeight: 700, fontSize: 18, color, minWidth: 28 }}>{tier}</span>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, color }}>{label}</div>
-                  <div style={{ fontSize: 12, color: "#5A5A55" }}>{desc}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )
-      },
-      {
-        title: "Tips for Instructors",
-        body: (
-          <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 2 }}>
-            <li>Always upload an answer key for best grading accuracy.</li>
-            <li>Use the Problem Scope field for any assignment with more than 10 problems.</li>
-            <li>If a student's grade seems off, check the Group Preview and remove irrelevant images before regrading.</li>
-            <li>The AI grades what it can see — clear, well-lit photos always produce better results.</li>
-          </ul>
-        )
-      }
-    ];
+  // ── HELP PANEL (slide-in overlay) ────────────────────────────────────────
+  const NAVY = "#0f2d5a"; const GOLD = "#f5c842";
+  const helpTabs = [
+    {
+      label: "Getting Started",
+      items: [
+        { q: "What is DM3A Grader?", a: <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 2 }}><li>Select your course from the dropdown.</li><li>Type the assignment name.</li><li>Upload your answer key (Zone 2).</li><li>Upload student work — photos or PDFs (Zone 3).</li><li>Click Grade and wait about 60 seconds.</li></ol> },
+        { q: "Which courses are supported?", a: <><p style={{ margin: "0 0 6px" }}><strong>Fully Supported:</strong> Elementary Statistics, Intermediate Algebra, Precalculus.</p><p style={{ margin: 0 }}><strong>Beta</strong> (review scores before finalizing): Linear Algebra, Calculus I, Calculus II.</p></> },
+      ]
+    },
+    {
+      label: "Uploading Files",
+      items: [
+        { q: "What file types are accepted?", a: <><p style={{ margin: "0 0 6px" }}><strong>Zone 2 (Answer Key):</strong> PDF or image.</p><p style={{ margin: 0 }}><strong>Zone 3 (Student Work):</strong> JPEG, PNG, PDF, HEIC, DOCX. Multiple files allowed.</p></> },
+        { q: "My file is large — will it work?", a: "4–25 MB: automatically compressed. Over 100 MB: a warning appears but you can proceed. Very large files may take several minutes." },
+        { q: "What if a student submitted a Word document?", a: "DOCX files are automatically converted on our server. No action needed — the app handles it." },
+      ]
+    },
+    {
+      label: "Batch Mode",
+      items: [
+        { q: "How do I grade a whole class at once?", a: <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 2 }}><li>Download the batch ZIP from Blackboard.</li><li>Unzip the folder on your computer.</li><li>Drag all the files into Zone 3 at once.</li><li>The app detects Blackboard filenames and switches to Batch Mode automatically.</li><li>Review the student groups, then click Grade All.</li></ol> },
+        { q: "Can I remove files before grading?", a: "Yes. The Group Preview screen shows every file per student. Click ✕ next to any file to remove it before grading starts." },
+      ]
+    },
+    {
+      label: "Results",
+      items: [
+        { q: "Can I change a score the AI gave?", a: "Yes. Every score — overall, per dimension, per problem — has an override dropdown. Overrides appear in the downloaded PDF report." },
+        { q: "How do I load real student names?", a: "Click Load Roster and upload your Blackboard TSV export. The app matches by username and renames all student tabs automatically." },
+        { q: "How do I download reports?", a: "Click ⬇ Download Report for the current student, or ⬇ Download All Reports for a zip of all PDFs at once." },
+      ]
+    },
+    {
+      label: "P1–P4 Scale",
+      items: [
+        { q: "What do P1–P4 mean?", a: <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{[["P4","Mastery (90%+)","#0F6E56","#E1F5EE"],["P3","Approaching (80–89%)","#185FA5","#E6F1FB"],["P2","Developing (60–79%)","#854F0B","#FAEEDA"],["P1","Beginning (<60%)","#A32D2D","#FCEBEB"]].map(([t,l,c,bg]) => <div key={t} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:bg, borderRadius:4, border:`1px solid ${c}30` }}><span style={{ fontWeight:700, color:c, minWidth:24, fontSize:15 }}>{t}</span><span style={{ fontSize:12, color:c }}>{l}</span></div>)}<p style={{ margin:"8px 0 0", fontSize:12, color:"#5A5A55" }}>Each student also gets four dimension scores: Conceptual Understanding, Problem Solving, Work Shown, Accuracy.</p></div> },
+      ]
+    },
+    {
+      label: "Troubleshooting",
+      items: [
+        { q: "A student shows a gray HEIC ⚠ badge", a: "The student's iPhone photo could not be processed. Ask the student to resubmit as JPEG or PDF." },
+        { q: "A student shows a gray DOCX ⚠ badge", a: "Word document conversion failed. Ask the student to save as PDF and resubmit." },
+        { q: "The AI says no student work found", a: "Images may be blurry, dark, or at an extreme angle. Ask the student to retake photos straight-on in good lighting." },
+        { q: "I need more help", a: <span>Email <a href="mailto:support@dm3agrader.com" style={{ color: NAVY }}>support@dm3agrader.com</a> — we respond within 24 hours.</span> },
+      ]
+    },
+  ];
 
-    const HelpAccordion = () => {
-      const [open, setOpen] = useState(new Set([0]));
-      const toggle = i => setOpen(prev => { const s = new Set(prev); s.has(i) ? s.delete(i) : s.add(i); return s; });
-      return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {sections.map((sec, i) => (
-            <div key={i} style={{ border: "1px solid #D8D6CE", borderRadius: 8, overflow: "hidden" }}>
-              <button
-                onClick={() => toggle(i)}
-                style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", background: open.has(i) ? "#F5F4EF" : "#fff", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-                <span style={{ fontWeight: 700, fontSize: 14, color: "#1A1A18" }}>{sec.title}</span>
-                <span style={{ fontSize: 16, color: "#888", marginLeft: 8 }}>{open.has(i) ? "−" : "+"}</span>
+  const HelpPanel = () => {
+    const [activeTab, setActiveTab] = useState(0);
+    const [openItems, setOpenItems] = useState(new Set([0]));
+    const toggleItem = i => setOpenItems(prev => { const s = new Set(prev); s.has(i) ? s.delete(i) : s.add(i); return s; });
+    const items = helpTabs[activeTab].items;
+    return (
+      <div style={{ position: "fixed", top: 0, right: showHelp ? 0 : -340, width: 340, height: "100vh", background: "#fff", boxShadow: "-4px 0 20px rgba(0,0,0,0.18)", zIndex: 200, display: "flex", flexDirection: "column", transition: "right 0.3s ease", fontFamily: "'Georgia','Times New Roman',serif" }}>
+        {/* Header */}
+        <div style={{ background: NAVY, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <span style={{ color: GOLD, fontWeight: 700, fontSize: 14, letterSpacing: "0.03em" }}>DM3A Grader — Help</span>
+          <button onClick={() => setShowHelp(false)} style={{ background: "none", border: "none", color: GOLD, fontSize: 20, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}>×</button>
+        </div>
+        {/* Tab bar */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 2, padding: "8px 8px 0", background: "#f5f4ef", flexShrink: 0 }}>
+          {helpTabs.map((tab, i) => (
+            <button key={i} onClick={() => { setActiveTab(i); setOpenItems(new Set([0])); }}
+              style={{ padding: "5px 10px", fontSize: 11, fontWeight: 600, border: "none", borderRadius: 4, cursor: "pointer", fontFamily: "inherit", background: activeTab === i ? NAVY : "transparent", color: activeTab === i ? GOLD : "#5A5A55", letterSpacing: "0.03em" }}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        {/* Content */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "12px 0" }}>
+          {items.map((item, i) => (
+            <div key={i} style={{ borderBottom: "1px solid #E8E6DE" }}>
+              <button onClick={() => toggleItem(i)}
+                style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 16px", background: openItems.has(i) ? "#f5f4ef" : "#fff", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                <span style={{ fontWeight: 700, fontSize: 12, color: "#1A1A18", lineHeight: 1.4 }}>{item.q}</span>
+                <span style={{ color: "#888", fontSize: 14, marginLeft: 8, flexShrink: 0 }}>{openItems.has(i) ? "−" : "+"}</span>
               </button>
-              {open.has(i) && (
-                <div style={{ padding: "14px 18px", borderTop: "1px solid #E8E6DE", fontSize: 13, color: "#3A3A35", lineHeight: 1.7, background: "#fff" }}>
-                  {typeof sec.body === "string" ? <p style={{ margin: 0 }}>{sec.body}</p> : sec.body}
+              {openItems.has(i) && (
+                <div style={{ padding: "10px 16px 14px", fontSize: 12, color: "#3A3A35", lineHeight: 1.7, background: "#fff" }}>
+                  {typeof item.a === "string" ? <p style={{ margin: 0 }}>{item.a}</p> : item.a}
                 </div>
               )}
             </div>
           ))}
         </div>
-      );
-    };
-
-    return (
-      <div style={styles.root}>
-        <div style={styles.header}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <span style={styles.badge}>DM3A Grader v5</span>
-              <h1 style={styles.h1}>Instructor Help Guide</h1>
-              <p style={styles.sub}>Dr. Ralph Minaya, Ed.D.</p>
-            </div>
-            <button onClick={() => setShowHelp(false)} style={styles.btnOutline}>← Back</button>
-          </div>
-        </div>
-        <HelpAccordion />
       </div>
     );
-  }
+  };
 
+  // ── SETUP SCREEN ──────────────────────────────────────────────────────────
   if (step === "setup") return (
     <div style={styles.root}>
+      <HelpPanel />
       <TierGuideModal />
       <div style={styles.header}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1627,7 +1602,9 @@ Return a JSON array with one object per student found in the submission.`;
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={() => setShowTierGuide(true)} style={styles.btnOutline}>Course Coverage Guide</button>
-            <button onClick={() => setShowHelp(true)} style={styles.btnOutline}>Help</button>
+            <button onClick={() => setShowHelp(prev => !prev)} style={{ ...styles.btnOutline, ...(showHelp ? { background: "#0f2d5a", color: "#f5c842", borderColor: "#0f2d5a" } : {}) }}>
+              {showHelp ? "× Close Help" : "? Help"}
+            </button>
           </div>
         </div>
       </div>
