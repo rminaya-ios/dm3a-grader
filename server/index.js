@@ -6,6 +6,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const mammoth = require('mammoth');
 const htmlPdfNode = require('html-pdf-node');
 const heicConvert = require('heic-convert');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -76,6 +77,8 @@ app.post('/convert-docx', async (req, res) => {
 app.post('/grade', async (req, res) => {
   try {
     const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
+    const recvImageBlocks = clientBlocks.filter(b => b.type === 'image');
+    console.log('[SERVER RECV]', clientBlocks.length, 'blocks,', recvImageBlocks.length, 'image blocks');
 
     // Step 1: Attempt sharp conversion on ALL image blocks regardless of media_type.
     // If sharp succeeds, use the converted JPEG. If it fails, pass the original block through.
@@ -112,11 +115,16 @@ app.post('/grade', async (req, res) => {
     const convertedBlocks = convertedRaw.filter(b => b !== null);
     console.log(`[step1] processed ${convertedBlocks.length} blocks (${convertedRaw.length - convertedBlocks.length} skipped)`);
 
-    // Step 2: Deduplicate image blocks by fingerprinting first 100 chars of base64
+    // Step 2: Deduplicate image blocks by hashing the full base64 data.
+    // (Hashing only a short prefix is unsafe — photos from the same camera/phone
+    // often share an identical JFIF/EXIF header in the first bytes, which caused
+    // distinct images to be falsely treated as duplicates and dropped.)
     const seen = new Set();
     const dedupedBlocks = convertedBlocks.filter(block => {
       if (block.type !== 'image') return true;
-      const fp = block.source?.data?.slice(0, 100) || '';
+      const fp = block.source?.data
+        ? crypto.createHash('md5').update(block.source.data).digest('hex')
+        : '';
       if (seen.has(fp)) return false;
       seen.add(fp);
       return true;
