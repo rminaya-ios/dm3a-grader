@@ -827,8 +827,8 @@ Return nothing else — no preamble, no explanation, just the JSON array.`;
           sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
         }
         if (answerKeyFile) {
-          const blocks = await fileToImageBlocks(answerKeyFile, 3);
-          sharedBlocks.push(...blocks);
+          const akBlock = await answerKeyToDocumentBlock(answerKeyFile);
+          sharedBlocks.push(akBlock);
           sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
 
@@ -969,8 +969,8 @@ Return a JSON array with exactly ONE student object.`;
           sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
         }
         if (answerKeyFile) {
-          const blocks = await fileToImageBlocks(answerKeyFile, 3);
-          sharedBlocks.push(...blocks);
+          const akBlock = await answerKeyToDocumentBlock(answerKeyFile);
+          sharedBlocks.push(akBlock);
           sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
 
@@ -1125,8 +1125,8 @@ Return a JSON array with exactly ONE student object covering only the problems o
             sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
           }
           if (answerKeyFile) {
-            const blocks = await fileToImageBlocks(answerKeyFile, 3);
-            sharedBlocks.push(...blocks);
+            const akBlock = await answerKeyToDocumentBlock(answerKeyFile);
+            sharedBlocks.push(akBlock);
             sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
           }
 
@@ -2167,8 +2167,8 @@ Return a JSON array with one object per student found in the submission.`;
                   sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
                 }
                 if (answerKeyFile) {
-                  const blocks = await fileToImageBlocks(answerKeyFile, 3);
-                  sharedBlocks.push(...blocks);
+                  const akBlock = await answerKeyToDocumentBlock(answerKeyFile);
+                  sharedBlocks.push(akBlock);
                   sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
                 }
                 // Fingerprint Zone 1 to skip student files that are the same document
@@ -2649,3 +2649,19 @@ Return a JSON array with exactly ONE student object.`;
 
   return null;
 }
+
+async function answerKeyToDocumentBlock(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result.split(',')[1];
+      resolve({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: base64 }
+      });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
