@@ -739,10 +739,25 @@ Return nothing else — no preamble, no explanation, just the JSON array.`;
     return null;
   }
 
+  function detectProblemScope() {
+    // Priority 1: explicit problemScope field
+    if (problemScope.trim()) return problemScope.trim();
+    // Priority 2: rubric field if it looks like a comma-separated problem list
+    if (rubric.trim()) {
+      const looksLikeList = /\b\d+[a-dA-D]?\b/.test(rubric) && rubric.includes(",");
+      if (looksLikeList) return rubric.trim();
+    }
+    return null;
+  }
+
   function buildInventoryPrefix(inventory) {
     if (!inventory || inventory.length === 0) return "";
+    const scope = detectProblemScope();
     const list = inventory.map(p => `- ${p.problem} (Image ${p.image}, ${p.legible} legibility): ${p.description}`).join("\n");
-    return `The following ${inventory.length} problems were detected across all submitted images:\n${list}\n\nYou MUST grade EVERY problem in this list. Do not stop until all ${inventory.length} problems have been graded. If a problem is marked as partially legible, grade what you can see and note 'Partial legibility — instructor review recommended.' If a problem is marked as not legible, assign P1 and note 'Work not legible — could not be graded. Instructor should request resubmission.'\n\n`;
+    const scopeLine = scope
+      ? `The instructor specified these problems for this assignment: ${scope}.\n\n`
+      : "";
+    return `${scopeLine}The following ${inventory.length} problems were detected across all submitted images:\n${list}\n\nYou MUST grade EVERY problem in this list. Do not stop until all ${inventory.length} problems have been graded. If a problem is marked as partially legible, grade what you can see and note 'Partial legibility — instructor review recommended.' If a problem is marked as not legible, assign P1 and note 'Work not legible — could not be graded. Instructor should request resubmission.'\n\n`;
   }
 
   async function handleGrade() {
@@ -1703,7 +1718,9 @@ Return a JSON array with one object per student found in the submission.`;
         <label style={styles.label}>Assignment Name</label>
         <input style={{ ...styles.input, marginBottom: 14 }} placeholder="e.g., Quiz 3 — Linear Systems" value={assignment} onChange={e => setAssignment(e.target.value)} />
         <label style={styles.label}>Additional Rubric Notes (optional)</label>
-        <textarea style={{ ...styles.input, minHeight: 80, resize: "vertical" }} placeholder="Any specific grading notes for this assignment..." value={rubric} onChange={e => setRubric(e.target.value)} />
+        <textarea style={{ ...styles.input, minHeight: 80, resize: "vertical", marginBottom: 14 }} placeholder="Any specific grading notes for this assignment..." value={rubric} onChange={e => setRubric(e.target.value)} />
+        <label style={styles.label}>Problems to grade (optional)</label>
+        <input style={styles.input} placeholder="e.g. Problems 1, 2a, 2b, 3, 4a, 4b, 4c, 5a, 5b" value={problemScope} onChange={e => setProblemScope(e.target.value)} />
       </div>
 
       {/* Three-Zone Upload */}
