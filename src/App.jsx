@@ -708,15 +708,16 @@ export default function DM3AGraderV5() {
   // ─── TWO-PASS COMPLETENESS HELPERS ───────────────────────────────────────
 
   const SCAN_PROMPT = `You are scanning student work before grading. Do not grade anything yet. Your only job is to identify every problem or sub-problem visible across ALL images. For each problem found, record:
-- Problem number or label (exactly as written by the student, e.g. 'Problem One', '2a', '2b', 'Problem Three')
+- Problem number or label — normalize all labels to standard numeric form: "Problem One" = "1", "Problem Two" = "2", "Problem Three" = "3", "Problem Four" = "4", "Problem Five" = "5", "Prob 1" = "1", "#1" = "1", "Q1" = "1". If a student writes sub-parts as "a)" or "b)" under a numbered problem, label them as "2a", "2b" etc. Use the normalized form in your output, not what the student wrote.
 - Which image it appears in (image 1, image 2, etc.)
 - Whether the work is legible (yes / partially / no)
 - A one-line description of what the student did
 
 Return ONLY a JSON array like this:
 [
-  { "problem": "Problem 1", "image": 1, "legible": "yes", "description": "Rewrites quadratic, finds vertex" },
-  { "problem": "2a", "image": 2, "legible": "yes", "description": "Vertex form equation" }
+  { "problem": "1", "image": 1, "legible": "yes", "description": "Rewrites quadratic, finds vertex" },
+  { "problem": "2a", "image": 2, "legible": "yes", "description": "Vertex form equation" },
+  { "problem": "2b", "image": 2, "legible": "yes", "description": "Converts to standard form" }
 ]
 Return nothing else — no preamble, no explanation, just the JSON array.`;
 
@@ -750,14 +751,31 @@ Return nothing else — no preamble, no explanation, just the JSON array.`;
     return null;
   }
 
+  function normalizeProblemLabel(label) {
+    if (!label) return label;
+    const WORD_MAP = { one: "1", two: "2", three: "3", four: "4", five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10" };
+    let s = label.trim().toLowerCase();
+    // "problem one" / "prob two" / "question three" → digit
+    s = s.replace(/^(?:problem|prob|question|q|#)\s*([a-z]+)$/, (_, w) => WORD_MAP[w] || _);
+    s = s.replace(/^(?:problem|prob|question|q|#)\s*(\d+)([a-z]?)$/, (_, n, sub) => n + sub);
+    // standalone written numbers "one", "two"
+    s = s.replace(/^([a-z]+)$/, w => WORD_MAP[w] || w);
+    // "2 a" → "2a", "2 b" → "2b"
+    s = s.replace(/^(\d+)\s+([a-z])$/, "$1$2");
+    // "part a" / "a)" under parent context — leave as-is if already looks like "2a"
+    return s;
+  }
+
   function buildInventoryPrefix(inventory) {
     if (!inventory || inventory.length === 0) return "";
     const scope = detectProblemScope();
-    const list = inventory.map(p => `- ${p.problem} (Image ${p.image}, ${p.legible} legibility): ${p.description}`).join("\n");
+    // Normalize all scanned labels before building the prompt
+    const normalized = inventory.map(p => ({ ...p, problem: normalizeProblemLabel(p.problem) || p.problem }));
+    const list = normalized.map(p => `- Problem ${p.problem} (Image ${p.image}, ${p.legible} legibility): ${p.description}`).join("\n");
     const scopeLine = scope
       ? `The instructor specified these problems for this assignment: ${scope}.\n\n`
       : "";
-    return `${scopeLine}The following ${inventory.length} problems were detected across all submitted images:\n${list}\n\nYou MUST grade EVERY problem in this list. Do not stop until all ${inventory.length} problems have been graded. If a problem is marked as partially legible, grade what you can see and note 'Partial legibility — instructor review recommended.' If a problem is marked as not legible, assign P1 and note 'Work not legible — could not be graded. Instructor should request resubmission.'\n\n`;
+    return `${scopeLine}The following ${normalized.length} problems were detected across all submitted images:\n${list}\n\nYou MUST grade EVERY problem in this list. Do not stop until all ${normalized.length} problems have been graded. If a problem is marked as partially legible, grade what you can see and note 'Partial legibility — instructor review recommended.' If a problem is marked as not legible, assign P1 and note 'Work not legible — could not be graded. Instructor should request resubmission.'\n\n`;
   }
 
   async function handleGrade() {
