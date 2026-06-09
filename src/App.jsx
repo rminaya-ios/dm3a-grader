@@ -778,6 +778,10 @@ Return nothing else — no preamble, no explanation, just the JSON array.`;
     return `${scopeLine}The following ${normalized.length} problems were detected across all submitted images:\n${list}\n\nYou MUST grade EVERY problem in this list. Do not stop until all ${normalized.length} problems have been graded. If a problem is marked as partially legible, grade what you can see and note 'Partial legibility — instructor review recommended.' If a problem is marked as not legible, assign P1 and note 'Work not legible — could not be graded. Instructor should request resubmission.'\n\n`;
   }
 
+  function buildScopeDirectPrefix(scope) {
+    return `The instructor has specified these problems must be graded: ${scope}.\n\nSearch ALL submitted images carefully for each problem. Students may label problems as "Problem One", "Problem 1", or just write work without a label. Match work to problems by context and content, not just by labels. Grade every problem in the list — if you genuinely cannot find any work for a problem after examining all images, only then mark it as not submitted.\n\n`;
+  }
+
   async function handleGrade() {
     console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.map(f => f.name));
     if (!subject || !studentFiles.length) {
@@ -970,15 +974,21 @@ Return a JSON array with exactly ONE student object.`;
           sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
 
-        // Pass 1: scan all pages for problem inventory before chunked grading
-        setLoadingMsg(`Scanning all pages for ${studentLabel}...`);
+        // Build problem context — use instructor scope directly if provided, else scan
         const allPageBlocks = compressedPages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
-        const combinedInventory = await scanProblems(allPageBlocks, systemPrompt);
-        if (combinedInventory && combinedInventory.length > 0) {
-          setLoadingMsg(`Found ${combinedInventory.length} problems for ${studentLabel} — grading...`);
-          setProblemInventory(prev => ({ ...prev, [studentLabel]: combinedInventory }));
+        let combinedInventoryPrefix = "";
+        if (problemScope.trim()) {
+          setLoadingMsg(`Grading ${studentLabel} using instructor-specified problem list...`);
+          combinedInventoryPrefix = buildScopeDirectPrefix(problemScope.trim());
+        } else {
+          setLoadingMsg(`Scanning all pages for ${studentLabel}...`);
+          const combinedInventory = await scanProblems(allPageBlocks, systemPrompt);
+          if (combinedInventory && combinedInventory.length > 0) {
+            setLoadingMsg(`Found ${combinedInventory.length} problems for ${studentLabel} — grading...`);
+            setProblemInventory(prev => ({ ...prev, [studentLabel]: combinedInventory }));
+          }
+          combinedInventoryPrefix = buildInventoryPrefix(combinedInventory);
         }
-        const combinedInventoryPrefix = buildInventoryPrefix(combinedInventory);
 
         // Send 2 pages per API call
         const chunkSize = 2;
@@ -1149,15 +1159,20 @@ Return a JSON array with one object per student found in the submission.`;
             ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
           ];
           console.log(`[contentBlocks] total blocks sent to API: ${contentBlocks.length} (${contentBlocks.filter(b=>b.type==="image").length} images, ${contentBlocks.filter(b=>b.type==="text").length} text)`);
-          setLoadingMsg(`Scanning problems in ${f.name}...`);
-          const inventory = await scanProblems(pageBlocks, systemPrompt);
           let effectiveUserPrompt = userPrompt;
-          if (inventory && inventory.length > 0) {
-            setLoadingMsg(`Found ${inventory.length} problem${inventory.length !== 1 ? "s" : ""} in ${f.name} — grading...`);
-            setProblemInventory(prev => ({ ...prev, [f.name]: inventory }));
-            effectiveUserPrompt = buildInventoryPrefix(inventory) + userPrompt;
+          if (problemScope.trim()) {
+            setLoadingMsg(`Grading ${f.name} using instructor-specified problem list...`);
+            effectiveUserPrompt = buildScopeDirectPrefix(problemScope.trim()) + userPrompt;
           } else {
-            setLoadingMsg(`Problem scan inconclusive — grading all visible content in ${f.name}...`);
+            setLoadingMsg(`Scanning problems in ${f.name}...`);
+            const inventory = await scanProblems(pageBlocks, systemPrompt);
+            if (inventory && inventory.length > 0) {
+              setLoadingMsg(`Found ${inventory.length} problem${inventory.length !== 1 ? "s" : ""} in ${f.name} — grading...`);
+              setProblemInventory(prev => ({ ...prev, [f.name]: inventory }));
+              effectiveUserPrompt = buildInventoryPrefix(inventory) + userPrompt;
+            } else {
+              setLoadingMsg(`Problem scan inconclusive — grading all visible content in ${f.name}...`);
+            }
           }
           const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectiveUserPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
@@ -2251,11 +2266,14 @@ Return a JSON array with exactly ONE student object.`;
                   ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
                 ];
                 console.log(`Sending ${contentBlocks.length} blocks to server for student ${studentLabel}`);
-                // Pass 1: scan for problem inventory
-                const bbInventory = await scanProblems(pageBlocks, systemPrompt);
+                // Use scope directly if provided, else scan for problem inventory
+                let bbInventory = null;
                 let bbUserPrompt = userPrompt;
-                if (bbInventory && bbInventory.length > 0) {
-                  bbUserPrompt = buildInventoryPrefix(bbInventory) + userPrompt;
+                if (!problemScope.trim()) {
+                  bbInventory = await scanProblems(pageBlocks, systemPrompt);
+                  if (bbInventory && bbInventory.length > 0) {
+                    bbUserPrompt = buildInventoryPrefix(bbInventory) + userPrompt;
+                  }
                 }
                 const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: bbUserPrompt });
                 const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
