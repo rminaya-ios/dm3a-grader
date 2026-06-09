@@ -2265,11 +2265,14 @@ Return a JSON array with exactly ONE student object.`;
                   { type: "text", text: "=== END OF STUDENT WORK ===" },
                   ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
                 ];
-                console.log(`Sending ${contentBlocks.length} blocks to server for student ${studentLabel}`);
+                const imageBlocks = contentBlocks.filter(b => b.type === "image");
+                console.log(`[BB SEND] Student ${group.studentId}: ${contentBlocks.length} total blocks, ${imageBlocks.length} image blocks`);
                 // Use scope directly if provided, else scan for problem inventory
                 let bbInventory = null;
                 let bbUserPrompt = userPrompt;
-                if (!problemScope.trim()) {
+                if (problemScope.trim()) {
+                  bbUserPrompt = buildScopeDirectPrefix(problemScope.trim()) + userPrompt;
+                } else {
                   bbInventory = await scanProblems(pageBlocks, systemPrompt);
                   if (bbInventory && bbInventory.length > 0) {
                     bbUserPrompt = buildInventoryPrefix(bbInventory) + userPrompt;
@@ -2548,6 +2551,13 @@ Return a JSON array with exactly ONE student object.`;
               </details>
             );
           })()}
+
+          {/* Problems graded count */}
+          {student.problems?.length > 0 && (
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
+              Problems graded: {student.problems.length}
+            </div>
+          )}
 
           {/* Problem Breakdown */}
           {student.problems?.length > 0 && (
