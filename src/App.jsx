@@ -779,7 +779,7 @@ Return nothing else — no preamble, no explanation, just the JSON array.`;
   }
 
   function buildScopeDirectPrefix(scope) {
-    return `The instructor has specified these problems must be graded: ${scope}.\n\nSearch ALL submitted images carefully for each problem. Students may label problems as "Problem One", "Problem 1", or just write work without a label. Match work to problems by context and content, not just by labels. Grade every problem in the list — if you genuinely cannot find any work for a problem after examining all images, only then mark it as not submitted.\n\n`;
+    return `The instructor has specified these problems must be graded: ${scope}.\n\nEach image you receive is a separate page of THIS SAME STUDENT'S submission — work for different problems may appear on different pages/images. Before concluding that ANY problem is missing, you MUST examine EVERY image independently, page by page, looking for that problem's label or matching content. Do not stop searching after the first image.\n\nStudents may label problems using words ("Problem One", "Problem Two") or numerals ("Problem 1", "Problem 2", "#1", "Q1") — treat these as completely equivalent (e.g., "Problem One" = "Problem 1" = "1"). Match work to problems by context and content, not just by exact label text.\n\nGrade every problem in the list — if, after examining ALL images individually, you genuinely cannot find any work for a problem, only then mark it as not submitted.\n\n`;
   }
 
   async function handleGrade() {
