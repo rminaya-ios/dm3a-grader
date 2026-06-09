@@ -348,6 +348,7 @@ export default function DM3AGraderV5() {
   const [fileSizeWarnings, setFileSizeWarnings] = useState([]);
   const [heicFailedFiles, setHeicFailedFiles] = useState([]);
   const [generatingReports, setGeneratingReports] = useState(false);
+  const [problemInventory, setProblemInventory] = useState({}); // studentName → inventory array
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
@@ -704,6 +705,46 @@ export default function DM3AGraderV5() {
 
   // ─── GRADING ─────────────────────────────────────────────────────────────
 
+  // ─── TWO-PASS COMPLETENESS HELPERS ───────────────────────────────────────
+
+  const SCAN_PROMPT = `You are scanning student work before grading. Do not grade anything yet. Your only job is to identify every problem or sub-problem visible across ALL images. For each problem found, record:
+- Problem number or label (exactly as written by the student, e.g. 'Problem One', '2a', '2b', 'Problem Three')
+- Which image it appears in (image 1, image 2, etc.)
+- Whether the work is legible (yes / partially / no)
+- A one-line description of what the student did
+
+Return ONLY a JSON array like this:
+[
+  { "problem": "Problem 1", "image": 1, "legible": "yes", "description": "Rewrites quadratic, finds vertex" },
+  { "problem": "2a", "image": 2, "legible": "yes", "description": "Vertex form equation" }
+]
+Return nothing else — no preamble, no explanation, just the JSON array.`;
+
+  async function scanProblems(pageBlocks, systemPromptBase) {
+    const imageBlocks = pageBlocks.filter(b => b.type === "image");
+    if (imageBlocks.length === 0) return null;
+    const scanContentBlocks = [
+      { type: "text", text: "=== STUDENT WORK SCAN — inventory only, do not grade ===" },
+      ...imageBlocks,
+      { type: "text", text: "=== END ===" }
+    ];
+    try {
+      const raw = await fetchGradeResult({ contentBlocks: scanContentBlocks, systemPrompt: systemPromptBase, userPrompt: SCAN_PROMPT });
+      const start = raw.indexOf("["); const end = raw.lastIndexOf("]");
+      if (start !== -1 && end !== -1) {
+        const parsed = JSON.parse(raw.slice(start, end + 1));
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) { console.warn("[scan] Problem scan failed:", e.message); }
+    return null;
+  }
+
+  function buildInventoryPrefix(inventory) {
+    if (!inventory || inventory.length === 0) return "";
+    const list = inventory.map(p => `- ${p.problem} (Image ${p.image}, ${p.legible} legibility): ${p.description}`).join("\n");
+    return `The following ${inventory.length} problems were detected across all submitted images:\n${list}\n\nYou MUST grade EVERY problem in this list. Do not stop until all ${inventory.length} problems have been graded. If a problem is marked as partially legible, grade what you can see and note 'Partial legibility — instructor review recommended.' If a problem is marked as not legible, assign P1 and note 'Work not legible — could not be graded. Instructor should request resubmission.'\n\n`;
+  }
+
   async function handleGrade() {
     console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.map(f => f.name));
     if (!subject || !studentFiles.length) {
@@ -712,6 +753,7 @@ export default function DM3AGraderV5() {
     }
     setError("");
     setHeicFailedFiles([]);
+    setProblemInventory({});
     setLoading(true);
     setStep("grading");
     const courseConfig = COURSE_CONFIGS[subject];
@@ -895,6 +937,16 @@ Return a JSON array with exactly ONE student object.`;
           sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
         }
 
+        // Pass 1: scan all pages for problem inventory before chunked grading
+        setLoadingMsg(`Scanning all pages for ${studentLabel}...`);
+        const allPageBlocks = compressedPages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+        const combinedInventory = await scanProblems(allPageBlocks, systemPrompt);
+        if (combinedInventory && combinedInventory.length > 0) {
+          setLoadingMsg(`Found ${combinedInventory.length} problems for ${studentLabel} — grading...`);
+          setProblemInventory(prev => ({ ...prev, [studentLabel]: combinedInventory }));
+        }
+        const combinedInventoryPrefix = buildInventoryPrefix(combinedInventory);
+
         // Send 2 pages per API call
         const chunkSize = 2;
         const chunkResults = [];
@@ -929,7 +981,7 @@ ${totalChunks > 1 ? `5. Note: This is a partial submission. Grade only what you 
 
 Return a JSON array with exactly ONE student object covering only the problems on these pages.`;
 
-          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: combinedInventoryPrefix + userPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
           const parsed = JSON.parse(cleaned);
           const chunkStudents = Array.isArray(parsed) ? parsed : [parsed];
@@ -1064,7 +1116,17 @@ Return a JSON array with one object per student found in the submission.`;
             ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
           ];
           console.log(`[contentBlocks] total blocks sent to API: ${contentBlocks.length} (${contentBlocks.filter(b=>b.type==="image").length} images, ${contentBlocks.filter(b=>b.type==="text").length} text)`);
-          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+          setLoadingMsg(`Scanning problems in ${f.name}...`);
+          const inventory = await scanProblems(pageBlocks, systemPrompt);
+          let effectiveUserPrompt = userPrompt;
+          if (inventory && inventory.length > 0) {
+            setLoadingMsg(`Found ${inventory.length} problem${inventory.length !== 1 ? "s" : ""} in ${f.name} — grading...`);
+            setProblemInventory(prev => ({ ...prev, [f.name]: inventory }));
+            effectiveUserPrompt = buildInventoryPrefix(inventory) + userPrompt;
+          } else {
+            setLoadingMsg(`Problem scan inconclusive — grading all visible content in ${f.name}...`);
+          }
+          const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectiveUserPrompt });
           const cleaned = raw.replace(/```json|```/g, "").trim();
           const parsed = JSON.parse(cleaned);
           allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
@@ -2154,7 +2216,13 @@ Return a JSON array with exactly ONE student object.`;
                   ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
                 ];
                 console.log(`Sending ${contentBlocks.length} blocks to server for student ${studentLabel}`);
-                const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
+                // Pass 1: scan for problem inventory
+                const bbInventory = await scanProblems(pageBlocks, systemPrompt);
+                let bbUserPrompt = userPrompt;
+                if (bbInventory && bbInventory.length > 0) {
+                  bbUserPrompt = buildInventoryPrefix(bbInventory) + userPrompt;
+                }
+                const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: bbUserPrompt });
                 const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
                 const jsonMatch = cleaned.match(/(\[\s*\{[\s\S]*\}\s*\])/);
                 const jsonStr = jsonMatch ? jsonMatch[1] : cleaned;
@@ -2162,10 +2230,13 @@ Return a JSON array with exactly ONE student object.`;
                 const students = Array.isArray(parsed) ? parsed : [parsed];
                 // Ensure studentName is always the BB label — never "Unknown" or empty
                 const UNKNOWN_NAMES = new Set(["unknown", "unknown student", "", "n/a"]);
-                return students.map(s => ({
+                const normalized = students.map(s => ({
                   ...s,
-                  studentName: (!s.studentName || UNKNOWN_NAMES.has(s.studentName.toLowerCase())) ? studentLabel : s.studentName
+                  studentName: (!s.studentName || UNKNOWN_NAMES.has(s.studentName.toLowerCase())) ? studentLabel : s.studentName,
+                  _inventory: bbInventory || null
                 }));
+                if (bbInventory) setProblemInventory(prev => ({ ...prev, [studentLabel]: bbInventory }));
+                return normalized;
               } catch (err) {
                 return [{ studentName: studentLabel, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message || "Error processing this student.", strengths: [], growthAreas: [] }];
               }
@@ -2308,7 +2379,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {overrides[s.studentName]?.renamedName || s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>
+                {overrides[s.studentName]?.renamedName || s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
               </button>
             );
           })}
@@ -2399,6 +2470,31 @@ Return a JSON array with exactly ONE student object.`;
               );
             })}
           </div>
+
+          {/* Problem Inventory (from two-pass scan) */}
+          {(student._inventory || problemInventory[student.studentName]) && (() => {
+            const inv = student._inventory || problemInventory[student.studentName];
+            const hasIllegible = inv.some(p => p.legible === "no");
+            const hasPartial = inv.some(p => p.legible === "partially");
+            return (
+              <details style={{ marginBottom: 12, background: "#F5F4EF", borderRadius: 6, padding: "8px 12px" }} open={false}>
+                <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#1A1A18", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}>
+                  Problems detected: {inv.length}
+                  {hasIllegible && <span style={{ background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 4, fontSize: 10, fontWeight: 700, padding: "1px 6px" }}>⚠ Illegible work</span>}
+                  {!hasIllegible && hasPartial && <span style={{ background: "#FFF3CD", color: "#856404", border: "1px solid #FFCA2C", borderRadius: 4, fontSize: 10, fontWeight: 700, padding: "1px 6px" }}>Partial legibility</span>}
+                </summary>
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 3 }}>
+                  {inv.map((p, i) => (
+                    <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 11 }}>
+                      <span style={{ fontWeight: 700, minWidth: 60, color: p.legible === "no" ? "#A32D2D" : p.legible === "partially" ? "#856404" : "#0F6E56" }}>{p.problem}</span>
+                      <span style={{ color: "#5A5A55", flex: 1 }}>{p.description}</span>
+                      {p.legible !== "yes" && <span style={{ color: p.legible === "no" ? "#A32D2D" : "#856404", fontWeight: 600, whiteSpace: "nowrap" }}>{p.legible === "no" ? "not legible" : "partial"}</span>}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            );
+          })()}
 
           {/* Problem Breakdown */}
           {student.problems?.length > 0 && (
