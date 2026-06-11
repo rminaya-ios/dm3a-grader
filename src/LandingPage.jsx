@@ -38,7 +38,7 @@ const Logo = () => (
         letterSpacing: "-0.01em",
       }}
     >
-      DM3A <span style={{ color: C.accent }}>Grader</span>
+      DM3A <span style={{ color: C.accent }}>Grader</span>™
     </span>
   </div>
 );
@@ -203,7 +203,7 @@ export default function LandingPage({ onSignIn }) {
             fontWeight: 400,
           }}
         >
-          DM3A Grader is the mastery-based grading tool built by a community college math professor — for instructors who grade alone, without institutional support.
+          DM3A Grader™ is the mastery-based grading tool built by a community college math professor — for instructors who grade alone, without institutional support.
         </p>
 
         {trialStatus === "success" ? (
@@ -417,7 +417,7 @@ export default function LandingPage({ onSignIn }) {
               <thead>
                 <tr style={{ background: C.surface }}>
                   <th style={{ padding: "14px 20px", textAlign: "left", fontWeight: 600, color: C.muted, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: `1px solid ${C.border}` }}>Feature</th>
-                  <th style={{ padding: "14px 20px", textAlign: "center", fontWeight: 700, color: C.accent, borderBottom: `1px solid ${C.border}` }}>DM3A Grader</th>
+                  <th style={{ padding: "14px 20px", textAlign: "center", fontWeight: 700, color: C.accent, borderBottom: `1px solid ${C.border}` }}>DM3A Grader™</th>
                   <th style={{ padding: "14px 20px", textAlign: "center", fontWeight: 600, color: C.muted, borderBottom: `1px solid ${C.border}` }}>Gradescope</th>
                 </tr>
               </thead>
@@ -459,7 +459,7 @@ export default function LandingPage({ onSignIn }) {
             Built by a professor who still teaches your courses
           </h2>
           <p style={{ fontSize: 16, color: C.muted, lineHeight: 1.8, margin: "0 0 28px" }}>
-            Dr. Ralph Minaya, Ed.D. is a mathematics professor at the University of Saint Joseph and Capital Community College. He built DM3A Grader because he needed it — grading Elementary Statistics and Intermediate Algebra sections alone, with no TA and no institutional grading support. He still teaches these courses every semester. When you send a feature request, you are talking directly to the person who will decide whether to build it — often by next semester.
+            Dr. Ralph Minaya, Ed.D. is a mathematics professor at the University of Saint Joseph and Capital Community College. He built DM3A Grader™ because he needed it — grading Elementary Statistics and Intermediate Algebra sections alone, with no TA and no institutional grading support. He still teaches these courses every semester. When you send a feature request, you are talking directly to the person who will decide whether to build it — often by next semester.
           </p>
           <blockquote
             style={{
@@ -475,7 +475,7 @@ export default function LandingPage({ onSignIn }) {
               lineHeight: 1.7,
             }}
           >
-            "Community college students — many of them first-generation, working full-time, balancing families — deserve individualized feedback. DM3A Grader gives instructors the time to provide it."
+            "Community college students — many of them first-generation, working full-time, balancing families — deserve individualized feedback. DM3A Grader™ gives instructors the time to provide it."
           </blockquote>
         </div>
       </section>
@@ -621,7 +621,10 @@ export default function LandingPage({ onSignIn }) {
           fontFamily: "'DM Sans', sans-serif",
         }}
       >
-        © 2026 DM3A Grader · support@dm3agrader.com · Built by Dr. Ralph Minaya, Ed.D.
+        © 2026 DM3A Grader™ · support@dm3agrader.com · Built by Dr. Ralph Minaya, Ed.D.
+        <div style={{ marginTop: 8, fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
+          DM3A Grader™ is a trademark of Ralph Minaya, Ed.D. Serial No. 99877914.
+        </div>
       </footer>
     </div>
   );

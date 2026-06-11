@@ -1524,7 +1524,7 @@ Return a JSON array with one object per student found in the submission.`;
     <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{ width: "100%", maxWidth: 400 }}>
         <div style={styles.header}>
-          <span style={styles.badge}>DM3A Grader</span>
+          <span style={styles.badge}>DM3A Grader™</span>
           <h1 style={styles.h1}>Mastery-Based AI Grading</h1>
           <p style={styles.sub}>Dr. Ralph Minaya, Ed.D.</p>
         </div>
@@ -1548,7 +1548,7 @@ Return a JSON array with one object per student found in the submission.`;
               </button>
             </div>
             {loginError && <p style={{ color: "#A32D2D", fontSize: 13, marginBottom: 12 }}>{loginError}</p>}
-            <button style={{ ...styles.btn, width: "100%" }} type="submit">Enter DM3A Grader →</button>
+            <button style={{ ...styles.btn, width: "100%" }} type="submit">Enter DM3A Grader™ →</button>
           </form>
         </div>
         <p style={{ textAlign: "center", fontSize: 12, color: "#888" }}>Contact support@dm3agrader.com for access</p>
