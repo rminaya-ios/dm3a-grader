@@ -491,6 +491,8 @@ export default function DM3AGraderV5() {
   const [isStudentMode, setIsStudentMode] = useState(false);
   const [gatekeeperBlocked, setGatekeeperBlocked] = useState(false);
   const [gatekeeperReason, setGatekeeperReason] = useState("");
+  const [studentEmail, setStudentEmail] = useState("");
+  const [studentSubmissionsLeft, setStudentSubmissionsLeft] = useState(null);
 
 
   const assignmentRef = useRef();
@@ -1395,6 +1397,11 @@ Return a JSON array with one object per student found in the submission.`;
   //   (b) blocks and returns early if the gatekeeper fires.
   // Never called from the instructor flow.
   async function handleStudentGrade() {
+    const normalEmail = (studentEmail || "").trim().toLowerCase();
+    if (!normalEmail || !normalEmail.includes("@")) {
+      setError("Please enter your email address before grading.");
+      return;
+    }
     if (!subject || !studentFiles.length) {
       setError("Please select a subject and upload your work.");
       return;
@@ -1402,6 +1409,27 @@ Return a JSON array with one object per student found in the submission.`;
     setError("");
     setGatekeeperBlocked(false);
     setGatekeeperReason("");
+
+    // ── ALLOWANCE CHECK ───────────────────────────────────────────────────────
+    try {
+      const checkRes = await fetch("/student-check-allowance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: normalEmail }),
+      });
+      const checkData = await checkRes.json();
+      if (!checkData.allowed) {
+        setStudentSubmissionsLeft(0);
+        setError("");
+        setStep("student-upload");
+        return;
+      }
+      setStudentSubmissionsLeft(checkData.remaining);
+    } catch {
+      // fail open — network error doesn't block the student
+    }
+    // ── END ALLOWANCE CHECK ───────────────────────────────────────────────────
+
     setLoading(true);
     setStep("grading");
 
@@ -1465,6 +1493,7 @@ Return a JSON array with exactly ONE student object.`;
       { type: "text", text: "=== END OF STUDENT WORK ===" }
     ];
 
+    let gradeSucceeded = false;
     try {
       const effectivePrompt = problemScope.trim()
         ? buildScopeDirectPrefix(problemScope.trim()) + userPrompt
@@ -1472,6 +1501,7 @@ Return a JSON array with exactly ONE student object.`;
       const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectivePrompt });
       const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
       setResults(Array.isArray(parsed) ? parsed : [parsed]);
+      gradeSucceeded = true;
     } catch (err) {
       setResults([{
         studentName: "Student Submission",
@@ -1484,6 +1514,22 @@ Return a JSON array with exactly ONE student object.`;
         growthAreas: []
       }]);
     }
+
+    // ── RECORD SUBMISSION (only when gatekeeper passed and grading ran) ───────
+    if (gradeSucceeded) {
+      try {
+        const recRes = await fetch("/student-record-submission", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: normalEmail }),
+        });
+        const recData = await recRes.json();
+        setStudentSubmissionsLeft(recData.remaining ?? null);
+      } catch {
+        // non-fatal — counter failure doesn't break the results screen
+      }
+    }
+    // ── END RECORD SUBMISSION ─────────────────────────────────────────────────
 
     setOverrides({});
     setActiveStudent(0);
@@ -1865,8 +1911,25 @@ Return a JSON array with exactly ONE student object.`;
           <p style={styles.sub}>Upload your assignment — we'll review your reasoning and give you feedback.</p>
         </div>
 
+        {/* Limit-reached state */}
+        {studentSubmissionsLeft !== null && studentSubmissionsLeft <= 0 && (
+          <div style={{ background: "#FEF9EC", border: "1px solid #F5C842", borderRadius: 8, padding: 24, marginBottom: 16, textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 10, color: "#1A1A18" }}>
+              You've used your 5 free submissions
+            </div>
+            <p style={{ fontSize: 14, color: "#5A5A55", lineHeight: 1.65, marginBottom: 20 }}>
+              You've reached the limit for the free pilot. To keep getting feedback on your work, contact your instructor or join the waitlist.
+            </p>
+            <a
+              href="mailto:support@dm3agrader.com?subject=Student%20Access%20Request"
+              style={{ display: "inline-block", ...styles.btn, textDecoration: "none" }}>
+              Join the waitlist / contact for access
+            </a>
+          </div>
+        )}
+
         {/* Blocked state — gatekeeper fired */}
-        {gatekeeperBlocked && (
+        {(studentSubmissionsLeft === null || studentSubmissionsLeft > 0) && gatekeeperBlocked && (
           <div style={{ background: "#FEF9EC", border: "1px solid #F5C842", borderRadius: 8, padding: 24, marginBottom: 16, textAlign: "center" }}>
             <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 10, color: "#1A1A18" }}>
               We need to see your work first
@@ -1882,8 +1945,15 @@ Return a JSON array with exactly ONE student object.`;
           </div>
         )}
 
-        {!gatekeeperBlocked && (
+        {(studentSubmissionsLeft === null || studentSubmissionsLeft > 0) && !gatekeeperBlocked && (
           <div style={styles.card}>
+            <label style={styles.label}>Your Email *</label>
+            <input
+              style={{ ...styles.input, marginBottom: 14 }}
+              type="email"
+              placeholder="you@school.edu"
+              value={studentEmail}
+              onChange={e => setStudentEmail(e.target.value)} />
             <label style={styles.label}>Subject *</label>
             <select style={{ ...styles.input, marginBottom: 14 }} value={subject} onChange={e => setSubject(e.target.value)}>
               <option value="">— Select a subject —</option>
@@ -1905,7 +1975,7 @@ Return a JSON array with exactly ONE student object.`;
             {error && <p style={{ color: "#A32D2D", fontSize: 13, marginTop: 10 }}>{error}</p>}
             <button
               style={{ ...styles.btn, width: "100%", marginTop: 16 }}
-              disabled={loading || !subject || !studentFiles.length}
+              disabled={loading || !subject || !studentFiles.length || !studentEmail.trim()}
               onClick={handleStudentGrade}>
               {loading ? loadingMsg || "Checking..." : "Submit My Work →"}
             </button>
@@ -1914,7 +1984,7 @@ Return a JSON array with exactly ONE student object.`;
 
         <p style={{ textAlign: "center", fontSize: 12, color: "#888", marginTop: 8 }}>
           <button style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
-            onClick={() => { setIsStudentMode(false); setStep("login"); setGatekeeperBlocked(false); setStudentFiles([]); }}>
+            onClick={() => { setIsStudentMode(false); setStep("login"); setGatekeeperBlocked(false); setStudentFiles([]); setStudentEmail(""); setStudentSubmissionsLeft(null); }}>
             ← Back to instructor login
           </button>
         </p>
@@ -2774,6 +2844,17 @@ Return a JSON array with exactly ONE student object.`;
         {isStudentMode && (
           <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 6, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#1D4ED8" }}>
             <strong>Practice estimate only.</strong> These Proficiency Levels are for your own review and revision — they are not an official grade and will not appear in your instructor's gradebook.
+            {studentSubmissionsLeft !== null && studentSubmissionsLeft > 0 && (
+              <span style={{ marginLeft: 10, color: "#1E40AF", fontWeight: 600 }}>
+                {studentSubmissionsLeft} free submission{studentSubmissionsLeft !== 1 ? "s" : ""} left.
+              </span>
+            )}
+            {studentSubmissionsLeft !== null && studentSubmissionsLeft <= 0 && (
+              <span style={{ marginLeft: 10, color: "#B45309", fontWeight: 600 }}>
+                You've used all 5 free submissions.{" "}
+                <a href="mailto:support@dm3agrader.com?subject=Student%20Access%20Request" style={{ color: "#B45309" }}>Contact for access →</a>
+              </span>
+            )}
           </div>
         )}
 

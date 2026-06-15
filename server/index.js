@@ -259,6 +259,42 @@ app.post('/detect-work', async (req, res) => {
 });
 // ── END STUDENT WORK GATEKEEPER ────────────────────────────────────────────
 
+// ── STUDENT SUBMISSION COUNTER ─────────────────────────────────────────────
+const STUDENT_FREE_MAX = 5;
+
+app.post('/student-check-allowance', async (req, res) => {
+  try {
+    const email = (req.body.email || '').toLowerCase().trim();
+    if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email required' });
+
+    const key = `student:subs:${email}`;
+    const raw = await redis.get(key);
+    const used = raw === null ? 0 : parseInt(raw, 10);
+    const remaining = Math.max(0, STUDENT_FREE_MAX - used);
+    res.json({ allowed: remaining > 0, used, remaining, max: STUDENT_FREE_MAX });
+  } catch (err) {
+    console.error('[STUDENT COUNTER] check-allowance error — allowing:', err.message);
+    res.json({ allowed: true, used: 0, remaining: STUDENT_FREE_MAX, max: STUDENT_FREE_MAX });
+  }
+});
+
+app.post('/student-record-submission', async (req, res) => {
+  try {
+    const email = (req.body.email || '').toLowerCase().trim();
+    if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email required' });
+
+    const key = `student:subs:${email}`;
+    const used = await redis.incr(key);
+    const remaining = Math.max(0, STUDENT_FREE_MAX - used);
+    console.log(`[STUDENT COUNTER] ${email} : used ${used}/${STUDENT_FREE_MAX} (remaining: ${remaining})`);
+    res.json({ used, remaining, max: STUDENT_FREE_MAX });
+  } catch (err) {
+    console.error('[STUDENT COUNTER] record error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+// ── END STUDENT SUBMISSION COUNTER ────────────────────────────────────────────
+
 app.post('/delete-file', async (req, res) => {
   try {
     const { file_id } = req.body;
