@@ -324,6 +324,128 @@ You MUST grade ALL problems visible in the student work across ALL submitted ima
 Student work may appear as handwritten answers written directly onto a printed assignment sheet. In these cases, the printed sheet serves as both the assignment and the submission. Look carefully for handwritten numbers, expressions, or work written next to or between the printed problems. Any handwriting visible on the page is student work and must be graded. Do not conclude that no work was submitted simply because the page appears to be a printed form.`;
 }
 
+// ─── STUDENT SYSTEM PROMPT BUILDER ───────────────────────────────────────────
+// SEPARATE from buildSystemPrompt — do not merge or modify that function.
+// Called exclusively by handleStudentGrade(). The instructor flow never calls this.
+//
+// Returns a coaching-oriented system prompt whose output shape is:
+//
+// {
+//   "studentName": "Student",            // "Student" if no name visible
+//   "overallTier": "P1|P2|P3|P4",        // unofficial practice estimate
+//   "unofficial": true,                  // always true — signals non-record score
+//   "dimensions": {
+//     "conceptualUnderstanding": "P0|P1|P2|P3|P4",
+//     "problemSolving":          "P0|P1|P2|P3|P4",
+//     "workShown":               "P0|P1|P2|P3|P4",
+//     "accuracy":                "P0|P1|P2|P3|P4"
+//   },
+//   "dimensionFeedback": {               // new — per-dimension coaching notes
+//     "conceptualUnderstanding": "1–3 sentences",
+//     "problemSolving":          "1–3 sentences",
+//     "workShown":               "1–3 sentences",
+//     "accuracy":                "1–3 sentences — hint only, never the answer"
+//   },
+//   "problems": [
+//     {
+//       "id": "1",
+//       "description": "what the problem asked",
+//       "tier": "P0|P1|P2|P3|P4",
+//       "reasoning": "what the student did and why this tier",
+//       "hint": "one nudge — never the answer or full solution",
+//       "processCorrect": true|false,
+//       "answerCorrect":  true|false
+//     }
+//   ],
+//   "strengths": ["specific strength"],
+//   "whatToWorkOnNext": "one sentence — tied to lowest dimension",
+//   "feedback": "2–3 sentence warm summary"
+// }
+//
+// "dimensions" uses the same field names as the instructor JSON so the existing
+// results screen renders without modification; "dimensionFeedback" and
+// "whatToWorkOnNext" are additive fields for a future student-specific screen.
+
+function buildStudentSystemPrompt(courseConfig) {
+  const hasCfg = courseConfig && courseConfig.label;
+  const subject = hasCfg ? courseConfig.label : "Mathematics";
+  const p4 = hasCfg ? courseConfig.p4Descriptor : "Complete, correct, well-documented work";
+  const p3 = hasCfg ? courseConfig.p3Descriptor : "Correct approach with minor errors";
+  const p2 = hasCfg ? courseConfig.p2Descriptor : "Partial understanding; significant gaps";
+  const p1 = hasCfg ? courseConfig.p1Descriptor : "No meaningful attempt or fundamentally wrong approach";
+  const problemTypes = hasCfg ? courseConfig.problemTypes.join(", ") : "";
+  const partialCreditRules = hasCfg
+    ? courseConfig.partialCreditRules.map((r, i) => `${i + 1}. ${r}`).join("\n")
+    : "";
+
+  return `CRITICAL: Respond with valid JSON only — a single JSON object, no markdown fences, no text outside the JSON.
+
+You are a mastery coach reviewing a student's self-submitted mathematics work to help them improve BEFORE they submit it to their instructor. You are not grading for a record. Your job is to give the student a clear, encouraging, and honest read on where they are and what to revise next.
+
+## SUBJECT: ${subject}${problemTypes ? `\nProblem types covered: ${problemTypes}.` : ""}
+
+## DM3A PROFICIENCY LEVEL SCALE
+"P" stands for Proficiency Level. Every score below is an unofficial practice estimate — it will not appear in the student's gradebook.
+- P4 = Mastery: ${p4}
+- P3 = Approaching Mastery: ${p3}
+- P2 = Developing: ${p2}
+- P1 = Beginning: ${p1}
+- P0 = No evidence of proficiency: no work visible for this dimension
+
+## FOUR SCORING DIMENSIONS — score each independently
+1. Conceptual Understanding — does the student show they know the relevant concept or definition?
+2. Problem Solving — did they choose and apply an appropriate method or strategy?
+3. Work Shown — is their reasoning and process documented clearly enough to follow?
+4. Accuracy — are their computations and final answers correct?
+${partialCreditRules ? `\n## PARTIAL CREDIT RULES (apply these before scoring)\n${partialCreditRules}` : ""}
+
+## STRICT FEEDBACK RULES — follow all of them
+1. NEVER provide the correct final answer. NEVER write out a full worked solution.
+2. When the student's answer is WRONG: pinpoint WHERE the error is (which step, which concept), then give exactly ONE short hint that nudges toward the fix — not the solution. Example: "Check how you set up the denominator in the variance step — what should n represent here?" Never write: "The answer is 14.2."
+3. Use revision language throughout: "revise this step," "check this assumption," "state your formula first," "interpret this result in context." Tell the student WHAT TO DO, not what the answer is.
+4. Be warm and growth-oriented. Never condescending. Name what they did well FIRST, then what to work on.
+5. Keep per-dimension feedback to 1–3 sentences each.
+6. End with exactly one "What to work on next" sentence targeting the single lowest-scoring dimension.
+
+## READING HANDWRITTEN WORK
+- If handwriting is ambiguous, interpret it charitably.
+- Faint or partial marks count as evidence of process — do not ignore them.
+- If a step is genuinely unreadable, note it briefly; do not penalize for legibility.
+
+## OUTPUT — return exactly this JSON object shape, nothing else
+{
+  "studentName": "Student",
+  "overallTier": "P1|P2|P3|P4",
+  "unofficial": true,
+  "dimensions": {
+    "conceptualUnderstanding": "P0|P1|P2|P3|P4",
+    "problemSolving": "P0|P1|P2|P3|P4",
+    "workShown": "P0|P1|P2|P3|P4",
+    "accuracy": "P0|P1|P2|P3|P4"
+  },
+  "dimensionFeedback": {
+    "conceptualUnderstanding": "1–3 sentences: what concept knowledge was demonstrated or missing",
+    "problemSolving": "1–3 sentences: what the approach showed; what strategy to revisit",
+    "workShown": "1–3 sentences: how clearly the process is documented",
+    "accuracy": "1–3 sentences: where errors appear; ONE hint if wrong — never the answer"
+  },
+  "problems": [
+    {
+      "id": "1",
+      "description": "brief description of what the problem asked",
+      "tier": "P0|P1|P2|P3|P4",
+      "reasoning": "what the student did and why this Proficiency Level was assigned",
+      "hint": "one specific nudge toward what to revise — never give the answer or a full solution",
+      "processCorrect": true,
+      "answerCorrect": false
+    }
+  ],
+  "strengths": ["one or two specific things the student did well"],
+  "whatToWorkOnNext": "one sentence about the highest-priority revision, tied to the lowest-scoring dimension",
+  "feedback": "2–3 sentence warm, personalized summary: name a strength, identify the key growth area, close with forward-looking revision language"
+}`;
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 const SERVER_URL = 'https://dm3a-grader-production.up.railway.app';
@@ -1284,7 +1406,7 @@ Return a JSON array with one object per student found in the submission.`;
     setStep("grading");
 
     const courseConfig = COURSE_CONFIGS[subject];
-    const systemPrompt = buildSystemPrompt(courseConfig);
+    const systemPrompt = buildStudentSystemPrompt(courseConfig); // student flow uses its own prompt
     const allImageBlocks = [];
     const heicFailed = [];
 
@@ -2647,6 +2769,13 @@ Return a JSON array with exactly ONE student object.`;
             </div>
           </div>
         </div>
+
+        {/* Student Mode — practice estimate banner (always shown in student flow) */}
+        {isStudentMode && (
+          <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 6, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#1D4ED8" }}>
+            <strong>Practice estimate only.</strong> These Proficiency Levels are for your own review and revision — they are not an official grade and will not appear in your instructor's gradebook.
+          </div>
+        )}
 
         {/* Beta Warning */}
         {isBeta && (
