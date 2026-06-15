@@ -214,6 +214,51 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
   }
 });
 
+// ── STUDENT WORK GATEKEEPER ────────────────────────────────────────────────
+// Cheap/fast haiku call — returns classification JSON without grading anything.
+// Called by the student flow ONLY. Any error fails open (passes through).
+app.post('/detect-work', async (req, res) => {
+  try {
+    const clientBlocks = req.body.contentBlocks || [];
+    const imageBlocks = clientBlocks.filter(b => b.type === 'image');
+    console.log(`[STUDENT GATEKEEPER] /detect-work called — ${imageBlocks.length} image block(s)`);
+
+    if (imageBlocks.length === 0) {
+      console.log('[STUDENT GATEKEEPER] no images → PASS');
+      return res.json({ classification: 'HAS_WORK', work_present: true, confidence: 0, reason: 'No images received' });
+    }
+
+    // Run through sharp (same as /grade) so haiku sees clean JPEGs
+    const convertedBlocks = await Promise.all(imageBlocks.map(async (block) => {
+      try {
+        const buf = Buffer.from(block.source.data, 'base64');
+        const jpegBuf = await sharp(buf).jpeg({ quality: 85 }).toBuffer();
+        return { ...block, source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuf.toString('base64') } };
+      } catch { return block; }
+    }));
+
+    const detectionPrompt = req.body.detectionPrompt || '';
+
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 200,
+      messages: [{ role: 'user', content: [...convertedBlocks, { type: 'text', text: detectionPrompt }] }]
+    });
+
+    const raw = response.content?.[0]?.text ?? '';
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    const decision = parsed.work_present ? 'PASS' : 'BLOCK';
+    console.log(`[STUDENT GATEKEEPER] classification=${parsed.classification} confidence=${parsed.confidence} → ${decision}: "${parsed.reason}"`);
+    res.json(parsed);
+  } catch (err) {
+    // Fail open — a detection error must never block a real student attempt
+    console.error('[STUDENT GATEKEEPER] error — PASS:', err.message);
+    res.json({ classification: 'HAS_WORK', work_present: true, confidence: 0, reason: 'Detection error — passing through' });
+  }
+});
+// ── END STUDENT WORK GATEKEEPER ────────────────────────────────────────────
+
 app.post('/delete-file', async (req, res) => {
   try {
     const { file_id } = req.body;

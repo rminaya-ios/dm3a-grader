@@ -365,6 +365,10 @@ export default function DM3AGraderV5() {
   const rosterInputRef = useRef(null);
   const [isBBBatch, setIsBBBatch] = useState(false);
   const [bbGroups, setBbGroups] = useState([]);
+  // ── STUDENT MODE ──────────────────────────────────────────────────────────
+  const [isStudentMode, setIsStudentMode] = useState(false);
+  const [gatekeeperBlocked, setGatekeeperBlocked] = useState(false);
+  const [gatekeeperReason, setGatekeeperReason] = useState("");
 
 
   const assignmentRef = useRef();
@@ -720,6 +724,68 @@ Return ONLY a JSON array like this:
   { "problem": "2b", "image": 2, "legible": "yes", "description": "Converts to standard form" }
 ]
 Return nothing else — no preamble, no explanation, just the JSON array.`;
+
+  // ── STUDENT WORK DETECTION PROMPT ─────────────────────────────────────────
+  // Used by detectStudentWork() — sent to a cheap/fast model (haiku), never to
+  // the full grading model. Keep this concise: haiku max_tokens is only 200.
+  const DETECT_WORK_PROMPT = `You are a work-detection classifier. Examine ALL images provided. Classify the entire submission as one of:
+  HAS_WORK           – at least one image shows steps, calculations, setup, formulas, or written reasoning
+  ANSWER_ONLY        – only final answers or boxed numbers visible; no supporting work shown on any image
+  PROMPT_ONLY        – only printed problem text visible; no student marks on any image
+  BLANK_OR_UNREADABLE – all images are empty, solid color, illegible, or not math content
+
+CRITICAL BIAS RULES:
+- If ANY single image in the set contains student work (even light pencil marks, partial setup, or a single formula), classify the ENTIRE submission as HAS_WORK.
+- Light or partial handwriting COUNTS as HAS_WORK.
+- When in doubt, choose HAS_WORK — it is always better to pass a thin attempt to grading than to block a student who tried.
+- Only choose ANSWER_ONLY, PROMPT_ONLY, or BLANK_OR_UNREADABLE when you are clearly and confidently certain.
+
+Return ONLY this JSON — no other text:
+{
+  "classification": "HAS_WORK",
+  "work_present": true,
+  "confidence": 0.0,
+  "reason": "one short sentence"
+}
+work_present must be true ONLY when classification is HAS_WORK.`;
+
+  // ── STUDENT WORK GATEKEEPER ───────────────────────────────────────────────
+  // Called ONLY in the student flow. Sends images to /detect-work (haiku) and
+  // returns { pass: true } or { pass: false, reason, classification }.
+  // Bias rule: confidence < 0.7 always passes, even if work_present is false.
+  async function detectStudentWork(imageBlocks) {
+    if (imageBlocks.length === 0) {
+      console.log("[STUDENT GATEKEEPER] no image blocks — PASS (nothing to check)");
+      return { pass: true };
+    }
+    try {
+      const res = await fetch(`${SERVER_URL}/detect-work`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contentBlocks: imageBlocks, detectionPrompt: DETECT_WORK_PROMPT })
+      });
+      const data = await res.json();
+      // Guard against missing fields — treat any absent/non-numeric confidence as 0
+      const confidence = typeof data.confidence === "number" ? data.confidence : 0;
+      const workPresent = data.work_present === true; // only true when explicitly true
+      console.log(`[STUDENT GATEKEEPER] classification=${data.classification} confidence=${confidence} work_present=${workPresent} reason="${data.reason}"`);
+      // Bias toward passing: low confidence (or missing) never blocks
+      if (confidence < 0.7) {
+        console.log("[STUDENT GATEKEEPER] confidence < 0.7 → PASS");
+        return { pass: true, reason: data.reason };
+      }
+      if (workPresent) {
+        console.log("[STUDENT GATEKEEPER] HAS_WORK → PASS");
+        return { pass: true, reason: data.reason };
+      }
+      console.log(`[STUDENT GATEKEEPER] ${data.classification} confidence=${confidence} → BLOCK`);
+      return { pass: false, reason: data.reason, classification: data.classification };
+    } catch (err) {
+      // Fail open — a detection error must never block a real student attempt
+      console.warn("[STUDENT GATEKEEPER] detection error — PASS:", err.message);
+      return { pass: true };
+    }
+  }
 
   async function scanProblems(pageBlocks, systemPromptBase) {
     const imageBlocks = pageBlocks.filter(b => b.type === "image");
@@ -1201,6 +1267,109 @@ Return a JSON array with one object per student found in the submission.`;
     setStep("results");
   }
 
+  // ─── STUDENT GRADE HANDLER ───────────────────────────────────────────────
+  // Mirrors the individual-files path of handleGrade() but:
+  //   (a) runs detectStudentWork() before the grading call, and
+  //   (b) blocks and returns early if the gatekeeper fires.
+  // Never called from the instructor flow.
+  async function handleStudentGrade() {
+    if (!subject || !studentFiles.length) {
+      setError("Please select a subject and upload your work.");
+      return;
+    }
+    setError("");
+    setGatekeeperBlocked(false);
+    setGatekeeperReason("");
+    setLoading(true);
+    setStep("grading");
+
+    const courseConfig = COURSE_CONFIGS[subject];
+    const systemPrompt = buildSystemPrompt(courseConfig);
+    const allImageBlocks = [];
+    const heicFailed = [];
+
+    // Preprocessing — same HEIC/DOCX/PDF pipeline as the instructor individual flow
+    for (let i = 0; i < studentFiles.length; i++) {
+      let f = studentFiles[i];
+      setLoadingMsg(`Preparing file ${i + 1} of ${studentFiles.length}...`);
+      try {
+        const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
+        if (isHEICFile) {
+          setLoadingMsg(`Converting ${f.name} (HEIC)...`);
+          const conv = await convertOnServer(f, "convert-heic");
+          if (conv) { f = conv; } else { heicFailed.push(f.name); continue; }
+        } else if (isDocx(f)) {
+          setLoadingMsg(`Converting ${f.name} (Word doc)...`);
+          const conv = await convertOnServer(f, "convert-docx");
+          if (conv) { f = conv; } else { continue; }
+        }
+        if (f.type === "application/pdf") {
+          const fMB = f.size / 1024 / 1024;
+          const pages = await pdfToImages(f, 8, fMB > 5 ? 1000 : 1200, fMB > 5 ? 0.6 : 0.75);
+          pages.forEach(b64 => allImageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+        } else {
+          const b64 = await compressImage(f);
+          if (b64 !== null) allImageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+          else heicFailed.push(f.name);
+        }
+      } catch { heicFailed.push(f.name); }
+    }
+
+    // ── GATEKEEPER ────────────────────────────────────────────────────────
+    setLoadingMsg("Checking your submission for student work...");
+    const gate = await detectStudentWork(allImageBlocks);
+    if (!gate.pass) {
+      setGatekeeperBlocked(true);
+      setGatekeeperReason(gate.reason || "");
+      setLoading(false);
+      setStep("student-upload");
+      return;
+    }
+    // ── END GATEKEEPER ────────────────────────────────────────────────────
+
+    setLoadingMsg("Grading your submission...");
+    const userPrompt = `Subject: ${subject}
+Assignment: ${assignment || "Student Submission"}
+${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
+INSTRUCTIONS:
+1. Identify ALL problems and sub-parts visible across all images.
+2. Grade EVERY problem. Do not skip any.
+3. Apply DM3A P1–P4 mastery scoring — never binary correct/wrong.
+Return a JSON array with exactly ONE student object.`;
+
+    const contentBlocks = [
+      { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
+      ...allImageBlocks,
+      { type: "text", text: "=== END OF STUDENT WORK ===" }
+    ];
+
+    try {
+      const effectivePrompt = problemScope.trim()
+        ? buildScopeDirectPrefix(problemScope.trim()) + userPrompt
+        : userPrompt;
+      const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectivePrompt });
+      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+      setResults(Array.isArray(parsed) ? parsed : [parsed]);
+    } catch (err) {
+      setResults([{
+        studentName: "Student Submission",
+        overallTier: "P1",
+        error: err.message,
+        dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
+        problems: [],
+        feedback: err.message || "Error processing submission.",
+        strengths: [],
+        growthAreas: []
+      }]);
+    }
+
+    setOverrides({});
+    setActiveStudent(0);
+    if (heicFailed.length > 0) setHeicFailedFiles(heicFailed);
+    setLoading(false);
+    setStep("results");
+  }
+
   // ─── PROBLEM OVERRIDE HELPER ─────────────────────────────────────────────
   function getProblemTier(studentName, probId, originalTier) {
     return problemOverrides?.[studentName]?.[probId] || originalTier;
@@ -1552,6 +1721,81 @@ Return a JSON array with one object per student found in the submission.`;
           </form>
         </div>
         <p style={{ textAlign: "center", fontSize: 12, color: "#888" }}>Contact support@dm3agrader.com for access</p>
+        <div style={{ textAlign: "center", marginTop: 20, paddingTop: 20, borderTop: "1px solid #E8E6DE" }}>
+          <p style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Submitting your own work?</p>
+          <button
+            style={{ ...styles.btnOutline, fontSize: 13 }}
+            onClick={() => { setIsStudentMode(true); setStep("student-upload"); }}>
+            Student? Submit your work →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── STUDENT UPLOAD SCREEN ─────────────────────────────────────────────────
+  if (step === "student-upload") return (
+    <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ width: "100%", maxWidth: 480 }}>
+        <div style={styles.header}>
+          <span style={styles.badge}>DM3A Grader™ — Student Submission</span>
+          <h1 style={styles.h1}>Submit Your Work</h1>
+          <p style={styles.sub}>Upload your assignment — we'll review your reasoning and give you feedback.</p>
+        </div>
+
+        {/* Blocked state — gatekeeper fired */}
+        {gatekeeperBlocked && (
+          <div style={{ background: "#FEF9EC", border: "1px solid #F5C842", borderRadius: 8, padding: 24, marginBottom: 16, textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 10, color: "#1A1A18" }}>
+              We need to see your work first
+            </div>
+            <p style={{ fontSize: 14, color: "#5A5A55", lineHeight: 1.65, marginBottom: 20 }}>
+              It looks like this submission doesn't include your steps. DM3A Grader gives feedback on your reasoning, so we need to see your attempt — your setup, formulas, or calculations — even if you're not sure they're right. Add your work and try again.
+            </p>
+            <button
+              style={styles.btn}
+              onClick={() => { setGatekeeperBlocked(false); setGatekeeperReason(""); setStudentFiles([]); }}>
+              Re-upload my work
+            </button>
+          </div>
+        )}
+
+        {!gatekeeperBlocked && (
+          <div style={styles.card}>
+            <label style={styles.label}>Subject *</label>
+            <select style={{ ...styles.input, marginBottom: 14 }} value={subject} onChange={e => setSubject(e.target.value)}>
+              <option value="">— Select a subject —</option>
+              {Object.entries(COURSE_CONFIGS).map(([name, config]) => (
+                <option key={name} value={name}>{config.label}</option>
+              ))}
+            </select>
+            <label style={styles.label}>Assignment Name (optional)</label>
+            <input style={{ ...styles.input, marginBottom: 14 }} placeholder="e.g., Quiz 3 — Linear Systems" value={assignment} onChange={e => setAssignment(e.target.value)} />
+            <label style={styles.label}>Upload Your Work *</label>
+            <div style={styles.uploadZone(studentFiles.length > 0)} onClick={() => studentRef.current.click()}>
+              <input ref={studentRef} type="file" accept="image/*,application/pdf" multiple style={{ display: "none" }}
+                onChange={e => setStudentFiles(Array.from(e.target.files))} />
+              {studentFiles.length > 0
+                ? <span style={{ color: "#0F6E56", fontWeight: 600 }}>{studentFiles.length} file{studentFiles.length !== 1 ? "s" : ""} selected</span>
+                : <span style={{ color: "#888", fontSize: 13 }}>Photos or PDFs of your handwritten work</span>
+              }
+            </div>
+            {error && <p style={{ color: "#A32D2D", fontSize: 13, marginTop: 10 }}>{error}</p>}
+            <button
+              style={{ ...styles.btn, width: "100%", marginTop: 16 }}
+              disabled={loading || !subject || !studentFiles.length}
+              onClick={handleStudentGrade}>
+              {loading ? loadingMsg || "Checking..." : "Submit My Work →"}
+            </button>
+          </div>
+        )}
+
+        <p style={{ textAlign: "center", fontSize: 12, color: "#888", marginTop: 8 }}>
+          <button style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
+            onClick={() => { setIsStudentMode(false); setStep("login"); setGatekeeperBlocked(false); setStudentFiles([]); }}>
+            ← Back to instructor login
+          </button>
+        </p>
       </div>
     </div>
   );
