@@ -76,7 +76,7 @@ const Btn = ({ children, onClick, variant = "primary", style = {} }) => {
   );
 };
 
-export default function LandingPage({ onSignIn }) {
+export default function LandingPage({ onSignIn, onStudentStart }) {
   const [email, setEmail] = useState("");
   const [trialStatus, setTrialStatus] = useState("idle"); // idle | loading | success | error
   const waitlistRef = useRef(null);
@@ -140,6 +140,9 @@ export default function LandingPage({ onSignIn }) {
       >
         <Logo />
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <Btn variant="outline" onClick={onStudentStart} style={{ padding: "8px 18px", fontSize: 14 }}>
+            I'm a Student
+          </Btn>
           <Btn variant="outline" onClick={onSignIn} style={{ padding: "8px 18px", fontSize: 14 }}>
             Sign In
           </Btn>
@@ -230,9 +233,12 @@ export default function LandingPage({ onSignIn }) {
                 Something went wrong — email <a href="mailto:support@dm3agrader.com" style={{ color: "#9f1239" }}>support@dm3agrader.com</a>
               </p>
             )}
-            <div style={{ display: "flex", justifyContent: "center", marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 8, flexWrap: "wrap" }}>
               <Btn variant="outline" onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })} style={{ padding: "10px 22px", fontSize: 14 }}>
                 See how it works
+              </Btn>
+              <Btn variant="outline" onClick={onStudentStart} style={{ padding: "10px 22px", fontSize: 14 }}>
+                I'm a Student →
               </Btn>
             </div>
           </div>

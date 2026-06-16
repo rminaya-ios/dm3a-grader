@@ -493,11 +493,13 @@ export default function DM3AGraderV5() {
   const [gatekeeperReason, setGatekeeperReason] = useState("");
   const [studentEmail, setStudentEmail] = useState("");
   const [studentSubmissionsLeft, setStudentSubmissionsLeft] = useState(null);
+  const [studentRubricFile, setStudentRubricFile] = useState(null);
 
 
   const assignmentRef = useRef();
   const answerKeyRef = useRef();
   const studentRef = useRef();
+  const studentRubricRef = useRef();
 
   const APP_PASSWORD = "dmgof50c";
 
@@ -1478,9 +1480,18 @@ Return a JSON array with one object per student found in the submission.`;
     // ── END GATEKEEPER ────────────────────────────────────────────────────
 
     setLoadingMsg("Grading your submission...");
-    const userPrompt = `Subject: ${subject}
+
+    // Rubric file — convert to image blocks if provided
+    let rubricBlocks = [];
+    if (studentRubricFile) {
+      try {
+        setLoadingMsg("Reading rubric...");
+        rubricBlocks = await fileToImageBlocks(studentRubricFile, 3);
+      } catch { /* non-fatal — grade without rubric */ }
+    }
+
+    const userPrompt = `Subject: ${subject === "Other" ? "Math" : subject}
 Assignment: ${assignment || "Student Submission"}
-${rubric ? `Instructor Rubric Notes: ${rubric}` : ""}
 INSTRUCTIONS:
 1. Identify ALL problems and sub-parts visible across all images.
 2. Grade EVERY problem. Do not skip any.
@@ -1488,6 +1499,11 @@ INSTRUCTIONS:
 Return a JSON array with exactly ONE student object.`;
 
     const contentBlocks = [
+      ...(rubricBlocks.length > 0 ? [
+        { type: "text", text: "=== RUBRIC / ASSIGNMENT SHEET ===" },
+        ...rubricBlocks,
+        { type: "text", text: "=== END OF RUBRIC ===" }
+      ] : []),
       { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
       ...allImageBlocks,
       { type: "text", text: "=== END OF STUDENT WORK ===" }
@@ -1855,7 +1871,58 @@ Return a JSON array with exactly ONE student object.`;
 
   // ── LOGIN SCREEN ──────────────────────────────────────────────────────────
   if (step === "login" && showLanding)
-    return <LandingPage onSignIn={() => setShowLanding(false)} />;
+    return <LandingPage
+      onSignIn={() => { setShowLanding(false); setStep("role-select"); }}
+      onStudentStart={() => { setShowLanding(false); setIsStudentMode(true); setStep("student-upload"); }}
+    />;
+
+  // ── ROLE SELECTOR ────────────────────────────────────────────────────────
+  if (step === "role-select") return (
+    <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ width: "100%", maxWidth: 560 }}>
+        <div style={{ ...styles.header, textAlign: "center" }}>
+          <span style={styles.badge}>DM3A Grader™</span>
+          <h1 style={{ ...styles.h1, marginBottom: 6 }}>Who are you?</h1>
+          <p style={styles.sub}>Choose your path to get started.</p>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+          {/* Instructor card */}
+          <div style={{ background: "#1B2A4A", borderRadius: 12, padding: 28, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: "0.02em" }}>I'm an Instructor</div>
+            <div style={{ width: 32, height: 2, background: "#C9A84C", borderRadius: 1 }} />
+            <p style={{ fontSize: 13, color: "#C4BFAD", lineHeight: 1.6, margin: 0, flex: 1 }}>
+              Grade your class with mastery-based AI scoring.
+            </p>
+            <button
+              style={{ ...styles.btn, background: "#C9A84C", color: "#1B2A4A", marginTop: 8 }}
+              onClick={() => setStep("login")}>
+              Enter Grader →
+            </button>
+          </div>
+          {/* Student card */}
+          <div style={{ background: "#fff", border: "2px solid #1B2A4A", borderRadius: 12, padding: 28, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#1B2A4A", letterSpacing: "0.02em" }}>I'm a Student</div>
+            <div style={{ width: 32, height: 2, background: "#0F6E56", borderRadius: 1 }} />
+            <p style={{ fontSize: 13, color: "#5A5A55", lineHeight: 1.6, margin: 0, flex: 1 }}>
+              Get feedback on your own math work — free.
+            </p>
+            <button
+              style={{ ...styles.btn, marginTop: 8 }}
+              onClick={() => { setIsStudentMode(true); setStep("student-upload"); }}>
+              Start →
+            </button>
+          </div>
+        </div>
+        <p style={{ textAlign: "center", fontSize: 12, color: "#888" }}>
+          <button
+            style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
+            onClick={() => { setShowLanding(true); setStep("login"); }}>
+            ← Back to dm3agrader.com
+          </button>
+        </p>
+      </div>
+    </div>
+  );
 
   if (step === "login") return (
     <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
@@ -1889,14 +1956,13 @@ Return a JSON array with exactly ONE student object.`;
           </form>
         </div>
         <p style={{ textAlign: "center", fontSize: 12, color: "#888" }}>Contact support@dm3agrader.com for access</p>
-        <div style={{ textAlign: "center", marginTop: 20, paddingTop: 20, borderTop: "1px solid #E8E6DE" }}>
-          <p style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Submitting your own work?</p>
+        <p style={{ textAlign: "center", fontSize: 12, color: "#888", marginTop: 16 }}>
           <button
-            style={{ ...styles.btnOutline, fontSize: 13 }}
-            onClick={() => { setIsStudentMode(true); setStep("student-upload"); }}>
-            Student? Submit your work →
+            style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
+            onClick={() => setStep("role-select")}>
+            ← Back
           </button>
-        </div>
+        </p>
       </div>
     </div>
   );
@@ -1957,9 +2023,10 @@ Return a JSON array with exactly ONE student object.`;
             <label style={styles.label}>Subject *</label>
             <select style={{ ...styles.input, marginBottom: 14 }} value={subject} onChange={e => setSubject(e.target.value)}>
               <option value="">— Select a subject —</option>
-              {Object.entries(COURSE_CONFIGS).map(([name, config]) => (
-                <option key={name} value={name}>{config.label}</option>
-              ))}
+              <option value="Elementary Statistics">Elementary Statistics</option>
+              <option value="Intermediate Algebra">Intermediate Algebra</option>
+              <option value="Precalculus">Precalculus</option>
+              <option value="Other">Other</option>
             </select>
             <label style={styles.label}>Assignment Name (optional)</label>
             <input style={{ ...styles.input, marginBottom: 14 }} placeholder="e.g., Quiz 3 — Linear Systems" value={assignment} onChange={e => setAssignment(e.target.value)} />
@@ -1972,20 +2039,29 @@ Return a JSON array with exactly ONE student object.`;
                 : <span style={{ color: "#888", fontSize: 13 }}>Photos or PDFs of your handwritten work</span>
               }
             </div>
+            <label style={{ ...styles.label, marginTop: 14 }}>Rubric or Assignment Sheet <span style={{ fontWeight: 400, color: "#888" }}>(optional)</span></label>
+            <div style={styles.uploadZone(!!studentRubricFile)} onClick={() => studentRubricRef.current.click()}>
+              <input ref={studentRubricRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }}
+                onChange={e => setStudentRubricFile(e.target.files[0] || null)} />
+              {studentRubricFile
+                ? <span style={{ color: "#0F6E56", fontWeight: 600 }}>{studentRubricFile.name}</span>
+                : <span style={{ color: "#888", fontSize: 13 }}>Upload the rubric or problem set (PDF or image)</span>
+              }
+            </div>
             {error && <p style={{ color: "#A32D2D", fontSize: 13, marginTop: 10 }}>{error}</p>}
             <button
               style={{ ...styles.btn, width: "100%", marginTop: 16 }}
               disabled={loading || !subject || !studentFiles.length || !studentEmail.trim()}
               onClick={handleStudentGrade}>
-              {loading ? loadingMsg || "Checking..." : "Submit My Work →"}
+              {loading ? loadingMsg || "Checking..." : "Get my feedback →"}
             </button>
           </div>
         )}
 
         <p style={{ textAlign: "center", fontSize: 12, color: "#888", marginTop: 8 }}>
           <button style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
-            onClick={() => { setIsStudentMode(false); setStep("login"); setGatekeeperBlocked(false); setStudentFiles([]); setStudentEmail(""); setStudentSubmissionsLeft(null); }}>
-            ← Back to instructor login
+            onClick={() => { setIsStudentMode(false); setStep("role-select"); setGatekeeperBlocked(false); setStudentFiles([]); setStudentEmail(""); setStudentSubmissionsLeft(null); setStudentRubricFile(null); }}>
+            ← Back
           </button>
         </p>
       </div>
@@ -2965,21 +3041,34 @@ Return a JSON array with exactly ONE student object.`;
               ["Accuracy", "accuracy", "accuracy"]
             ].map(([label, key, ovKey]) => {
               const val = ov[ovKey] || student.dimensions?.[key] || "P1";
+              const feedbackNote = isStudentMode ? student.dimensionFeedback?.[key] : null;
               return (
                 <div key={key} style={{ background: tierBg[val], border: `1px solid ${tierBorder[val]}`, borderRadius: 6, padding: "10px 12px" }}>
                   <div style={{ fontSize: 11, color: "#5A5A55", marginBottom: 4, fontWeight: 600 }}>{label.toUpperCase()}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: feedbackNote ? 6 : 0 }}>
                     <span style={{ color: tierColor[val], fontWeight: 700, fontSize: 18 }}>{val}</span>
-                    <select style={{ fontSize: 11, padding: "2px 6px", border: `1px solid ${tierBorder[val]}`, borderRadius: 4, background: "transparent" }}
-                      value={val}
-                      onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], [ovKey]: e.target.value } }))}>
-                      {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
+                    {!isStudentMode && (
+                      <select style={{ fontSize: 11, padding: "2px 6px", border: `1px solid ${tierBorder[val]}`, borderRadius: 4, background: "transparent" }}
+                        value={val}
+                        onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], [ovKey]: e.target.value } }))}>
+                        {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    )}
                   </div>
+                  {feedbackNote && (
+                    <p style={{ margin: 0, fontSize: 11, color: "#1A1A18", lineHeight: 1.5 }}>{feedbackNote}</p>
+                  )}
                 </div>
               );
             })}
           </div>
+
+          {/* What to work on next (student mode only) */}
+          {isStudentMode && student.whatToWorkOnNext && (
+            <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 6, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#15803D" }}>
+              <strong>What to work on next:</strong> {student.whatToWorkOnNext}
+            </div>
+          )}
 
           {/* Problem Inventory (from two-pass scan) */}
           {(student._inventory || problemInventory[student.studentName]) && (() => {
