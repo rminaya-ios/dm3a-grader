@@ -10,6 +10,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+// ── At-Risk Withdrawal Predictor (Phase 1 & 2) ────────────────
+const connectDB = require('./config/db.js');
+const riskRoutes = require('./routes/risk.js');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -382,6 +386,13 @@ app.post('/validate-trial', async (req, res) => {
   }
 });
 // ── END TRIAL SYSTEM ───────────────────────────────────────────
+
+// ── AT-RISK WITHDRAWAL PREDICTOR ───────────────────────────────
+// Connect MongoDB before the server starts accepting traffic, then
+// mount the risk + submission + insights routes under /api.
+connectDB();
+app.use('/api', riskRoutes);
+// ── END AT-RISK PREDICTOR ──────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`DM3A Server running on port ${PORT}`);
