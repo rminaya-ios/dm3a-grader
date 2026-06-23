@@ -206,4 +206,6 @@ const daysBetween = (dateA, dateB) => {
   return Math.floor(Math.abs(dateB - dateA) / msPerDay);
 };
 
-module.exports = { evaluateRisk };
+// runRules is exported for dry-run verification (exercises the rule engine
+// without creating flags or dispatching alerts).
+module.exports = { evaluateRisk, runRules };

@@ -13,6 +13,7 @@ const path = require('path');
 // ── At-Risk Withdrawal Predictor (Phase 1 & 2) ────────────────
 const connectDB = require('./config/db.js');
 const riskRoutes = require('./routes/risk.js');
+const { saveSubmission } = require('./services/submissionService.js');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -77,6 +78,87 @@ app.post('/convert-docx', async (req, res) => {
     if (tmpPath && fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
   }
 });
+
+// ── AT-RISK PREDICTOR — grading hook ───────────────────────────
+// Opportunistic, non-blocking. The /grade endpoint is anonymous batch
+// image grading and carries no student identity. To record submissions
+// for the At-Risk Predictor, the client must send an OPTIONAL `riskContext`
+// alongside the grade request:
+//
+//   riskContext: {
+//     professorEmail:  "rminaya@usj.edu",   // required to record
+//     courseCode:      "MATH110-03",        // required to record
+//     assignmentName:  "HW3 - Hypothesis Testing",  // required to record
+//     assignmentWeight:"homework",          // optional (default homework)
+//     assignmentIndex: 3,                    // optional (1 = first assignment)
+//     semesterTag:     "Spring2026",         // optional
+//     roster: [ { studentName: "Maria Rodriguez", studentEmail: "maria@usj.edu" }, ... ]
+//       // maps each graded studentName -> stable studentEmail (the risk model
+//       // keys on studentEmail + courseCode). Students with no roster match are skipped.
+//   }
+//
+// Without riskContext (or missing professorEmail/courseCode/assignmentName),
+// this is a complete no-op and grading is entirely unaffected.
+
+// "P1".."P4" -> 1..4 ; returns null if unparseable
+function tierToScore(tier) {
+  const m = /^P\s*([1-4])$/.exec(String(tier || '').trim());
+  return m ? Number(m[1]) : null;
+}
+
+async function recordOneSubmission(ctx, student) {
+  const pScore = tierToScore(student.overallTier ?? student.tier);
+  if (!pScore) return; // can't map a score — skip
+
+  const dims = student.dimensions || {};
+  const rubricBreakdown = {
+    conceptualUnderstanding: tierToScore(dims.conceptualUnderstanding) ?? pScore,
+    problemSolving:          tierToScore(dims.problemSolving) ?? pScore,
+    workShown:               tierToScore(dims.workShown) ?? pScore,
+    accuracy:                tierToScore(dims.accuracy) ?? pScore,
+  };
+
+  const roster = Array.isArray(ctx.roster) ? ctx.roster : [];
+  const wanted = String(student.studentName || '').trim().toLowerCase();
+  const match = roster.find(
+    (r) => String(r.studentName || '').trim().toLowerCase() === wanted
+  );
+  if (!match || !match.studentEmail) {
+    console.warn(`[AT-RISK] no roster email for "${student.studentName}" — skipping save`);
+    return;
+  }
+
+  await saveSubmission({
+    studentEmail:     match.studentEmail,
+    studentName:      student.studentName,
+    professorEmail:   ctx.professorEmail,
+    courseCode:       ctx.courseCode,
+    assignmentName:   ctx.assignmentName,
+    assignmentWeight: ctx.assignmentWeight,
+    assignmentIndex:  ctx.assignmentIndex,
+    pScore,
+    rubricBreakdown,
+    feedbackSummary:  (student.feedback || '').slice(0, 500),
+    semesterTag:      ctx.semesterTag,
+  });
+}
+
+// Fire-and-forget: never throws into the grade path, runs after the response.
+function maybeRecordSubmissions(ctx, parsed) {
+  try {
+    if (!ctx || !ctx.professorEmail || !ctx.courseCode || !ctx.assignmentName) {
+      return; // no usable context → no-op
+    }
+    const students = Array.isArray(parsed) ? parsed : [parsed];
+    for (const s of students) {
+      recordOneSubmission(ctx, s).catch((err) =>
+        console.error(`[AT-RISK] save failed for ${s?.studentName}: ${err.message}`)
+      );
+    }
+  } catch (err) {
+    console.error('[AT-RISK] grading hook error (grading unaffected):', err.message);
+  }
+}
 
 app.post('/grade', async (req, res) => {
   try {
@@ -196,8 +278,10 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
     // Validate that the AI returned parseable JSON before sending to client
     const cleaned = text.replace(/```json|```/g, '').trim();
     try {
-      JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
       res.json({ result: text });
+      // At-Risk Predictor: opportunistic, non-blocking, runs after the response.
+      maybeRecordSubmissions(req.body.riskContext, parsed);
     } catch (parseErr) {
       console.error('[parse] AI returned non-JSON response. Full text:', text.slice(0, 500));
       const fallback = JSON.stringify([{
