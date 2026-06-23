@@ -53,7 +53,7 @@ const run = async () => {
     console.log(`\n${pass}/${expectations.length} rules matched expectations.`);
     if (pass !== expectations.length) {
       console.log(
-        'Note: rule precedence in runRules is R6 → R4 → R2 → R3 → R1. A case that\n' +
+        'Note: rule precedence in runRules is R6 → R3 → R2 → R4 → R1. A case that\n' +
         'satisfies an earlier rule will report that rule first.'
       );
     }

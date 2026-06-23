@@ -129,19 +129,25 @@ const runRules = (history, current) => {
     };
   }
 
-  // R4: High-weight P1
-  if (
-    HIGH_WEIGHT_TYPES.includes(current.assignmentWeight) &&
-    current.pScore === 1
-  ) {
-    return {
-      rule:        'R4',
-      flagType:    'academic',
-      flagState:   'ACT_NOW',
-      description: `P1 on high-weight assignment: ${current.assignmentName} (${current.assignmentWeight})`,
-      scores:      [current.pScore],
-      assignments: [current.assignmentName],
-    };
+  // Precedence note: the multi-point trend rules (R3 then R2) are checked
+  // BEFORE the single-point high-weight rule (R4). A sustained decline ending
+  // on a high-weight P1 is the more specific, more diagnostic signal, so it is
+  // reported as R3 rather than being masked by R4. R4 still fires for an
+  // isolated high-weight P1 with no qualifying trend.
+
+  // R3: Declining trend P3 → P2 → P1
+  if (history.length >= 3) {
+    const [s1, s2, s3] = history; // newest first
+    if (s1.pScore === 1 && s2.pScore === 2 && s3.pScore === 3) {
+      return {
+        rule:        'R3',
+        flagType:    'academic',
+        flagState:   'ACT_NOW',
+        description: `Declining trend: P3 → P2 → P1 (${s3.assignmentName} → ${s2.assignmentName} → ${s1.assignmentName})`,
+        scores:      [s3.pScore, s2.pScore, s1.pScore],
+        assignments: [s3.assignmentName, s2.assignmentName, s1.assignmentName],
+      };
+    }
   }
 
   // R2: Two consecutive P1s
@@ -159,19 +165,19 @@ const runRules = (history, current) => {
     }
   }
 
-  // R3: Declining trend P3 → P2 → P1
-  if (history.length >= 3) {
-    const [s1, s2, s3] = history; // newest first
-    if (s1.pScore === 1 && s2.pScore === 2 && s3.pScore === 3) {
-      return {
-        rule:        'R3',
-        flagType:    'academic',
-        flagState:   'ACT_NOW',
-        description: `Declining trend: P3 → P2 → P1 (${s3.assignmentName} → ${s2.assignmentName} → ${s1.assignmentName})`,
-        scores:      [s3.pScore, s2.pScore, s1.pScore],
-        assignments: [s3.assignmentName, s2.assignmentName, s1.assignmentName],
-      };
-    }
+  // R4: High-weight P1
+  if (
+    HIGH_WEIGHT_TYPES.includes(current.assignmentWeight) &&
+    current.pScore === 1
+  ) {
+    return {
+      rule:        'R4',
+      flagType:    'academic',
+      flagState:   'ACT_NOW',
+      description: `P1 on high-weight assignment: ${current.assignmentName} (${current.assignmentWeight})`,
+      scores:      [current.pScore],
+      assignments: [current.assignmentName],
+    };
   }
 
   // R5: Feedback ignored — submitted but no follow-up within window
