@@ -1,5 +1,20 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import LandingPage from "./LandingPage";
+
+// ── At-Risk Predictor (Phase 3) — input-layer constants ──
+// localStorage key for persisted course profiles.
+const DM3A_COURSES_KEY = "dm3a-courses";
+// Assignment weight options: visible label -> stored lowercase value.
+// The backend treats quiz/midterm/exam as high-weight (R4) — values must be exact.
+const ASSIGNMENT_WEIGHTS = [
+  { value: "performance", label: "Performance Task" },
+  { value: "practice",    label: "Practice Task" },
+  { value: "preparation", label: "Preparation" },
+  { value: "homework",    label: "Homework" },
+  { value: "quiz",        label: "Quiz" },
+  { value: "midterm",     label: "Midterm" },
+  { value: "exam",        label: "Exam" },
+];
 
 // ─── COURSE KNOWLEDGE CONFIGS ────────────────────────────────────────────────
 
@@ -495,6 +510,24 @@ export default function DM3AGraderV5() {
   const [studentSubmissionsLeft, setStudentSubmissionsLeft] = useState(null);
   const [studentRubricFile, setStudentRubricFile] = useState(null);
 
+  // ── At-Risk Predictor (Phase 3) — course profiles + per-session inputs ──
+  // Input + localStorage only. NOTHING here is sent to the server in this step.
+  const [courses, setCourses] = useState([]); // [{courseCode, professorEmail, roster:[{studentName, studentEmail}]}]
+  const [activeCourseCode, setActiveCourseCode] = useState("");
+  const [professorEmail, setProfessorEmail] = useState(""); // active, editable override of the profile's email
+  const [activeRoster, setActiveRoster] = useState([]);      // roster of the selected course
+  const [assignmentWeight, setAssignmentWeight] = useState("homework");
+  const [assignmentIndex, setAssignmentIndex] = useState(""); // optional; "" = unset
+  const [semesterTag, setSemesterTag] = useState("Spring 2026");
+  const [showManageCourses, setShowManageCourses] = useState(false);
+  // Manage Courses editor state
+  const [addCourseCode, setAddCourseCode] = useState("");
+  const [addProfessorEmail, setAddProfessorEmail] = useState("");
+  const [editingCourseCode, setEditingCourseCode] = useState(null); // courseCode being edited, or null
+  const [editCourseCode, setEditCourseCode] = useState("");
+  const [editProfessorEmail, setEditProfessorEmail] = useState("");
+  const [editRosterText, setEditRosterText] = useState("");
+
 
   const assignmentRef = useRef();
   const answerKeyRef = useRef();
@@ -502,6 +535,139 @@ export default function DM3AGraderV5() {
   const studentRubricRef = useRef();
 
   const APP_PASSWORD = "dmgof50c";
+
+  // ─── AT-RISK: COURSE PROFILE STORE (localStorage `dm3a-courses`) ────────────
+  // Load saved course profiles on mount.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DM3A_COURSES_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) {
+        // Backfill: heal any course whose roster is missing or not an array
+        // (e.g. data saved before the parser fix, which could be {} ) -> [].
+        const needsHeal = parsed.some((c) => !Array.isArray(c?.roster));
+        const normalized = parsed.map((c) => ({
+          ...c,
+          roster: Array.isArray(c?.roster) ? c.roster : [],
+        }));
+        setCourses(normalized);
+        if (needsHeal) {
+          try {
+            localStorage.setItem(DM3A_COURSES_KEY, JSON.stringify(normalized));
+          } catch {
+            /* storage unavailable — in-memory heal still applied */
+          }
+        }
+      }
+    } catch {
+      /* ignore malformed storage */
+    }
+  }, []);
+
+  // Write the full courses array back to localStorage and state.
+  function persistCourses(next) {
+    setCourses(next);
+    try {
+      localStorage.setItem(DM3A_COURSES_KEY, JSON.stringify(next));
+    } catch {
+      /* storage unavailable — keep in-memory */
+    }
+  }
+
+  // Parse pasted "Name, email" lines -> [{studentName, studentEmail}].
+  // Trim fields, lowercase email, skip blank/invalid lines.
+  // NOTE: named parseRosterLines (NOT parseRoster) to avoid colliding with the
+  // pre-existing Blackboard parseRoster() below, which returns an ID->name map.
+  // Function declarations hoist, so a duplicate name would shadow this one.
+  function parseRosterLines(text) {
+    return String(text || "")
+      .split(/\r?\n/)
+      .map((line) => {
+        const idx = line.indexOf(",");
+        if (idx === -1) return null;
+        const studentName = line.slice(0, idx).trim();
+        const studentEmail = line.slice(idx + 1).trim().toLowerCase();
+        if (!studentName || !studentEmail || !studentEmail.includes("@")) return null;
+        return { studentName, studentEmail };
+      })
+      .filter(Boolean);
+  }
+
+  function rosterToText(roster) {
+    return (roster || []).map((r) => `${r.studentName}, ${r.studentEmail}`).join("\n");
+  }
+
+  function addCourse() {
+    const code = addCourseCode.trim();
+    if (!code) return;
+    if (courses.some((c) => c.courseCode.toLowerCase() === code.toLowerCase())) return; // no duplicate codes
+    persistCourses([
+      ...courses,
+      { courseCode: code, professorEmail: addProfessorEmail.trim(), roster: [] },
+    ]);
+    setAddCourseCode("");
+    setAddProfessorEmail("");
+  }
+
+  function deleteCourse(code) {
+    persistCourses(courses.filter((c) => c.courseCode !== code));
+    if (activeCourseCode === code) {
+      setActiveCourseCode("");
+      setProfessorEmail("");
+      setActiveRoster([]);
+    }
+    if (editingCourseCode === code) setEditingCourseCode(null);
+  }
+
+  function startEdit(course) {
+    setEditingCourseCode(course.courseCode);
+    setEditCourseCode(course.courseCode);
+    setEditProfessorEmail(course.professorEmail || "");
+    setEditRosterText(rosterToText(course.roster));
+  }
+
+  function cancelEdit() {
+    setEditingCourseCode(null);
+  }
+
+  function saveEdit() {
+    const originalCode = editingCourseCode;
+    const newCode = editCourseCode.trim();
+    if (!newCode) return;
+    const newEmail = editProfessorEmail.trim();
+    const newRoster = parseRosterLines(editRosterText);
+    const next = courses.map((c) =>
+      c.courseCode === originalCode
+        ? { courseCode: newCode, professorEmail: newEmail, roster: newRoster }
+        : c
+    );
+    persistCourses(next);
+    // Keep active selection in sync if the edited course is the active one.
+    if (activeCourseCode === originalCode) {
+      setActiveCourseCode(newCode);
+      setProfessorEmail(newEmail);
+      setActiveRoster(newRoster);
+    }
+    setEditingCourseCode(null);
+  }
+
+  // Active course selection: auto-fill professor email + load roster.
+  function selectActiveCourse(code) {
+    setActiveCourseCode(code);
+    const profile = courses.find((c) => c.courseCode === code);
+    setProfessorEmail(profile ? profile.professorEmail || "" : "");
+    setActiveRoster(profile ? profile.roster || [] : []);
+  }
+
+  // Editing the active professor email also updates the saved profile.
+  function updateActiveProfessorEmail(value) {
+    setProfessorEmail(value);
+    persistCourses(
+      courses.map((c) =>
+        c.courseCode === activeCourseCode ? { ...c, professorEmail: value } : c
+      )
+    );
+  }
 
   // ─── LOGIN ────────────────────────────────────────────────────────────────
 
@@ -2266,6 +2432,108 @@ Return a JSON array with exactly ONE student object.`;
         <textarea style={{ ...styles.input, minHeight: 80, resize: "vertical", marginBottom: 14 }} placeholder="Any specific grading notes for this assignment..." value={rubric} onChange={e => setRubric(e.target.value)} />
         <label style={styles.label}>Problems to grade (optional)</label>
         <input style={styles.input} placeholder="e.g. Problems 1, 2a, 2b, 3, 4a, 4b, 4c, 5a, 5b" value={problemScope} onChange={e => setProblemScope(e.target.value)} />
+      </div>
+
+      {/* At-Risk Tracking — Course Profiles (optional; input + local storage only) */}
+      <div style={styles.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>At-Risk Tracking <span style={{ fontWeight: 400, color: "#888" }}>(optional)</span></h3>
+            <p style={{ margin: "4px 0 0", fontSize: 12, color: "#888" }}>Saved locally on this device. Not sent anywhere in this step.</p>
+          </div>
+          <button type="button" style={{ ...styles.btnOutline, ...(showManageCourses ? { background: "#0f2d5a", color: "#f5c842", borderColor: "#0f2d5a" } : {}) }} onClick={() => setShowManageCourses(v => !v)}>
+            {showManageCourses ? "× Close Manage Courses" : "Manage Courses"}
+          </button>
+        </div>
+
+        {/* Active course selector */}
+        <label style={styles.label}>Course / Section</label>
+        {courses.length === 0 ? (
+          <select style={{ ...styles.input, marginBottom: 12 }} value="" disabled>
+            <option value="">No courses yet — add one in Manage Courses</option>
+          </select>
+        ) : (
+          <select style={{ ...styles.input, marginBottom: 12 }} value={activeCourseCode} onChange={e => selectActiveCourse(e.target.value)}>
+            <option value="">— Select a course —</option>
+            {courses.map(c => <option key={c.courseCode} value={c.courseCode}>{c.courseCode}</option>)}
+          </select>
+        )}
+
+        {activeCourseCode && (
+          <div style={{ marginBottom: 4 }}>
+            <label style={styles.label}>Professor Email (auto-filled — editable; updates the saved profile)</label>
+            <input style={{ ...styles.input, marginBottom: 8 }} type="email" value={professorEmail} onChange={e => updateActiveProfessorEmail(e.target.value)} />
+            <div style={{ fontSize: 13, color: activeRoster.length ? "#0F6E56" : "#854F0B", fontWeight: 600, marginBottom: 12 }}>
+              {activeRoster.length
+                ? `Roster: ${activeRoster.length} students loaded for ${activeCourseCode}`
+                : "No roster saved for this section."}
+            </div>
+          </div>
+        )}
+
+        {/* Per-session assignment details (NOT tied to a course) */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <div>
+            <label style={styles.label}>Assignment Weight</label>
+            <select style={styles.input} value={assignmentWeight} onChange={e => setAssignmentWeight(e.target.value)}>
+              {ASSIGNMENT_WEIGHTS.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={styles.label}>Assignment # in course (1 = first)</label>
+            <input style={styles.input} type="number" min="1" placeholder="optional" value={assignmentIndex} onChange={e => setAssignmentIndex(e.target.value)} />
+          </div>
+          <div>
+            <label style={styles.label}>Semester</label>
+            <input style={styles.input} value={semesterTag} onChange={e => setSemesterTag(e.target.value)} />
+          </div>
+        </div>
+
+        {/* Manage Courses panel */}
+        {showManageCourses && (
+          <div style={{ marginTop: 16, borderTop: "1px solid #D8D6CE", paddingTop: 16 }}>
+            <h4 style={{ margin: "0 0 10px", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#5A5A55" }}>Manage Courses</h4>
+
+            {/* Add course */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+              <input style={{ ...styles.input, flex: 2, minWidth: 140 }} placeholder="Course code / section" value={addCourseCode} onChange={e => setAddCourseCode(e.target.value)} />
+              <input style={{ ...styles.input, flex: 2, minWidth: 140 }} type="email" placeholder="Professor email" value={addProfessorEmail} onChange={e => setAddProfessorEmail(e.target.value)} />
+              <button type="button" style={styles.btn} onClick={addCourse} disabled={!addCourseCode.trim()}>Add Course</button>
+            </div>
+
+            {/* Course list */}
+            {courses.length === 0 && <div style={{ fontSize: 13, color: "#888" }}>No courses yet.</div>}
+            {courses.map(c => (
+              <div key={c.courseCode} style={{ border: "1px solid #D8D6CE", borderRadius: 6, padding: 12, marginBottom: 10 }}>
+                {editingCourseCode === c.courseCode ? (
+                  <div>
+                    <label style={styles.label}>Course code</label>
+                    <input style={{ ...styles.input, marginBottom: 8 }} value={editCourseCode} onChange={e => setEditCourseCode(e.target.value)} />
+                    <label style={styles.label}>Professor email</label>
+                    <input style={{ ...styles.input, marginBottom: 8 }} type="email" value={editProfessorEmail} onChange={e => setEditProfessorEmail(e.target.value)} />
+                    <label style={styles.label}>Roster — one per line: Name, email</label>
+                    <textarea style={{ ...styles.input, minHeight: 110, resize: "vertical", marginBottom: 8, fontFamily: "monospace" }} placeholder={"One student per line, formatted:\nFull Name, email address"} value={editRosterText} onChange={e => setEditRosterText(e.target.value)} />
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button type="button" style={styles.btn} onClick={saveEdit} disabled={!editCourseCode.trim()}>Save</button>
+                      <button type="button" style={styles.btnOutline} onClick={cancelEdit}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{c.courseCode}</div>
+                      <div style={{ fontSize: 12, color: "#5A5A55" }}>{c.professorEmail || "(no email)"} · {(c.roster?.length || 0)} students</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button type="button" style={styles.btnOutline} onClick={() => startEdit(c)}>Edit</button>
+                      <button type="button" style={{ ...styles.btnOutline, color: "#9f1239", borderColor: "#9f1239" }} onClick={() => deleteCourse(c.courseCode)}>Delete</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Three-Zone Upload */}
