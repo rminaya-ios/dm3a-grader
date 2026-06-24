@@ -527,6 +527,10 @@ export default function DM3AGraderV5() {
   const [editCourseCode, setEditCourseCode] = useState("");
   const [editProfessorEmail, setEditProfessorEmail] = useState("");
   const [editRosterText, setEditRosterText] = useState("");
+  // ── Phase 3 Step 2: roster confirmation (state only; nothing sent to server) ──
+  const [confirmedRoster, setConfirmedRoster] = useState([]); // [{studentName, studentEmail}] — consumed by Step 4
+  const [studentMapping, setStudentMapping] = useState({});   // result index -> chosen studentEmail ("" = skip)
+  const [rosterConfirmed, setRosterConfirmed] = useState(false);
 
 
   const assignmentRef = useRef();
@@ -667,6 +671,38 @@ export default function DM3AGraderV5() {
         c.courseCode === activeCourseCode ? { ...c, professorEmail: value } : c
       )
     );
+  }
+
+  // ─── PHASE 3 STEP 2: ROSTER CONFIRMATION (state only; nothing sent to server) ──
+  // When a grading run produces a new result set, clear any prior confirmation and
+  // auto-map each graded studentName to a roster entry by case-insensitive EXACT
+  // match. Unmatched names default to Skip (""). No fuzzy guessing. This also
+  // satisfies "reset confirmedRoster at the start of each new grading run."
+  useEffect(() => {
+    setConfirmedRoster([]);
+    setRosterConfirmed(false);
+    if (!activeCourseCode || activeRoster.length === 0 || results.length === 0) {
+      setStudentMapping({});
+      return;
+    }
+    const norm = (v) => String(v || "").trim().toLowerCase();
+    const mapping = {};
+    results.forEach((s, i) => {
+      const match = activeRoster.find((r) => norm(r.studentName) === norm(s.studentName));
+      mapping[i] = match ? match.studentEmail : ""; // "" = Skip
+    });
+    setStudentMapping(mapping);
+  }, [results, activeCourseCode, activeRoster]);
+
+  // Build confirmedRoster from the current per-row selections (exclude Skip).
+  // Keyed to the EXACT result studentName so the backend's later
+  // case-insensitive match (Step 4) succeeds.
+  function confirmRoster() {
+    const next = results
+      .map((s, i) => ({ studentName: s.studentName, studentEmail: studentMapping[i] || "" }))
+      .filter((e) => e.studentEmail);
+    setConfirmedRoster(next);
+    setRosterConfirmed(true);
   }
 
   // ─── LOGIN ────────────────────────────────────────────────────────────────
@@ -3183,6 +3219,52 @@ Return a JSON array with exactly ONE student object.`;
             </div>
           </div>
         </div>
+
+        {/* Phase 3 Step 2 — Confirm Students (roster mapping for tracking; nothing sent to the server) */}
+        {!isStudentMode && activeCourseCode && activeRoster.length >= 1 && results.length >= 1 && (
+          <div style={styles.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Confirm Students <span style={{ fontWeight: 400, color: "#888" }}>· {activeCourseCode}</span></h3>
+              {rosterConfirmed && <span style={{ fontSize: 12, fontWeight: 700, color: "#0F6E56" }}>✓ Confirmed</span>}
+            </div>
+            <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
+              Map each graded student to your roster. Names with no exact match default to Skip and won't be tracked. Nothing is sent to the server in this step.
+            </p>
+
+            {(() => {
+              const mappedCount = results.reduce((n, _s, i) => n + (studentMapping[i] ? 1 : 0), 0);
+              const skipCount = results.length - mappedCount;
+              return (
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#5A5A55", marginBottom: 12 }}>
+                  {mappedCount} of {results.length} students mapped · {skipCount} will be skipped (not tracked).
+                </div>
+              );
+            })()}
+
+            {results.map((s, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>{s.studentName}</div>
+                <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => setStudentMapping(m => ({ ...m, [i]: e.target.value }))}>
+                  <option value="">— Skip (don't track) —</option>
+                  {activeRoster.map((r, ri) => (
+                    <option key={ri} value={r.studentEmail}>{r.studentName} — {r.studentEmail}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
+              <button type="button" style={styles.btn} onClick={confirmRoster}>
+                {rosterConfirmed ? "Re-confirm Students" : "Confirm Students"}
+              </button>
+              {rosterConfirmed && (
+                <span style={{ fontSize: 13, color: "#0F6E56", fontWeight: 600 }}>
+                  Tracking {confirmedRoster.length} student{confirmedRoster.length !== 1 ? "s" : ""} for {activeCourseCode}.
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Student Mode — practice estimate banner (always shown in student flow) */}
         {isStudentMode && (
