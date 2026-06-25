@@ -528,9 +528,10 @@ export default function DM3AGraderV5() {
   const [editProfessorEmail, setEditProfessorEmail] = useState("");
   const [editRosterText, setEditRosterText] = useState("");
   // ── Phase 3 Step 2: roster confirmation (state only; nothing sent to server) ──
-  const [confirmedRoster, setConfirmedRoster] = useState([]); // [{studentName, studentEmail}] — consumed by Step 4
+  const [confirmedRoster, setConfirmedRoster] = useState([]); // [{studentName, studentEmail}] — sent to /api/risk/record
   const [studentMapping, setStudentMapping] = useState({});   // result index -> chosen studentEmail ("" = skip)
   const [rosterConfirmed, setRosterConfirmed] = useState(false);
+  const [trackingNote, setTrackingNote] = useState("");       // non-blocking status after a tracked confirm
 
 
   const assignmentRef = useRef();
@@ -681,6 +682,7 @@ export default function DM3AGraderV5() {
   useEffect(() => {
     setConfirmedRoster([]);
     setRosterConfirmed(false);
+    setTrackingNote("");
     if (!activeCourseCode || activeRoster.length === 0 || results.length === 0) {
       setStudentMapping({});
       return;
@@ -694,15 +696,52 @@ export default function DM3AGraderV5() {
     setStudentMapping(mapping);
   }, [results, activeCourseCode, activeRoster]);
 
-  // Build confirmedRoster from the current per-row selections (exclude Skip).
-  // Keyed to the EXACT result studentName so the backend's later
-  // case-insensitive match (Step 4) succeeds.
-  function confirmRoster() {
-    const next = results
+  // Confirm = build the roster NOW from the current result names + selections
+  // (keyed to each result's CURRENT studentName, so it cannot diverge), then
+  // POST { riskContext, results } to /api/risk/record. The /grade body is never
+  // touched; nothing here re-grades. Non-blocking: status goes into trackingNote.
+  async function confirmRoster() {
+    const roster = results
       .map((s, i) => ({ studentName: s.studentName, studentEmail: studentMapping[i] || "" }))
       .filter((e) => e.studentEmail);
-    setConfirmedRoster(next);
+    setConfirmedRoster(roster);
     setRosterConfirmed(true);
+
+    // Only send when there's something to track and we have a professor email.
+    if (!activeCourseCode || !professorEmail.trim() || roster.length === 0) {
+      setTrackingNote("");
+      return;
+    }
+
+    const riskContext = {
+      professorEmail,
+      courseCode: activeCourseCode,
+      assignmentName: assignment || "Student Submission",
+      assignmentWeight,
+      assignmentIndex: assignmentIndex === "" ? undefined : Number(assignmentIndex),
+      semesterTag,
+      roster,
+    };
+
+    setTrackingNote("Recording at-risk tracking…");
+    try {
+      const res = await fetch(`${SERVER_URL}/api/risk/record`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ riskContext, results }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        setTrackingNote(`At-risk tracking failed${data.error ? `: ${data.error}` : ""}.`);
+        return;
+      }
+      let note = `At-risk tracking: recorded ${data.recorded} student${data.recorded === 1 ? "" : "s"} for ${activeCourseCode}`;
+      if (data.skipped) note += ` · ${data.skipped} skipped`;
+      if (data.alertsFired > 0) note += ` · ${data.alertsFired} alert${data.alertsFired === 1 ? "" : "s"} sent`;
+      setTrackingNote(note + ".");
+    } catch (err) {
+      setTrackingNote(`At-risk tracking failed: ${err.message}`);
+    }
   }
 
   // ─── LOGIN ────────────────────────────────────────────────────────────────
@@ -3253,13 +3292,13 @@ Return a JSON array with exactly ONE student object.`;
               </div>
             ))}
 
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
               <button type="button" style={styles.btn} onClick={confirmRoster}>
                 {rosterConfirmed ? "Re-confirm Students" : "Confirm Students"}
               </button>
-              {rosterConfirmed && (
-                <span style={{ fontSize: 13, color: "#0F6E56", fontWeight: 600 }}>
-                  Tracking {confirmedRoster.length} student{confirmedRoster.length !== 1 ? "s" : ""} for {activeCourseCode}.
+              {trackingNote && (
+                <span style={{ fontSize: 13, fontWeight: 600, color: trackingNote.toLowerCase().includes("failed") ? "#9f1239" : "#0F6E56" }}>
+                  {trackingNote}
                 </span>
               )}
             </div>

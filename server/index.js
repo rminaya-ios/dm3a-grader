@@ -106,9 +106,10 @@ function tierToScore(tier) {
   return m ? Number(m[1]) : null;
 }
 
+// Returns { status: 'recorded'|'skipped', flagged?: boolean, reason?: string }.
 async function recordOneSubmission(ctx, student) {
   const pScore = tierToScore(student.overallTier ?? student.tier);
-  if (!pScore) return; // can't map a score — skip
+  if (!pScore) return { status: 'skipped', reason: 'no-score' };
 
   const dims = student.dimensions || {};
   const rubricBreakdown = {
@@ -125,10 +126,12 @@ async function recordOneSubmission(ctx, student) {
   );
   if (!match || !match.studentEmail) {
     console.warn(`[AT-RISK] no roster email for "${student.studentName}" — skipping save`);
-    return;
+    return { status: 'skipped', reason: 'no-roster-match' };
   }
 
-  await saveSubmission({
+  // saveSubmission persists + runs the risk evaluator (which dispatches alerts
+  // for a newly created / escalated flag). flagResult is the flag or null.
+  const { flagResult } = await saveSubmission({
     studentEmail:     match.studentEmail,
     studentName:      student.studentName,
     professorEmail:   ctx.professorEmail,
@@ -141,23 +144,40 @@ async function recordOneSubmission(ctx, student) {
     feedbackSummary:  (student.feedback || '').slice(0, 500),
     semesterTag:      ctx.semesterTag,
   });
+
+  return { status: 'recorded', flagged: Boolean(flagResult) };
 }
 
-// Fire-and-forget: never throws into the grade path, runs after the response.
-function maybeRecordSubmissions(ctx, parsed) {
+// Records a parsed result set against the riskContext roster and RETURNS a
+// summary { recorded, skipped, alertsFired }. Never throws.
+// - The /grade hook calls this WITHOUT awaiting and ignores the return value
+//   (behavior there is unchanged — still fire-and-forget after the response).
+// - The /api/risk/record route awaits it to report the summary back.
+async function maybeRecordSubmissions(ctx, parsed) {
+  const summary = { recorded: 0, skipped: 0, alertsFired: 0 };
   try {
     if (!ctx || !ctx.professorEmail || !ctx.courseCode || !ctx.assignmentName) {
-      return; // no usable context → no-op
+      return summary; // no usable context → no-op
     }
     const students = Array.isArray(parsed) ? parsed : [parsed];
     for (const s of students) {
-      recordOneSubmission(ctx, s).catch((err) =>
-        console.error(`[AT-RISK] save failed for ${s?.studentName}: ${err.message}`)
-      );
+      try {
+        const r = await recordOneSubmission(ctx, s);
+        if (r?.status === 'recorded') {
+          summary.recorded++;
+          if (r.flagged) summary.alertsFired++;
+        } else {
+          summary.skipped++;
+        }
+      } catch (err) {
+        summary.skipped++;
+        console.error(`[AT-RISK] save failed for ${s?.studentName}: ${err.message}`);
+      }
     }
   } catch (err) {
-    console.error('[AT-RISK] grading hook error (grading unaffected):', err.message);
+    console.error('[AT-RISK] record error (grading unaffected):', err.message);
   }
+  return summary;
 }
 
 app.post('/grade', async (req, res) => {
@@ -299,6 +319,23 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
   } catch (err) {
     console.error('Grade error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── AT-RISK: explicit recording endpoint ───────────────────────────────────
+// Called by the frontend AFTER the professor confirms the roster on the results
+// screen (the grade flow can't carry confirmation, since confirmation happens
+// post-grade). Reuses the SAME maybeRecordSubmissions logic the dormant /grade
+// hook uses. Same protection as /grade (CORS only). Never throws.
+// Body: { riskContext, results }  ->  { success, recorded, skipped, alertsFired }
+app.post('/api/risk/record', async (req, res) => {
+  try {
+    const { riskContext, results } = req.body || {};
+    const summary = await maybeRecordSubmissions(riskContext, results);
+    res.json({ success: true, ...summary });
+  } catch (err) {
+    console.error('[AT-RISK] /api/risk/record error:', err.message);
+    res.status(500).json({ success: false, error: err.message, recorded: 0, skipped: 0, alertsFired: 0 });
   }
 });
 
