@@ -158,5 +158,18 @@ submissionSchema.index(
   { name: 'professor_course_date' }
 );
 
+// ── Admin Dashboard aggregations (Phase 2) ────────────────────────────────
+// Time-window + per-course grouping (overview / activity / by-course / cost).
+// Uses createdAt (timestamps) — distinct from the submittedAt indexes above.
+submissionSchema.index(
+  { createdAt: -1, courseCode: 1 },
+  { name: 'created_course' }
+);
+// Per-professor "who's active" + cost, newest first (by-user view).
+submissionSchema.index(
+  { professorEmail: 1, createdAt: -1 },
+  { name: 'professor_created' }
+);
+
 const Submission = mongoose.model('Submission', submissionSchema);
 module.exports = Submission;

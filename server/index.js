@@ -20,6 +20,9 @@ const Submission = require('./models/Submission.js');
 const GradingEvent = require('./models/GradingEvent.js');
 const { estimateCostUSD, extractUsage } = require('./utils/apiCost.js');
 
+// ── Admin dashboard aggregation API (Admin Dashboard, Phase 2) ─
+const adminStatsRoutes = require('./routes/adminStats.js');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -652,6 +655,10 @@ app.post('/validate-trial', async (req, res) => {
 connectDB();
 app.use('/api', riskRoutes);
 // ── END AT-RISK PREDICTOR ──────────────────────────────────────
+
+// ── ADMIN DASHBOARD (read-only aggregation API, Phase 2) ───────
+app.use('/api/admin', adminStatsRoutes);
+// ── END ADMIN DASHBOARD ────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`DM3A Server running on port ${PORT}`);
