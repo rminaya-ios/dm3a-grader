@@ -18,7 +18,17 @@ const { saveSubmission } = require('./services/submissionService.js');
 // ── API cost tracking (Admin Dashboard, Phase 1) ──────────────
 const Submission = require('./models/Submission.js');
 const GradingEvent = require('./models/GradingEvent.js');
-const { estimateCostUSD, extractUsage } = require('./utils/apiCost.js');
+// Cost tracking must NEVER break grading. If apiCost.js is missing or throws at
+// load, fall back to no-ops so the server still boots and grading proceeds
+// (acceptance test #4). Individual writes are separately try/caught.
+let estimateCostUSD, extractUsage;
+try {
+  ({ estimateCostUSD, extractUsage } = require('./utils/apiCost.js'));
+} catch (e) {
+  console.warn('[COST] apiCost.js unavailable — cost estimation disabled:', e.message);
+  estimateCostUSD = () => 0;
+  extractUsage = () => ({ inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 });
+}
 
 // ── Admin dashboard aggregation API (Admin Dashboard, Phase 2) ─
 const adminStatsRoutes = require('./routes/adminStats.js');
