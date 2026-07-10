@@ -15,6 +15,11 @@ const connectDB = require('./config/db.js');
 const riskRoutes = require('./routes/risk.js');
 const { saveSubmission } = require('./services/submissionService.js');
 
+// ── API cost tracking (Admin Dashboard, Phase 1) ──────────────
+const Submission = require('./models/Submission.js');
+const GradingEvent = require('./models/GradingEvent.js');
+const { estimateCostUSD, extractUsage } = require('./utils/apiCost.js');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -180,7 +185,91 @@ async function maybeRecordSubmissions(ctx, parsed) {
   return summary;
 }
 
+// ── API COST TRACKING ───────────────────────────────────────────────────────
+// All cost tracking is best-effort and MUST NEVER break grading. Every write is
+// wrapped in try/catch; callers invoke these fire-and-forget (no await needed).
+
+// Writes one identity-free GradingEvent for a single Anthropic call. Never throws.
+async function recordGradingEvent({
+  usage,
+  model,
+  submissionCount = 0,
+  gradingDurationMs = 0,
+  apiCalls = 1,
+  recordedVia = 'auto',
+}) {
+  try {
+    const u = usage || {};
+    await GradingEvent.create({
+      submissionCount,
+      gradingDurationMs,
+      recordedVia,
+      apiUsage: {
+        inputTokens:         u.inputTokens || 0,
+        outputTokens:        u.outputTokens || 0,
+        cacheCreationTokens: u.cacheCreationTokens || 0,
+        cacheReadTokens:     u.cacheReadTokens || 0,
+        apiCalls,
+        estimatedCostUSD:    estimateCostUSD(u),
+        model:               model || '',
+      },
+    });
+  } catch (err) {
+    console.error('[COST] GradingEvent write failed (grading unaffected):', err.message);
+  }
+}
+
+// ADDITIVE + DORMANT: attaches per-submission apiUsage to the Submissions that
+// /api/risk/record just created, IF the client forwarded `apiUsage` from the
+// /grade response. Splits the batch usage evenly across the recorded students.
+// Does NOT touch maybeRecordSubmissions / saveSubmission core logic. Never throws.
+// No-op today (the frontend does not forward apiUsage yet) — ready to light up
+// the by-user / by-course cost views the moment it does.
+async function attachApiUsageToSubmissions(ctx, apiUsage, summary) {
+  try {
+    if (!apiUsage || !ctx || !ctx.professorEmail || !ctx.courseCode || !ctx.assignmentName) return;
+    const n = summary && summary.recorded ? summary.recorded : 0;
+    if (n < 1) return;
+
+    const split = {
+      inputTokens:         (apiUsage.inputTokens || 0) / n,
+      outputTokens:        (apiUsage.outputTokens || 0) / n,
+      cacheCreationTokens: (apiUsage.cacheCreationTokens || 0) / n,
+      cacheReadTokens:     (apiUsage.cacheReadTokens || 0) / n,
+    };
+    const perDoc = {
+      ...split,
+      apiCalls:         (apiUsage.apiCalls || 1) / n,
+      estimatedCostUSD: estimateCostUSD(split),
+      model:            apiUsage.model || '',
+    };
+
+    // Target the N most-recently created Submissions for this prof+course+assignment.
+    const recent = await Submission.find({
+      professorEmail: String(ctx.professorEmail).toLowerCase(),
+      courseCode:     String(ctx.courseCode).toUpperCase(),
+      assignmentName: ctx.assignmentName,
+    })
+      .sort({ createdAt: -1 })
+      .limit(n)
+      .select('_id')
+      .lean();
+
+    const ids = recent.map((d) => d._id);
+    if (ids.length) {
+      await Submission.updateMany(
+        { _id: { $in: ids } },
+        { $set: { apiUsage: perDoc, recordedVia: 'instructor' } }
+      );
+    }
+  } catch (err) {
+    console.error('[COST] attachApiUsageToSubmissions failed (recording unaffected):', err.message);
+  }
+}
+// ── END API COST TRACKING ────────────────────────────────────────────────────
+
 app.post('/grade', async (req, res) => {
+  const gradeStartedAt = Date.now();
   try {
     const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
     const recvImageBlocks = clientBlocks.filter(b => b.type === 'image');
@@ -295,6 +384,10 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
     console.log('Sending result, length:', text?.length);
     console.log('AI response preview:', text.slice(0, 200));
 
+    // Cost tracking: capture usage from the main grading call (best-effort).
+    const usage = extractUsage(response);
+    const usedModel = response.model || 'claude-sonnet-4-6';
+
     // Validate that the AI returned parseable JSON before sending to client
     const cleaned = text.replace(/```json|```/g, '').trim();
     try {
@@ -302,6 +395,14 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
       res.json({ result: text });
       // At-Risk Predictor: opportunistic, non-blocking, runs after the response.
       maybeRecordSubmissions(req.body.riskContext, parsed);
+      // API cost: identity-free GradingEvent, fire-and-forget, never blocks/breaks.
+      recordGradingEvent({
+        usage,
+        model: usedModel,
+        submissionCount: Array.isArray(parsed) ? parsed.length : 1,
+        gradingDurationMs: Date.now() - gradeStartedAt,
+        recordedVia: 'auto',
+      });
     } catch (parseErr) {
       console.error('[parse] AI returned non-JSON response. Full text:', text.slice(0, 500));
       const fallback = JSON.stringify([{
@@ -315,6 +416,14 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
         instructorNote: 'Server could not parse AI response as JSON. Raw preview: ' + text.slice(0, 200)
       }]);
       res.json({ result: fallback });
+      // Tokens were still consumed even though the AI response was unparseable.
+      recordGradingEvent({
+        usage,
+        model: usedModel,
+        submissionCount: 1,
+        gradingDurationMs: Date.now() - gradeStartedAt,
+        recordedVia: 'auto',
+      });
     }
   } catch (err) {
     console.error('Grade error:', err.message);
@@ -330,8 +439,11 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
 // Body: { riskContext, results }  ->  { success, recorded, skipped, alertsFired }
 app.post('/api/risk/record', async (req, res) => {
   try {
-    const { riskContext, results } = req.body || {};
+    const { riskContext, results, apiUsage } = req.body || {};
     const summary = await maybeRecordSubmissions(riskContext, results);
+    // ADDITIVE cost attribution: only runs if the client forwarded `apiUsage`
+    // (dormant today). Fire-and-forget; never alters recording or the response.
+    attachApiUsageToSubmissions(riskContext, apiUsage, summary).catch(() => {});
     res.json({ success: true, ...summary });
   } catch (err) {
     console.error('[AT-RISK] /api/risk/record error:', err.message);
@@ -343,6 +455,9 @@ app.post('/api/risk/record', async (req, res) => {
 // Cheap/fast haiku call — returns classification JSON without grading anything.
 // Called by the student flow ONLY. Any error fails open (passes through).
 app.post('/detect-work', async (req, res) => {
+  const detectStartedAt = Date.now();
+  let gatekeeperUsage = null;                          // set once the API call returns
+  let gatekeeperModel = 'claude-haiku-4-5-20251001';
   try {
     const clientBlocks = req.body.contentBlocks || [];
     const imageBlocks = clientBlocks.filter(b => b.type === 'image');
@@ -370,16 +485,39 @@ app.post('/detect-work', async (req, res) => {
       messages: [{ role: 'user', content: [...convertedBlocks, { type: 'text', text: detectionPrompt }] }]
     });
 
+    // Cost tracking: capture gatekeeper usage (best-effort).
+    gatekeeperUsage = extractUsage(response);
+    gatekeeperModel = response.model || gatekeeperModel;
+
     const raw = response.content?.[0]?.text ?? '';
     const cleaned = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     const decision = parsed.work_present ? 'PASS' : 'BLOCK';
     console.log(`[STUDENT GATEKEEPER] classification=${parsed.classification} confidence=${parsed.confidence} → ${decision}: "${parsed.reason}"`);
     res.json(parsed);
+    // API cost: gatekeeper call (no grading → submissionCount 0). Fire-and-forget.
+    recordGradingEvent({
+      usage: gatekeeperUsage,
+      model: gatekeeperModel,
+      submissionCount: 0,
+      gradingDurationMs: Date.now() - detectStartedAt,
+      recordedVia: 'gatekeeper',
+    });
   } catch (err) {
     // Fail open — a detection error must never block a real student attempt
     console.error('[STUDENT GATEKEEPER] error — PASS:', err.message);
     res.json({ classification: 'HAS_WORK', work_present: true, confidence: 0, reason: 'Detection error — passing through' });
+    // If the API call returned before a later step threw, tokens were still
+    // consumed — record them so cost attribution stays complete.
+    if (gatekeeperUsage) {
+      recordGradingEvent({
+        usage: gatekeeperUsage,
+        model: gatekeeperModel,
+        submissionCount: 0,
+        gradingDurationMs: Date.now() - detectStartedAt,
+        recordedVia: 'gatekeeper',
+      });
+    }
   }
 });
 // ── END STUDENT WORK GATEKEEPER ────────────────────────────────────────────

@@ -113,6 +113,26 @@ const submissionSchema = new mongoose.Schema(
       trim: true,
       // e.g. "Spring2026"
     },
+
+    // ── API cost attribution (ADDITIVE — safe defaults) ───────────────────
+    // Populated opportunistically when the client forwards per-batch usage
+    // from the /grade response into /api/risk/record. Historical / un-attributed
+    // records keep the zero defaults (dashboard shows "—"). Never required.
+    apiUsage: {
+      inputTokens:         { type: Number, default: 0 },
+      outputTokens:        { type: Number, default: 0 },
+      cacheCreationTokens: { type: Number, default: 0 },
+      cacheReadTokens:     { type: Number, default: 0 },
+      apiCalls:            { type: Number, default: 0 },
+      estimatedCostUSD:    { type: Number, default: 0 },
+      model:               { type: String, default: '' },
+    },
+    // How this submission was recorded, for the cost-by-source breakdown.
+    // '' = not attributed; e.g. 'instructor' | 'student' | 'late-work'.
+    recordedVia: {
+      type: String,
+      default: '',
+    },
   },
   {
     timestamps: true, // adds createdAt + updatedAt automatically
