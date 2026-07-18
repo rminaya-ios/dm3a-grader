@@ -39,18 +39,25 @@ const coursesRoutes = require('./routes/courses.js');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({
+const corsOptions = {
   origin: ['https://dm3a-grader.vercel.app',
            'https://dm3a-grader-f4cld6wk8-ralph-minayas-projects.vercel.app',
            'https://dm3agrader.com',
            'https://www.dm3agrader.com',
            'http://localhost:5173'],
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  // PUT/PATCH/DELETE for the roster-vault routes; x-admin-key for the admin
+  // dashboard. Missing x-admin-key here is what broke the /admin gate — the
+  // preflight disallowed the header, so the browser blocked the real request
+  // (roster-vault worked because it only sends Content-Type).
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key'],
   credentials: false
-}));
+};
+app.use(cors(corsOptions));
 
-app.options('*', cors());
+// Use the SAME options for preflight so OPTIONS advertises the identical
+// allowed methods/headers (no permissive-default divergence).
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
