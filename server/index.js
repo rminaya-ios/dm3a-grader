@@ -33,6 +33,9 @@ try {
 // ── Admin dashboard aggregation API (Admin Dashboard, Phase 2) ─
 const adminStatsRoutes = require('./routes/adminStats.js');
 
+// ── Blind Grading Mode — roster vault + PII guard (Phase 1) ────
+const coursesRoutes = require('./routes/courses.js');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -669,6 +672,10 @@ app.use('/api', riskRoutes);
 // ── ADMIN DASHBOARD (read-only aggregation API, Phase 2) ───────
 app.use('/api/admin', adminStatsRoutes);
 // ── END ADMIN DASHBOARD ────────────────────────────────────────
+
+// ── BLIND GRADING (roster vault + PII guard, Phase 1) ──────────
+app.use('/api/courses', coursesRoutes);
+// ── END BLIND GRADING ──────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`DM3A Server running on port ${PORT}`);
