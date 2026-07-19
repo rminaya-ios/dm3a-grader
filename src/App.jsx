@@ -1,4 +1,11 @@
 import { useState, useRef, useEffect } from "react";
+// Blind Grading (Part A). Only the tiny WebCrypto helpers are static-imported;
+// PapaParse and pdf-lib are dynamic-imported inside handlers so the grading
+// bundle stays lean.
+import { assignAliases } from "./blind/alias.js";
+import { encryptMapping, decryptMapping, MIN_PASSPHRASE_LEN } from "./blind/vault.js";
+import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
+import { diffRoster } from "./blind/rosterDiff.js";
 import LandingPage from "./LandingPage";
 
 // ── At-Risk Predictor (Phase 3) — input-layer constants ──
@@ -520,6 +527,18 @@ export default function DM3AGraderV5() {
   const [assignmentIndex, setAssignmentIndex] = useState(""); // optional; "" = unset
   const [semesterTag, setSemesterTag] = useState("Spring 2026");
   const [showManageCourses, setShowManageCourses] = useState(false);
+
+  // ── Blind Grading (Part A): in-memory unlock + migration state ────────────
+  // NONE of this is persisted. Decrypted rosters and passphrases live only in
+  // memory for the session (like an unlocked password manager).
+  const [unlockedRosters, setUnlockedRosters] = useState({}); // courseCode -> [{alias, studentName, studentEmail, bbUsername, studentId}]
+  const [sessionPass, setSessionPass] = useState({});         // courseCode -> passphrase (to re-encrypt on roster update)
+  const [unlockPrompt, setUnlockPrompt] = useState(null);     // { courseCode, message, onUnlocked } | null
+  const [unlockPass, setUnlockPass] = useState("");
+  const [unlockError, setUnlockError] = useState("");
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultNote, setVaultNote] = useState("");
+  const [securePass, setSecurePass] = useState({}); // courseCode -> passphrase input (secure action)
   // Manage Courses editor state
   const [addCourseCode, setAddCourseCode] = useState("");
   const [addProfessorEmail, setAddProfessorEmail] = useState("");
@@ -661,7 +680,10 @@ export default function DM3AGraderV5() {
     setActiveCourseCode(code);
     const profile = courses.find((c) => c.courseCode === code);
     setProfessorEmail(profile ? profile.professorEmail || "" : "");
-    setActiveRoster(profile ? profile.roster || [] : []);
+    // Prefer the in-memory decrypted roster (secured courses); fall back to the
+    // legacy plaintext roster (un-migrated courses). A secured+locked course
+    // resolves to [] until the instructor unlocks it (graceful gate handles that).
+    setActiveRoster(unlockedRosters[code] || (profile ? profile.roster || [] : []));
   }
 
   // Editing the active professor email also updates the saved profile.
@@ -672,6 +694,146 @@ export default function DM3AGraderV5() {
         c.courseCode === activeCourseCode ? { ...c, professorEmail: value } : c
       )
     );
+  }
+
+  // ── Blind Grading (Part A): vault migration + unlock + roster update ────────
+  const courseByCode = (code) => courses.find((c) => c.courseCode === code);
+  const isVaulted = (c) => !!(c && c.vaulted);
+
+  function downloadKeyBackup(courseCode, blob) {
+    try {
+      const b = new Blob([JSON.stringify(blob, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(b);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${courseCode}-roster-key.dm3a`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* download best-effort */
+    }
+  }
+
+  // Wrap a vault op with busy state + error surfacing (never throws to the UI).
+  async function runVault(fn) {
+    setVaultBusy(true);
+    setVaultNote("");
+    try { await fn(); }
+    catch (e) { setVaultNote(`⚠ ${e.message || "Vault operation failed."}`); }
+    finally { setVaultBusy(false); }
+  }
+
+  // Graceful gate: open the inline unlock prompt. onUnlocked(roster) runs on success.
+  function openUnlock(courseCode, message, onUnlocked) {
+    setUnlockPass("");
+    setUnlockError("");
+    setUnlockPrompt({ courseCode, message, onUnlocked: onUnlocked || (() => {}) });
+  }
+
+  // Decrypt a course's server vault with the entered passphrase; hold in memory only.
+  async function doUnlock() {
+    if (!unlockPrompt) return;
+    const code = unlockPrompt.courseCode;
+    setUnlockError("");
+    if (!unlockPass || unlockPass.length < MIN_PASSPHRASE_LEN) {
+      setUnlockError(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters.`);
+      return;
+    }
+    setVaultBusy(true);
+    try {
+      const vault = await getVault(code);
+      if (!vault) { setUnlockError("No secured roster found for this course."); return; }
+      const mapping = await decryptMapping(vault.blob, unlockPass); // throws cleanly on wrong pass
+      const roster = (mapping.students || []).filter((s) => !s.dropped);
+      setUnlockedRosters((m) => ({ ...m, [code]: roster }));
+      setSessionPass((m) => ({ ...m, [code]: unlockPass }));
+      if (activeCourseCode === code) setActiveRoster(roster);
+      const cb = unlockPrompt.onUnlocked;
+      setUnlockPrompt(null);
+      setUnlockPass("");
+      cb(roster);
+    } catch (e) {
+      setUnlockError(e.message || "Unlock failed — wrong passphrase?");
+    } finally {
+      setVaultBusy(false);
+    }
+  }
+
+  // Encrypt a course's plaintext roster into the vault, READ-BACK VERIFY, download
+  // a backup key by default, THEN purge the plaintext PII from localStorage.
+  async function secureCourse(course, passphrase) {
+    if (!passphrase || passphrase.length < MIN_PASSPHRASE_LEN) {
+      throw new Error(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters. There is NO recovery — DM3A cannot reset it.`);
+    }
+    const base = Array.isArray(course.roster) ? course.roster : [];
+    if (base.length === 0) throw new Error("This course has no roster to secure yet — add students first.");
+    const withAliases = assignAliases(base, course.courseCode); // {studentName, studentEmail} + .alias
+    const mapping = { courseId: course.courseCode, version: 1, createdAt: new Date().toISOString(), students: withAliases };
+    const blob = await encryptMapping(mapping, passphrase);
+    await putVault(course.courseCode, blob);
+    // Read-back verify BEFORE purging the plaintext copy (lazy, safe migration).
+    const check = await getVault(course.courseCode);
+    const rt = check && (await decryptMapping(check.blob, passphrase));
+    if (!rt || (rt.students || []).length !== withAliases.length) {
+      throw new Error("Vault read-back verification failed — plaintext NOT purged. Please retry.");
+    }
+    downloadKeyBackup(course.courseCode, blob); // backup by default
+    // Purge plaintext PII from localStorage; keep metadata + vault flag.
+    persistCourses(courses.map((c) => c.courseCode === course.courseCode
+      ? { ...c, roster: [], vaulted: true, vaultUpdatedAt: check.updatedAt || new Date().toISOString() }
+      : c));
+    setUnlockedRosters((m) => ({ ...m, [course.courseCode]: withAliases }));
+    setSessionPass((m) => ({ ...m, [course.courseCode]: passphrase }));
+    if (activeCourseCode === course.courseCode) setActiveRoster(withAliases);
+  }
+
+  // Re-upload a roster CSV → diff against the decrypted mapping (alias continuity)
+  // → re-encrypt → store. Requires the course to be unlocked this session.
+  async function updateRosterFromCsv(course, file) {
+    const passphrase = sessionPass[course.courseCode];
+    const existing = unlockedRosters[course.courseCode];
+    if (!passphrase || !existing) {
+      openUnlock(course.courseCode, "Enter your course passphrase to update its roster.", () => {});
+      return;
+    }
+    const Papa = (await import("papaparse")).default;
+    const rows = await new Promise((resolve, reject) => {
+      Papa.parse(file, { header: true, skipEmptyLines: true, complete: (res) => resolve(res.data || []), error: reject });
+    });
+    const norm = (s) => String(s || "").replace(/^\uFEFF/, "").trim().toLowerCase().replace(/["']/g, "");
+    const fields = rows.length ? Object.keys(rows[0]) : [];
+    const pick = (cands) => { const m = new Map(fields.map((f) => [norm(f), f])); for (const c of cands) { const h = m.get(norm(c)); if (h) return h; } return null; };
+    const hLast = pick(["Last Name", "LastName", "Last"]);
+    const hFirst = pick(["First Name", "FirstName", "First"]);
+    const hUser = pick(["Username", "User Name", "User Id", "UserId"]);
+    const hId = pick(["Student ID", "StudentID", "Student Id", "ID"]);
+    const incoming = rows.map((r) => ({
+      lastName: hLast ? String(r[hLast] || "").trim() : "",
+      firstName: hFirst ? String(r[hFirst] || "").trim() : "",
+      studentName: `${hFirst ? r[hFirst] : ""} ${hLast ? r[hLast] : ""}`.trim(),
+      bbUsername: hUser ? String(r[hUser] || "").trim() : "",
+      studentId: hId ? String(r[hId] || "").trim() : "",
+    })).filter((s) => s.lastName || s.bbUsername);
+    if (incoming.length === 0) throw new Error("No students detected in that CSV (need a Last Name or Username column).");
+    const { merged, added, dropped } = diffRoster(existing, incoming, course.courseCode);
+    const mapping = { courseId: course.courseCode, version: 1, createdAt: new Date().toISOString(), students: merged };
+    const blob = await encryptMapping(mapping, passphrase);
+    await putVault(course.courseCode, blob);
+    const live = merged.filter((s) => !s.dropped);
+    setUnlockedRosters((m) => ({ ...m, [course.courseCode]: live }));
+    if (activeCourseCode === course.courseCode) setActiveRoster(live);
+    persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, vaultUpdatedAt: new Date().toISOString() } : c));
+    setVaultNote(`Roster updated for ${course.courseCode}: ${added.length} added, ${dropped.length} dropped (flagged, not deleted).`);
+  }
+
+  // Purge a course's server vault + in-memory copies (per-course purge button).
+  async function purgeCourseVault(course) {
+    await deleteVault(course.courseCode);
+    setUnlockedRosters((m) => { const n = { ...m }; delete n[course.courseCode]; return n; });
+    setSessionPass((m) => { const n = { ...m }; delete n[course.courseCode]; return n; });
+    persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, vaulted: false, vaultUpdatedAt: null } : c));
+    if (activeCourseCode === course.courseCode) setActiveRoster([]);
+    setVaultNote(`Secured roster purged for ${course.courseCode}.`);
   }
 
   // ─── PHASE 3 STEP 2: ROSTER CONFIRMATION (state only; nothing sent to server) ──
@@ -701,6 +863,17 @@ export default function DM3AGraderV5() {
   // POST { riskContext, results } to /api/risk/record. The /grade body is never
   // touched; nothing here re-grades. Non-blocking: status goes into trackingNote.
   async function confirmRoster() {
+    // Graceful gate: a secured course must be unlocked before we can map names.
+    // Show the inline unlock prompt (a doorway) rather than silently recording nothing.
+    const activeCourse = courseByCode(activeCourseCode);
+    if (isVaulted(activeCourse) && !unlockedRosters[activeCourseCode]) {
+      openUnlock(
+        activeCourseCode,
+        "Enter your course passphrase to record at-risk tracking.",
+        () => setVaultNote('Course unlocked — click “Confirm & record” again to record.')
+      );
+      return;
+    }
     const roster = results
       .map((s, i) => ({ studentName: s.studentName, studentEmail: studentMapping[i] || "" }))
       .filter((e) => e.studentEmail);
@@ -2509,6 +2682,25 @@ Return a JSON array with exactly ONE student object.`;
         <input style={styles.input} placeholder="e.g. Problems 1, 2a, 2b, 3, 4a, 4b, 4c, 5a, 5b" value={problemScope} onChange={e => setProblemScope(e.target.value)} />
       </div>
 
+      {/* Blind Grading — inline unlock prompt (graceful gate; renders over anything) */}
+      {unlockPrompt && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 360, maxWidth: "100%", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <h3 style={{ margin: "0 0 6px", fontSize: 16 }}>🔒 Unlock {unlockPrompt.courseCode}</h3>
+            <p style={{ margin: "0 0 12px", fontSize: 13, color: "#5A5A55" }}>{unlockPrompt.message}</p>
+            <input type="password" autoFocus placeholder={`Course passphrase (≥${MIN_PASSPHRASE_LEN})`} value={unlockPass}
+              onChange={e => setUnlockPass(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") doUnlock(); }}
+              style={{ ...styles.input, marginBottom: 8 }} />
+            {unlockError && <div style={{ color: "#9f1239", fontSize: 12.5, marginBottom: 8 }}>{unlockError}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" style={styles.btn} disabled={vaultBusy} onClick={doUnlock}>{vaultBusy ? "Unlocking…" : "Unlock"}</button>
+              <button type="button" style={styles.btnOutline} disabled={vaultBusy} onClick={() => { setUnlockPrompt(null); setUnlockPass(""); setUnlockError(""); }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* At-Risk Tracking — Course Profiles (optional; input + local storage only) */}
       <div style={styles.card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -2568,6 +2760,11 @@ Return a JSON array with exactly ONE student object.`;
         {showManageCourses && (
           <div style={{ marginTop: 16, borderTop: "1px solid #D8D6CE", paddingTop: 16 }}>
             <h4 style={{ margin: "0 0 10px", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#5A5A55" }}>Manage Courses</h4>
+            <div style={{ fontSize: 12, marginBottom: 10 }}>
+              <a href="/blind" target="_blank" rel="noreferrer" style={{ color: "#2860C8" }}>Privacy verification ↗</a>
+              <span style={{ color: "#888" }}> — how the alias/encryption layer works</span>
+            </div>
+            {vaultNote && <div style={{ fontSize: 12.5, background: "#EEF4FF", border: "1px solid #cfe0ff", borderRadius: 6, padding: "6px 10px", marginBottom: 10 }}>{vaultNote}</div>}
 
             {/* Add course */}
             <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -2594,16 +2791,51 @@ Return a JSON array with exactly ONE student object.`;
                     </div>
                   </div>
                 ) : (
+                  <>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                     <div>
                       <div style={{ fontWeight: 700 }}>{c.courseCode}</div>
-                      <div style={{ fontSize: 12, color: "#5A5A55" }}>{c.professorEmail || "(no email)"} · {(c.roster?.length || 0)} students</div>
+                      <div style={{ fontSize: 12, color: "#5A5A55" }}>
+                        {c.professorEmail || "(no email)"} · {isVaulted(c)
+                          ? <span style={{ color: "#0F6E56", fontWeight: 700 }}>🔒 secured</span>
+                          : `${(c.roster?.length || 0)} students`}
+                      </div>
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button type="button" style={styles.btnOutline} onClick={() => startEdit(c)}>Edit</button>
                       <button type="button" style={{ ...styles.btnOutline, color: "#9f1239", borderColor: "#9f1239" }} onClick={() => deleteCourse(c.courseCode)}>Delete</button>
                     </div>
                   </div>
+
+                  {/* Blind Grading per-course controls (Part A) */}
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #D8D6CE" }}>
+                    {isVaulted(c) ? (
+                      <div style={{ fontSize: 12 }}>
+                        <span style={{ color: "#0F6E56", fontWeight: 700 }}>🔒 Secured</span>
+                        {unlockedRosters[c.courseCode]
+                          ? <span style={{ color: "#0F6E56", marginLeft: 8 }}>· Unlocked ({unlockedRosters[c.courseCode].length} students · names in memory only)</span>
+                          : <button type="button" style={{ ...styles.btnOutline, marginLeft: 8, padding: "2px 8px", fontSize: 12 }} onClick={() => openUnlock(c.courseCode, "Enter your course passphrase to unlock names for this session.", () => {})}>Unlock</button>}
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                          <label style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, cursor: "pointer", margin: 0 }}>
+                            Update roster (CSV)
+                            <input type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) runVault(() => updateRosterFromCsv(c, f)); }} />
+                          </label>
+                          <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} disabled={vaultBusy} onClick={() => runVault(async () => { const v = await getVault(c.courseCode); if (v) downloadKeyBackup(c.courseCode, v.blob); else setVaultNote("No vault found to back up."); })}>Re-download backup</button>
+                          <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, color: "#9f1239", borderColor: "#9f1239" }} disabled={vaultBusy} onClick={() => { if (window.confirm(`Purge the secured roster for ${c.courseCode}? Grade history stays; the encrypted name mapping is removed from the server and this session.`)) runVault(() => purgeCourseVault(c)); }}>Purge vault</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12 }}>
+                        <div style={{ color: "#854F0B", marginBottom: 6 }}>⚠ {(c.roster?.length || 0)} names stored <b>unencrypted</b> on this device. Secure them:</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                          <input type="password" placeholder={`Passphrase (≥${MIN_PASSPHRASE_LEN})`} value={securePass[c.courseCode] || ""} onChange={e => setSecurePass(m => ({ ...m, [c.courseCode]: e.target.value }))} style={{ ...styles.input, flex: 1, minWidth: 160, marginBottom: 0, padding: "6px 8px", fontSize: 13 }} />
+                          <button type="button" style={{ ...styles.btn, padding: "5px 10px", fontSize: 12 }} disabled={!(c.roster?.length) || vaultBusy} onClick={() => runVault(async () => { await secureCourse(c, securePass[c.courseCode] || ""); setSecurePass(m => ({ ...m, [c.courseCode]: "" })); setVaultNote(`${c.courseCode} secured — backup key downloaded, plaintext purged from this device.`); })}>🔒 Secure roster</button>
+                        </div>
+                        <div style={{ color: "#888", marginTop: 4 }}>No recovery — a lost passphrase with no backup means the mapping is gone. A backup key file downloads automatically.</div>
+                      </div>
+                    )}
+                  </div>
+                  </>
                 )}
               </div>
             ))}

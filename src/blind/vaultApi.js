@@ -23,3 +23,11 @@ export async function getVault(courseId) {
   if (!res.ok) throw new Error(`vault fetch failed (${res.status})`);
   return res.json(); // { courseId, blob, updatedAt }
 }
+
+export async function deleteVault(courseId) {
+  const res = await fetch(`${API_BASE}/api/courses/${encodeURIComponent(courseId)}/roster-vault`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`vault purge failed (${res.status})`);
+  return res.json(); // { success, courseId, deleted }
+}
