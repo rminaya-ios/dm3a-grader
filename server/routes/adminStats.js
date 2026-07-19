@@ -66,12 +66,15 @@ function safeEqual(a, b) {
 }
 
 function requireAdminKey(req, res, next) {
-  const expected = process.env.ADMIN_DASHBOARD_KEY;
+  // Trim both sides: Railway's Variables editor commonly stores a trailing
+  // newline/space in the value, and headers can pick up stray whitespace. Without
+  // this, the exact key copied from Railway fails the byte-for-byte compare.
+  const expected = String(process.env.ADMIN_DASHBOARD_KEY || '').trim();
   // Fail CLOSED: if no key is configured, the dashboard is disabled, not open.
   if (!expected) {
     return res.status(401).json({ error: 'Admin dashboard is not configured.' });
   }
-  const provided = req.get('x-admin-key');
+  const provided = String(req.get('x-admin-key') || '').trim();
   if (!provided || !safeEqual(provided, expected)) {
     return res.status(401).json({ error: 'Unauthorized' }); // never log the key
   }
