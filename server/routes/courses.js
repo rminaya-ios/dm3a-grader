@@ -65,6 +65,22 @@ router.get('/:id/roster-vault', async (req, res) => {
   }
 });
 
+// ── DELETE /api/courses/:id/roster-vault ─────────────────────────────────────
+// Purge path (spec §5). Removes the course's encrypted mapping blob. Idempotent:
+// deleting a non-existent vault returns 200 with deleted:false rather than 404,
+// so a purge-all flow never errors on already-clean courses.
+router.delete('/:id/roster-vault', async (req, res) => {
+  try {
+    const courseId = String(req.params.id || '').trim();
+    if (!courseId) return res.status(400).json({ error: 'courseId required' });
+    const result = await RosterVault.deleteOne({ courseId });
+    res.json({ success: true, courseId, deleted: result.deletedCount > 0 });
+  } catch (err) {
+    console.error('[roster-vault] DELETE error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── POST /api/courses/:id/submissions ────────────────────────────────────────
 // Alias-only submission intake ENFORCEMENT SEAM (Phase 2 groundwork). Behind
 // piiGuard so any name/email/id field is rejected (acceptance §6.4). Does NOT
