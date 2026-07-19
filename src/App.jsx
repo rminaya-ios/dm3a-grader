@@ -1,11 +1,12 @@
-import { useState, useRef, useEffect } from "react";
-// Blind Grading (Part A). Only the tiny WebCrypto helpers are static-imported;
+import { useState, useRef, useEffect, useMemo } from "react";
+// Blind Grading (Parts A/B). Only the tiny WebCrypto helpers are static-imported;
 // PapaParse and pdf-lib are dynamic-imported inside handlers so the grading
 // bundle stays lean.
 import { assignAliases } from "./blind/alias.js";
 import { encryptMapping, decryptMapping, MIN_PASSPHRASE_LEN } from "./blind/vault.js";
 import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
 import { diffRoster } from "./blind/rosterDiff.js";
+import { buildNameIndex } from "./blind/translate.js";
 import LandingPage from "./LandingPage";
 
 // ── At-Risk Predictor (Phase 3) — input-layer constants ──
@@ -699,6 +700,19 @@ export default function DM3AGraderV5() {
   // ── Blind Grading (Part A): vault migration + unlock + roster update ────────
   const courseByCode = (code) => courses.find((c) => c.courseCode === code);
   const isVaulted = (c) => !!(c && c.vaulted);
+
+  // ── Blind Grading (Part B): client-side name overlay ────────────────────────
+  // Alias→name index for the ACTIVE course, built from the in-memory decrypted
+  // roster. Display-only: nothing here changes what is sent to the server.
+  const nameIndex = useMemo(
+    () => buildNameIndex(unlockedRosters[activeCourseCode] || []),
+    [unlockedRosters, activeCourseCode]
+  );
+  const namesUnlocked = !!unlockedRosters[activeCourseCode];
+  const activeVaultedLocked = isVaulted(courseByCode(activeCourseCode)) && !namesUnlocked;
+  // A known alias renders as the real name once unlocked; anything else (a real
+  // name from a legacy course, or an unknown value) passes through unchanged.
+  const showName = (value) => (namesUnlocked && nameIndex.isAlias(value) ? nameIndex.toName(value) : value);
 
   function downloadKeyBackup(courseCode, blob) {
     try {
@@ -3491,6 +3505,17 @@ Return a JSON array with exactly ONE student object.`;
           </div>
         </div>
 
+        {/* Blind Grading (Part B): names locked → show aliases + unlock prompt */}
+        {!isStudentMode && activeVaultedLocked && results.length >= 1 && (
+          <div style={styles.card}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>🔒 Names for {activeCourseCode} are locked</div>
+            <p style={{ margin: "6px 0 10px", fontSize: 13, color: "#5A5A55" }}>
+              Graded work shows course aliases. Unlock with your course passphrase to see real names and record at-risk tracking.
+            </p>
+            <button type="button" style={styles.btn} onClick={() => openUnlock(activeCourseCode, "Enter your course passphrase to view names and record tracking.", () => {})}>Unlock names</button>
+          </div>
+        )}
+
         {/* Phase 3 Step 2 — Confirm Students (roster mapping for tracking; nothing sent to the server) */}
         {!isStudentMode && activeCourseCode && activeRoster.length >= 1 && results.length >= 1 && (
           <div style={styles.card}>
@@ -3514,7 +3539,12 @@ Return a JSON array with exactly ONE student object.`;
 
             {results.map((s, i) => (
               <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "center", marginBottom: 8 }}>
-                <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>{s.studentName}</div>
+                <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>
+                  {showName(s.studentName)}
+                  {namesUnlocked && nameIndex.isAlias(s.studentName) && (
+                    <span style={{ fontWeight: 400, fontSize: 11, color: "#888", marginLeft: 6 }}>({s.studentName})</span>
+                  )}
+                </div>
                 <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => setStudentMapping(m => ({ ...m, [i]: e.target.value }))}>
                   <option value="">— Skip (don't track) —</option>
                   {activeRoster.map((r, ri) => (
