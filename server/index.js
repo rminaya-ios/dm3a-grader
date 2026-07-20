@@ -35,6 +35,16 @@ const adminStatsRoutes = require('./routes/adminStats.js');
 
 // ── Blind Grading Mode — roster vault + PII guard (Phase 1) ────
 const coursesRoutes = require('./routes/courses.js');
+const { piiGuard } = require('./middleware/piiGuard.js');
+
+// ── Blind Grading (Part C-2): PII guard rollout ───────────────────────────────
+// GUARDED now: /api/courses/* (blind vault + alias submission), and the grading
+//   routes /grade + /detect-work (their bodies carry no name/email FIELD keys in
+//   either legacy or blind mode, so guarding is safe and can't break grading).
+// EXEMPT until migration completes (C-3): /api/risk/record and
+//   /api/submissions/save still accept legacy name+email payloads from
+//   un-migrated courses. The BLANKET guard (every route, zero exemptions) is the
+//   FINAL gate of Part C — mounted immediately after the last course migrates.
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -319,7 +329,7 @@ async function attachApiUsageToSubmissions(ctx, apiUsage, summary) {
 }
 // ── END API COST TRACKING ────────────────────────────────────────────────────
 
-app.post('/grade', async (req, res) => {
+app.post('/grade', piiGuard, async (req, res) => {
   const gradeStartedAt = Date.now();
   try {
     const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
@@ -488,6 +498,10 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
 // post-grade). Reuses the SAME maybeRecordSubmissions logic the dormant /grade
 // hook uses. Same protection as /grade (CORS only). Never throws.
 // Body: { riskContext, results }  ->  { success, recorded, skipped, alertsFired }
+// PII-GUARD EXEMPTION (temporary, Part C-2): this route still accepts legacy
+// name+email payloads from un-migrated courses, so it is intentionally NOT behind
+// piiGuard yet. The blanket guard mounts here as the FINAL gate of Part C, right
+// after the last course migrates (C-3). Do not ship Part C "done" with this exempt.
 app.post('/api/risk/record', async (req, res) => {
   try {
     const { riskContext, results, apiUsage } = req.body || {};
@@ -505,7 +519,7 @@ app.post('/api/risk/record', async (req, res) => {
 // ── STUDENT WORK GATEKEEPER ────────────────────────────────────────────────
 // Cheap/fast haiku call — returns classification JSON without grading anything.
 // Called by the student flow ONLY. Any error fails open (passes through).
-app.post('/detect-work', async (req, res) => {
+app.post('/detect-work', piiGuard, async (req, res) => {
   const detectStartedAt = Date.now();
   let gatekeeperUsage = null;                          // set once the API call returns
   let gatekeeperModel = 'claude-haiku-4-5-20251001';
