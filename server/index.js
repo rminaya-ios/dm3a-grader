@@ -148,6 +148,34 @@ async function recordOneSubmission(ctx, student) {
   };
 
   const roster = Array.isArray(ctx.roster) ? ctx.roster : [];
+
+  // Blind Grading (Part C-1): alias-keyed path — record alias-only, no PII.
+  // Gated on the alias appearing in the course alias roster (mirrors the legacy
+  // roster-match skip). The legacy name→email path below is unchanged.
+  if (student.alias) {
+    const alias = String(student.alias).trim();
+    const known =
+      roster.length === 0 ||
+      roster.some((r) => String(r.alias || '').trim().toLowerCase() === alias.toLowerCase());
+    if (!known) {
+      console.warn(`[AT-RISK] alias "${alias}" not in course roster — skipping save`);
+      return { status: 'skipped', reason: 'no-roster-match' };
+    }
+    const { flagResult } = await saveSubmission({
+      alias,
+      professorEmail:   ctx.professorEmail,
+      courseCode:       ctx.courseCode,
+      assignmentName:   ctx.assignmentName,
+      assignmentWeight: ctx.assignmentWeight,
+      assignmentIndex:  ctx.assignmentIndex,
+      pScore,
+      rubricBreakdown,
+      feedbackSummary:  (student.feedback || '').slice(0, 500),
+      semesterTag:      ctx.semesterTag,
+    });
+    return { status: 'recorded', flagged: Boolean(flagResult) };
+  }
+
   const wanted = String(student.studentName || '').trim().toLowerCase();
   const match = roster.find(
     (r) => String(r.studentName || '').trim().toLowerCase() === wanted
