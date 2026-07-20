@@ -20,6 +20,7 @@ const crypto = require('crypto');
 const Submission = require('../models/Submission.js');
 const GradingEvent = require('../models/GradingEvent.js');
 const AtRiskFlag = require('../models/AtRiskFlag.js');
+const RosterVault = require('../models/RosterVault.js');
 
 const router = express.Router();
 
@@ -490,6 +491,105 @@ router.get('/stats/mastery', async (req, res) => {
     });
 
     res.json({ overall, byCourse: Array.from(byCourseMap.values()) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/admin/migration/dry-run  — Blind Grading migration probe (READ-ONLY)
+// Reports, per course: how many Submission/AtRiskFlag docs still carry PII
+// (studentName/studentEmail), how many are already alias-keyed, whether the
+// course has a RosterVault (client-migratable) or not (manual review), and the
+// last activity date (to spot stale/test courses for purge instead of migrate).
+// Writes NOTHING. Doubles as a standing post-migration compliance probe.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/migration/dry-run', async (req, res) => {
+  try {
+    const hasStr = (f) => ({ $gt: [{ $strLenCP: { $ifNull: [f, ''] } }, 0] });
+    const piiCond = { $or: [hasStr('$studentName'), hasStr('$studentEmail')] };
+
+    const [subAgg, flagAgg, vaultIds] = await Promise.all([
+      Submission.aggregate([
+        { $group: {
+          _id: '$courseCode',
+          total: { $sum: 1 },
+          withPII: { $sum: { $cond: [piiCond, 1, 0] } },
+          aliasKeyed: { $sum: { $cond: [hasStr('$alias'), 1, 0] } },
+          lastActivity: { $max: '$createdAt' },
+        } },
+      ]),
+      AtRiskFlag.aggregate([
+        { $group: {
+          _id: '$courseCode',
+          total: { $sum: 1 },
+          withPII: { $sum: { $cond: [piiCond, 1, 0] } },
+          aliasKeyed: { $sum: { $cond: [hasStr('$alias'), 1, 0] } },
+          lastActivity: { $max: '$createdAt' },
+        } },
+      ]),
+      RosterVault.distinct('courseId'),
+    ]);
+
+    const vaultSet = new Set((vaultIds || []).map((v) => String(v)));
+    const byCourse = new Map();
+    const ensure = (code) => {
+      if (!byCourse.has(code)) {
+        byCourse.set(code, {
+          courseCode: code,
+          submissions: { total: 0, withPII: 0, aliasKeyed: 0 },
+          flags: { total: 0, withPII: 0, aliasKeyed: 0 },
+          lastActivity: null,
+          hasVault: vaultSet.has(code),
+        });
+      }
+      return byCourse.get(code);
+    };
+    const newer = (a, b) => (!a ? b : !b ? a : (a > b ? a : b));
+
+    subAgg.forEach((s) => {
+      const c = ensure(s._id);
+      c.submissions = { total: s.total, withPII: s.withPII, aliasKeyed: s.aliasKeyed };
+      c.lastActivity = newer(c.lastActivity, s.lastActivity);
+    });
+    flagAgg.forEach((f) => {
+      const c = ensure(f._id);
+      c.flags = { total: f.total, withPII: f.withPII, aliasKeyed: f.aliasKeyed };
+      c.lastActivity = newer(c.lastActivity, f.lastActivity);
+    });
+
+    const courses = Array.from(byCourse.values())
+      .map((c) => {
+        c.piiRecords = c.submissions.withPII + c.flags.withPII;
+        // migratable = PII present AND a vault exists (client can map alias).
+        // manual-review = PII present but no vault (secure it first, or purge).
+        // clean = no PII remaining.
+        c.disposition = c.piiRecords === 0 ? 'clean' : (c.hasVault ? 'migratable' : 'manual-review');
+        return c;
+      })
+      .sort((a, b) => b.piiRecords - a.piiRecords || (b.lastActivity || 0) - (a.lastActivity || 0));
+
+    const totals = courses.reduce((t, c) => ({
+      courses: t.courses + 1,
+      piiRecords: t.piiRecords + c.piiRecords,
+      migratable: t.migratable + (c.disposition === 'migratable' ? 1 : 0),
+      manualReview: t.manualReview + (c.disposition === 'manual-review' ? 1 : 0),
+      clean: t.clean + (c.disposition === 'clean' ? 1 : 0),
+    }), { courses: 0, piiRecords: 0, migratable: 0, manualReview: 0, clean: 0 });
+
+    res.json({
+      probe: 'blind-grading-migration',
+      writesPerformed: 0,
+      exemptRoutesRemaining: ['/api/risk/record', '/api/submissions/save'],
+      blanketGuardMounted: false,
+      totals,
+      courses,
+      legend: {
+        migratable: 'PII present + RosterVault exists — instructor unlocks, client maps alias, server nulls names.',
+        'manual-review': 'PII present, no vault — secure the course first, or purge if stale/test (see lastActivity).',
+        clean: 'no studentName/studentEmail remaining.',
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
