@@ -36,7 +36,9 @@ const dispatchAlerts = async (flag) => {
   }
 
   // ── 2. Student email ───────────────────────────────────────────────────
-  if (!flag.alertsSent.includes('email_student')) {
+  // Blind courses carry no student email — the instructor decodes the alias and
+  // reaches out locally. Only send when we actually have an address.
+  if (!flag.alertsSent.includes('email_student') && flag.studentEmail) {
     try {
       await sendStudentAlert(flag);
       flag.alertsSent.push('email_student');
@@ -70,15 +72,17 @@ const sendProfessorAlert = async (flag) => {
   const stateLabel    = flag.flagState === 'ACT_NOW' ? '🔴 ACT NOW' : '🟡 WATCH';
   const typeLabel     = flag.flagType === 'academic' ? 'Academic' : 'Behavioral';
   const dashboardUrl  = `${process.env.FRONTEND_URL}/dashboard`;
+  // Blind courses: identity is the alias; the instructor re-identifies locally.
+  const who           = flag.studentName || flag.alias || 'Student';
 
   await resend.emails.send({
     from:    FROM_EMAIL,
     to:      flag.professorEmail,
-    subject: `${stateLabel} — ${flag.studentName} · ${flag.courseCode}`,
+    subject: `${stateLabel} — ${who} · ${flag.courseCode}`,
     html: `
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: ${flag.flagState === 'ACT_NOW' ? '#dc2626' : '#d97706'};">
-          ${stateLabel}: ${flag.studentName}
+          ${stateLabel}: ${who}
         </h2>
         <table style="border-collapse: collapse; width: 100%;">
           <tr><td style="padding: 6px; font-weight: bold;">Course</td><td>${flag.courseCode}</td></tr>
@@ -105,7 +109,7 @@ const sendProfessorAlert = async (flag) => {
         ">Open Dashboard →</a>
         <p style="color: #9ca3af; font-size: 12px; margin-top: 24px;">
           DM3A Grader · dm3agrader.com<br/>
-          A student support email has also been sent to ${flag.studentEmail}.
+          ${flag.studentEmail ? `A student support email has also been sent to ${flag.studentEmail}.` : 'This is a blind-graded course — no student email on file; reach out using your local roster.'}
         </p>
       </div>
     `,
@@ -126,7 +130,7 @@ const sendStudentAlert = async (flag) => {
   const bodyHtml = isAcademic
     ? `
       <div style="font-family: sans-serif; max-width: 580px; margin: 0 auto; color: #111827;">
-        <p>Hi ${flag.studentName.split(' ')[0]},</p>
+        <p>Hi ${(flag.studentName || '').split(' ')[0] || 'there'},</p>
         <p>
           Your recent work in <strong>${flag.courseCode}</strong> tells me you're working through
           some challenging material right now. That's completely normal — and it's exactly
@@ -147,7 +151,7 @@ const sendStudentAlert = async (flag) => {
     `
     : `
       <div style="font-family: sans-serif; max-width: 580px; margin: 0 auto; color: #111827;">
-        <p>Hi ${flag.studentName.split(' ')[0]},</p>
+        <p>Hi ${(flag.studentName || '').split(' ')[0] || 'there'},</p>
         <p>
           I noticed you haven't submitted <strong>${flag.triggerAssignments[0] || 'a recent assignment'}</strong> yet.
           Life gets complicated — I get it.
@@ -190,7 +194,7 @@ const sendTelegramAlert = async (flag) => {
   const typeLabel = flag.flagType === 'academic' ? 'Academic' : 'Behavioral';
   const message   = [
     `${emoji} *DM3A At-Risk Alert*`,
-    `👤 Student: ${flag.studentName}`,
+    `👤 Student: ${flag.studentName || flag.alias || 'Student'}`,
     `📚 Course: ${flag.courseCode}`,
     `🔖 Rule: ${flag.triggerRule} (${typeLabel})`,
     `📋 ${flag.triggerDescription}`,

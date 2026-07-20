@@ -18,17 +18,26 @@ const rubricBreakdownSchema = new mongoose.Schema(
 const submissionSchema = new mongoose.Schema(
   {
     // ── Identity ─────────────────────────────────────────────────────────
+    // Blind Grading (Part C-1): identity may be alias-only. studentEmail/
+    // studentName are now OPTIONAL; a record must carry `alias` OR `studentEmail`
+    // (enforced by the pre-validate hook below). Legacy email-keyed records are
+    // unaffected.
     studentEmail: {
       type: String,
-      required: true,
       lowercase: true,
       trim: true,
       index: true,
     },
     studentName: {
       type: String,
-      required: true,
       trim: true,
+    },
+    // Course-scoped alias (e.g. "M110-7F3K"). The server/DB identity for blind
+    // courses; the instructor's client re-identifies locally.
+    alias: {
+      type: String,
+      trim: true,
+      index: true,
     },
     professorEmail: {
       type: String,
@@ -170,6 +179,14 @@ submissionSchema.index(
   { professorEmail: 1, createdAt: -1 },
   { name: 'professor_created' }
 );
+
+// Integrity: a submission must be identifiable by SOMETHING — an alias (blind
+// courses) or a studentEmail (legacy). Prevents fully-anonymous rows.
+submissionSchema.pre('validate', function () {
+  if (!this.alias && !this.studentEmail) {
+    throw new Error('Submission requires an alias or a studentEmail.');
+  }
+});
 
 const Submission = mongoose.model('Submission', submissionSchema);
 module.exports = Submission;

@@ -8,17 +8,22 @@ const mongoose = require('mongoose');
 const atRiskFlagSchema = new mongoose.Schema(
   {
     // ── Identity ─────────────────────────────────────────────────────────
+    // Blind Grading (Part C-1): identity may be alias-only. Optional now; a flag
+    // must carry `alias` OR `studentEmail` (pre-validate hook below).
     studentEmail: {
       type: String,
-      required: true,
       lowercase: true,
       trim: true,
       index: true,
     },
     studentName: {
       type: String,
-      required: true,
       trim: true,
+    },
+    alias: {
+      type: String,
+      trim: true,
+      index: true,
     },
     courseCode: {
       type: String,
@@ -128,6 +133,12 @@ atRiskFlagSchema.index(
   { studentEmail: 1, courseCode: 1, flagState: 1 },
   { name: 'student_course_state' }
 );
+
+atRiskFlagSchema.pre('validate', function () {
+  if (!this.alias && !this.studentEmail) {
+    throw new Error('AtRiskFlag requires an alias or a studentEmail.');
+  }
+});
 
 const AtRiskFlag = mongoose.model('AtRiskFlag', atRiskFlagSchema);
 module.exports = AtRiskFlag;

@@ -16,6 +16,7 @@ const { evaluateRisk } = require('./riskEvaluator.js');
  */
 const saveSubmission = async (data) => {
   const {
+    alias,
     studentEmail,
     studentName,
     professorEmail,
@@ -32,8 +33,13 @@ const saveSubmission = async (data) => {
   // ── Derive pLabel from pScore ──────────────────────────────────────────
   const pLabel = `P${pScore}`;
 
+  // Blind Grading (Part C-1): identity key is the alias when present (blind
+  // courses), else the email (legacy). All history/flag lookups key on this.
+  const studentKey = alias || studentEmail;
+
   // ── Save submission ────────────────────────────────────────────────────
   const submission = await Submission.create({
+    alias,
     studentEmail,
     studentName,
     professorEmail,
@@ -49,7 +55,7 @@ const saveSubmission = async (data) => {
   });
 
   console.log(
-    `📝 Submission saved: ${studentEmail} | ${courseCode} | ${assignmentName} | ${pLabel}`
+    `📝 Submission saved: ${studentKey} | ${courseCode} | ${assignmentName} | ${pLabel}`
   );
 
   // ── Trigger risk evaluator (non-blocking) ──────────────────────────────
@@ -58,6 +64,8 @@ const saveSubmission = async (data) => {
   let flagResult = null;
   try {
     flagResult = await evaluateRisk({
+      studentKey,
+      alias,
       studentEmail,
       studentName,
       professorEmail,
@@ -81,8 +89,15 @@ const saveSubmission = async (data) => {
  * @param {string} courseCode
  * @param {number} limit - default 10
  */
-const getStudentHistory = async (studentEmail, courseCode, limit = 10) => {
-  return Submission.find({ studentEmail, courseCode })
+// studentKey may be an alias (blind) or a studentEmail (legacy). Match either so
+// both identity models resolve a student's history. Legacy callers passing an
+// email are unaffected (the alias branch simply matches nothing).
+const getStudentHistory = async (studentKey, courseCode, limit = 10) => {
+  if (!studentKey) return [];
+  return Submission.find({
+    courseCode,
+    $or: [{ studentEmail: studentKey }, { alias: studentKey }],
+  })
     .sort({ submittedAt: -1 })
     .limit(limit)
     .lean();

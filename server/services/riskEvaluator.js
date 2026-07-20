@@ -28,6 +28,8 @@ const INACTIVITY_DAYS   = 7;
  * @returns {Object|null} - the flag created/updated, or null if no flag
  */
 const evaluateRisk = async ({
+  studentKey,
+  alias,
   studentEmail,
   studentName,
   professorEmail,
@@ -37,15 +39,19 @@ const evaluateRisk = async ({
   // Lazy require to safely resolve the circular dependency (see note above).
   const { getStudentHistory } = require('./submissionService.js');
 
+  // Blind Grading (Part C-1): key on the alias when present, else the email.
+  // Back-compat: legacy callers pass no studentKey → fall back to studentEmail.
+  const key = studentKey || studentEmail;
+
   // ── Fetch recent history (newest first) ───────────────────────────────
-  const history = await getStudentHistory(studentEmail, courseCode, 10);
+  const history = await getStudentHistory(key, courseCode, 10);
   // history[0] is the submission just saved (most recent)
 
   // ── Check for existing open flag ──────────────────────────────────────
   const existingFlag = await AtRiskFlag.findOne({
-    studentEmail,
     courseCode,
     flagState: { $in: ['WATCH', 'ACT_NOW'] },
+    $or: [{ studentEmail: key }, { alias: key }],
   });
 
   // ── Auto-clear: if student just scored P2+ and had an open flag ───────
@@ -88,6 +94,7 @@ const evaluateRisk = async ({
 
   // ── Create new flag ───────────────────────────────────────────────────
   const newFlag = await AtRiskFlag.create({
+    alias,
     studentEmail,
     studentName,
     professorEmail,
