@@ -7,6 +7,7 @@ import { encryptMapping, decryptMapping, MIN_PASSPHRASE_LEN } from "./blind/vaul
 import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
 import { diffRoster } from "./blind/rosterDiff.js";
 import { buildNameIndex } from "./blind/translate.js";
+import { findPlaintext } from "./blind/zeroPlaintext.js";
 import LandingPage from "./LandingPage";
 
 // ── At-Risk Predictor (Phase 3) — input-layer constants ──
@@ -709,7 +710,8 @@ export default function DM3AGraderV5() {
     [unlockedRosters, activeCourseCode]
   );
   const namesUnlocked = !!unlockedRosters[activeCourseCode];
-  const activeVaultedLocked = isVaulted(courseByCode(activeCourseCode)) && !namesUnlocked;
+  const activeVaulted = isVaulted(courseByCode(activeCourseCode));
+  const activeVaultedLocked = activeVaulted && !namesUnlocked;
   // A known alias renders as the real name once unlocked; anything else (a real
   // name from a legacy course, or an unknown value) passes through unchanged.
   const showName = (value) => (namesUnlocked && nameIndex.isAlias(value) ? nameIndex.toName(value) : value);
@@ -866,11 +868,17 @@ export default function DM3AGraderV5() {
     const norm = (v) => String(v || "").trim().toLowerCase();
     const mapping = {};
     results.forEach((s, i) => {
-      const match = activeRoster.find((r) => norm(r.studentName) === norm(s.studentName));
-      mapping[i] = match ? match.studentEmail : ""; // "" = Skip
+      if (activeVaulted) {
+        // Blind: the AI read the student's alias; map it to the roster alias.
+        const match = activeRoster.find((r) => norm(r.alias) === norm(s.studentName));
+        mapping[i] = match ? match.alias : ""; // "" = Skip
+      } else {
+        const match = activeRoster.find((r) => norm(r.studentName) === norm(s.studentName));
+        mapping[i] = match ? match.studentEmail : ""; // "" = Skip
+      }
     });
     setStudentMapping(mapping);
-  }, [results, activeCourseCode, activeRoster]);
+  }, [results, activeCourseCode, activeRoster, activeVaulted]);
 
   // Confirm = build the roster NOW from the current result names + selections
   // (keyed to each result's CURRENT studentName, so it cannot diverge), then
@@ -888,9 +896,27 @@ export default function DM3AGraderV5() {
       );
       return;
     }
-    const roster = results
-      .map((s, i) => ({ studentName: s.studentName, studentEmail: studentMapping[i] || "" }))
-      .filter((e) => e.studentEmail);
+    // Build the recording roster + payload. Blind (vaulted) courses send
+    // ALIAS-ONLY records — no studentName/studentEmail ever leaves the browser.
+    // Legacy courses send name + email exactly as before.
+    let roster, payloadResults;
+    if (activeVaulted) {
+      const chosen = results
+        .map((s, i) => ({ s, alias: studentMapping[i] || "" }))
+        .filter((e) => e.alias);
+      roster = chosen.map((e) => ({ alias: e.alias }));
+      payloadResults = chosen.map(({ s, alias }) => ({
+        alias,
+        overallTier: s.overallTier ?? s.tier,
+        dimensions: s.dimensions,
+        feedback: s.feedback,
+      }));
+    } else {
+      roster = results
+        .map((s, i) => ({ studentName: s.studentName, studentEmail: studentMapping[i] || "" }))
+        .filter((e) => e.studentEmail);
+      payloadResults = results;
+    }
     setConfirmedRoster(roster);
     setRosterConfirmed(true);
 
@@ -910,12 +936,26 @@ export default function DM3AGraderV5() {
       roster,
     };
 
+    // Zero-plaintext guard (live §6 assertion): for a blind course, REFUSE to
+    // send if any real name/email from the decrypted roster leaked into the
+    // payload. A doorway to fix, not a silent leak.
+    if (activeVaulted) {
+      const secrets = (unlockedRosters[activeCourseCode] || [])
+        .flatMap((r) => [r.studentName, r.studentEmail])
+        .filter(Boolean);
+      const leaks = findPlaintext({ riskContext, results: payloadResults }, secrets);
+      if (leaks.length > 0) {
+        setTrackingNote(`Blocked: a name/email would have been sent (${leaks[0].path}). Nothing was transmitted.`);
+        return;
+      }
+    }
+
     setTrackingNote("Recording at-risk tracking…");
     try {
       const res = await fetch(`${SERVER_URL}/api/risk/record`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ riskContext, results }),
+        body: JSON.stringify({ riskContext, results: payloadResults }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.success === false) {
@@ -3548,7 +3588,9 @@ Return a JSON array with exactly ONE student object.`;
                 <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => setStudentMapping(m => ({ ...m, [i]: e.target.value }))}>
                   <option value="">— Skip (don't track) —</option>
                   {activeRoster.map((r, ri) => (
-                    <option key={ri} value={r.studentEmail}>{r.studentName} — {r.studentEmail}</option>
+                    <option key={ri} value={activeVaulted ? r.alias : r.studentEmail}>
+                      {activeVaulted ? `${r.studentName} (${r.alias})` : `${r.studentName} — ${r.studentEmail}`}
+                    </option>
                   ))}
                 </select>
               </div>
