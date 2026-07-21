@@ -3664,7 +3664,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {overrides[s.studentName]?.renamedName || s.studentName} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
+                {overrides[s.studentName]?.renamedName || showName(s.studentName)} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
               </button>
             );
           })}
@@ -3688,7 +3688,7 @@ Return a JSON array with exactly ONE student object.`;
                       style={{ ...styles.btn, padding: "4px 12px", fontSize: 12 }}>✓ Save</button>
                   </div>
                 : <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{ov.renamedName || student.studentName}</h2>
+                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{ov.renamedName || showName(student.studentName)}</h2>
                     <button
                       onClick={() => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: ov.renamedName || student.studentName } }))}
                       title="Rename student"
