@@ -1,4 +1,6 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, lazy, Suspense } from "react";
+// Blackboard export (Blind Grading, Part D). Lazy so PapaParse loads only when used.
+const BBExport = lazy(() => import("./blind/BBExport.jsx"));
 // Blind Grading (Parts A/B). Only the tiny WebCrypto helpers are static-imported;
 // PapaParse and pdf-lib are dynamic-imported inside handlers so the grading
 // bundle stays lean.
@@ -3655,6 +3657,19 @@ Return a JSON array with exactly ONE student object.`;
               </>);
             })()}
           </div>
+        )}
+
+        {/* Blackboard export (Blind Grading, Part D) — vaulted + unlocked only */}
+        {!isStudentMode && activeVaulted && namesUnlocked && results.length >= 1 && (
+          <Suspense fallback={null}>
+            <BBExport
+              results={results}
+              studentMapping={studentMapping}
+              overrides={overrides}
+              mapping={unlockedRosters[activeCourseCode] || []}
+              courseCode={activeCourseCode}
+            />
+          </Suspense>
         )}
 
         {/* Student Tabs */}
