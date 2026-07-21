@@ -37,14 +37,12 @@ const adminStatsRoutes = require('./routes/adminStats.js');
 const coursesRoutes = require('./routes/courses.js');
 const { piiGuard } = require('./middleware/piiGuard.js');
 
-// ── Blind Grading (Part C-2): PII guard rollout ───────────────────────────────
-// GUARDED now: /api/courses/* (blind vault + alias submission), and the grading
-//   routes /grade + /detect-work (their bodies carry no name/email FIELD keys in
-//   either legacy or blind mode, so guarding is safe and can't break grading).
-// EXEMPT until migration completes (C-3): /api/risk/record and
-//   /api/submissions/save still accept legacy name+email payloads from
-//   un-migrated courses. The BLANKET guard (every route, zero exemptions) is the
-//   FINAL gate of Part C — mounted immediately after the last course migrates.
+// ── Blind Grading (Part C-final): BLANKET PII guard — zero exemptions ──────────
+// piiGuard is now on every grading/recording route: /grade, /detect-work,
+//   /api/courses/*, /api/risk/record, and /api/submissions/save. No route accepts
+//   a student name/email field. (Account-level endpoints — trial signup, the
+//   student free-tier counter — legitimately use `email` for account identity and
+//   are outside §3.2's student-submission scope, so they are not guarded.)
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -498,11 +496,9 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
 // post-grade). Reuses the SAME maybeRecordSubmissions logic the dormant /grade
 // hook uses. Same protection as /grade (CORS only). Never throws.
 // Body: { riskContext, results }  ->  { success, recorded, skipped, alertsFired }
-// PII-GUARD EXEMPTION (temporary, Part C-2): this route still accepts legacy
-// name+email payloads from un-migrated courses, so it is intentionally NOT behind
-// piiGuard yet. The blanket guard mounts here as the FINAL gate of Part C, right
-// after the last course migrates (C-3). Do not ship Part C "done" with this exempt.
-app.post('/api/risk/record', async (req, res) => {
+// Part C-final: blanket guard mounted (zero exemptions). All recording is
+// alias-only now; a name/email payload is rejected here just like everywhere else.
+app.post('/api/risk/record', piiGuard, async (req, res) => {
   try {
     const { riskContext, results, apiUsage } = req.body || {};
     const summary = await maybeRecordSubmissions(riskContext, results);

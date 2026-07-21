@@ -580,8 +580,10 @@ router.get('/migration/dry-run', async (req, res) => {
     res.json({
       probe: 'blind-grading-migration',
       writesPerformed: 0,
-      exemptRoutesRemaining: ['/api/risk/record', '/api/submissions/save'],
-      blanketGuardMounted: false,
+      // C-final: the last two recording routes are now guarded (zero exemptions
+      // among grading/recording routes); the PII guard is mounted everywhere.
+      exemptRoutesRemaining: [],
+      blanketGuardMounted: true,
       totals,
       courses,
       legend: {
@@ -589,6 +591,40 @@ router.get('/migration/dry-run', async (req, res) => {
         'manual-review': 'PII present, no vault — secure the course first, or purge if stale/test (see lastActivity).',
         clean: 'no studentName/studentEmail remaining.',
       },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/migration/purge-course-pii  { courseCode }
+// Deletes Submission + AtRiskFlag docs in the named course that still carry PII
+// (studentName/studentEmail). Surgical (alias-only/clean records are untouched)
+// and idempotent (re-run deletes 0). Admin-gated. Used to dispose of demo/test
+// PII rather than migrate it.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/migration/purge-course-pii', async (req, res) => {
+  try {
+    const courseCode = String((req.body && req.body.courseCode) || '').trim();
+    if (!courseCode) return res.status(400).json({ error: 'courseCode required' });
+
+    // Only rows that actually carry a name/email — never touch alias-only records.
+    const piiFilter = {
+      courseCode,
+      $or: [
+        { studentName: { $exists: true, $nin: [null, ''] } },
+        { studentEmail: { $exists: true, $nin: [null, ''] } },
+      ],
+    };
+    const [subs, flags] = await Promise.all([
+      Submission.deleteMany(piiFilter),
+      AtRiskFlag.deleteMany(piiFilter),
+    ]);
+    res.json({
+      courseCode,
+      deleted: { submissions: subs.deletedCount, flags: flags.deletedCount },
+      note: 'Only PII-bearing records were removed; alias-only/clean records untouched. Re-run is a no-op.',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

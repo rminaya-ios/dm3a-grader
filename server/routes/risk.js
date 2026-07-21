@@ -11,6 +11,7 @@ const express = require('express');
 const Submission = require('../models/Submission.js');
 const AtRiskFlag = require('../models/AtRiskFlag.js');
 const { saveSubmission, getAssignmentSubmissions } = require('../services/submissionService.js');
+const { piiGuard } = require('../middleware/piiGuard.js');
 
 const router = express.Router();
 
@@ -25,7 +26,7 @@ const router = express.Router();
  *         assignmentName, assignmentWeight, assignmentIndex,
  *         pScore, rubricBreakdown, feedbackSummary, semesterTag }
  */
-router.post('/submissions/save', async (req, res) => {
+router.post('/submissions/save', piiGuard, async (req, res) => {
   try {
     const { submission, flagResult } = await saveSubmission(req.body);
     res.status(201).json({
