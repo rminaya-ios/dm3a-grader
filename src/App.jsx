@@ -569,20 +569,21 @@ export default function DM3AGraderV5() {
       const raw = localStorage.getItem(DM3A_COURSES_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
       if (Array.isArray(parsed)) {
-        // Backfill: heal any course whose roster is missing or not an array
-        // (e.g. data saved before the parser fix, which could be {} ) -> [].
-        const needsHeal = parsed.some((c) => !Array.isArray(c?.roster));
         const normalized = parsed.map((c) => ({
           ...c,
           roster: Array.isArray(c?.roster) ? c.roster : [],
         }));
+        // Keep the full roster IN MEMORY for this session (so a course can still
+        // be secured), but IMMEDIATELY purge any legacy plaintext rosters from
+        // disk (Blind Grading, Part C-final — no student names in localStorage).
         setCourses(normalized);
-        if (needsHeal) {
-          try {
-            localStorage.setItem(DM3A_COURSES_KEY, JSON.stringify(normalized));
-          } catch {
-            /* storage unavailable — in-memory heal still applied */
-          }
+        try {
+          localStorage.setItem(
+            DM3A_COURSES_KEY,
+            JSON.stringify(normalized.map((c) => ({ ...c, roster: [] })))
+          );
+        } catch {
+          /* storage unavailable — in-memory state still applied */
         }
       }
     } catch {
@@ -590,11 +591,16 @@ export default function DM3AGraderV5() {
     }
   }, []);
 
-  // Write the full courses array back to localStorage and state.
+  // Persist course metadata. The full roster is kept IN MEMORY (React state) so a
+  // course can still be secured this session, but student names/emails are NEVER
+  // written to localStorage (Blind Grading, Part C-final). Only stripped metadata
+  // (course code, professor email, vault flag) is persisted; secure a course to
+  // persist its roster encrypted in the vault.
   function persistCourses(next) {
     setCourses(next);
     try {
-      localStorage.setItem(DM3A_COURSES_KEY, JSON.stringify(next));
+      const stripped = next.map((c) => ({ ...c, roster: [] }));
+      localStorage.setItem(DM3A_COURSES_KEY, JSON.stringify(stripped));
     } catch {
       /* storage unavailable — keep in-memory */
     }
