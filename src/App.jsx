@@ -724,6 +724,10 @@ export default function DM3AGraderV5() {
   // A known alias renders as the real name once unlocked; anything else (a real
   // name from a legacy course, or an unknown value) passes through unchanged.
   const showName = (value) => (namesUnlocked && nameIndex.isAlias(value) ? nameIndex.toName(value) : value);
+  // "Real Name (ALIAS)" for the results tabs/headers when unlocked; passes the raw
+  // value through otherwise (locked → alias; non-blind → the name as-is).
+  const showNameWithAlias = (value) =>
+    (namesUnlocked && nameIndex.isAlias(value) ? `${nameIndex.toName(value)} (${value})` : value);
 
   function downloadKeyBackup(courseCode, blob) {
     try {
@@ -3539,9 +3543,14 @@ Return a JSON array with exactly ONE student object.`;
                   Include student name on report
                 </label>
               )}
+              {/* Load Roster renames graded students from an external file. On a
+                  blind (vaulted) course the vault IS the roster, so this is hidden
+                  to avoid a conflicting second source of names. */}
+              {!activeVaulted && (
               <button style={styles.btnOutline} onClick={() => rosterInputRef.current.click()}>
                 👥 Load Roster
               </button>
+              )}
               <input ref={rosterInputRef} type="file" accept=".xls,.xlsx,.csv,.tsv,.txt" style={{ display: "none" }}
                 onChange={e => {
                   const file = e.target.files[0];
@@ -3716,7 +3725,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {overrides[s.studentName]?.renamedName || showName(s.studentName)} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
+                {activeVaulted ? showNameWithAlias(s.studentName) : (overrides[s.studentName]?.renamedName || showName(s.studentName))} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
               </button>
             );
           })}
@@ -3726,8 +3735,10 @@ Return a JSON array with exactly ONE student object.`;
         <div style={styles.card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
             <div style={{ flex: 1 }}>
-              {/* Inline rename — click pencil to edit */}
-              {ov.renamedName !== undefined
+              {/* Inline rename — click pencil to edit. Disabled on blind (vaulted)
+                  courses: the name comes from the encrypted vault, not a manual
+                  override, so the header shows "Real Name (ALIAS)" read-only. */}
+              {(!activeVaulted && ov.renamedName !== undefined)
                 ? <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                     <input
                       autoFocus
@@ -3740,13 +3751,15 @@ Return a JSON array with exactly ONE student object.`;
                       style={{ ...styles.btn, padding: "4px 12px", fontSize: 12 }}>✓ Save</button>
                   </div>
                 : <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{ov.renamedName || showName(student.studentName)}</h2>
+                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{activeVaulted ? showNameWithAlias(student.studentName) : (ov.renamedName || showName(student.studentName))}</h2>
+                    {!activeVaulted && (
                     <button
                       onClick={() => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: ov.renamedName || student.studentName } }))}
                       title="Rename student"
                       style={{ background: "none", border: "1px solid #D8D6CE", borderRadius: 4, padding: "2px 8px", fontSize: 11, color: "#888", cursor: "pointer" }}>
                       ✏ Rename
                     </button>
+                    )}
                   </div>
               }
               <p style={{ margin: 0, fontSize: 13, color: "#5A5A55" }}>{subject} · {assignment}</p>
