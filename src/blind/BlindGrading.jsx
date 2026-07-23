@@ -127,6 +127,18 @@ export default function BlindGrading() {
     if (!guardPass()) return;
     setBusy(true);
     try {
+      // #19: never silently replace an existing vault's aliases.
+      const existing = await getVault(courseId);
+      if (existing) {
+        const when = existing.updatedAt ? new Date(existing.updatedAt).toLocaleDateString() : 'earlier';
+        const proceed = window.confirm(
+          `⚠ ${courseId} already has aliases (secured ${when}).\n\n` +
+          `Storing now REPLACES ALL of them — printed alias cards and labeled work in flight will stop matching.\n\n` +
+          `To add or remove students while keeping existing aliases, use "Update roster" instead.\n\n` +
+          `Replace ALL aliases anyway?`
+        );
+        if (!proceed) { setStatus('Store cancelled — existing aliases kept.'); setBusy(false); return; }
+      }
       const blob = await encryptMapping(buildMapping(), passphrase);
       const res = await putVault(courseId, blob);
       setStoredAt(res.updatedAt || new Date().toISOString());

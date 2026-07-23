@@ -807,8 +807,25 @@ export default function DM3AGraderV5() {
     }
     const base = Array.isArray(course.roster) ? course.roster : [];
     if (base.length === 0) throw new Error("This course has no roster to secure yet — add students first.");
+
+    // #19: the SERVER is the source of truth for whether a vault exists (the local
+    // `vaulted` flag can be stale across devices / the /blind flow). Never silently
+    // regenerate aliases — that orphans printed cards + labeled work in flight.
+    const existingVault = await getVault(course.courseCode);
+    if (existingVault) {
+      const when = existingVault.updatedAt ? new Date(existingVault.updatedAt).toLocaleDateString() : "earlier";
+      const proceed = window.confirm(
+        `⚠ ${course.courseCode} already has aliases (secured ${when}).\n\n` +
+        `Re-securing REPLACES ALL of them — printed alias cards and any labeled work already in flight will stop matching.\n\n` +
+        `To add or remove students while KEEPING existing aliases, cancel and use "Update roster (CSV)" instead.\n\n` +
+        `Replace ALL aliases anyway?`
+      );
+      if (!proceed) throw new Error("Re-secure cancelled — use Update roster (CSV) to keep existing aliases.");
+    }
+
     const withAliases = assignAliases(base, course.courseCode); // {studentName, studentEmail} + .alias
-    const mapping = { courseId: course.courseCode, version: 1, createdAt: new Date().toISOString(), students: withAliases };
+    const createdAt = new Date().toISOString();
+    const mapping = { courseId: course.courseCode, version: 1, createdAt, students: withAliases };
     const blob = await encryptMapping(mapping, passphrase);
     await putVault(course.courseCode, blob);
     // Read-back verify BEFORE purging the plaintext copy (lazy, safe migration).
@@ -820,7 +837,7 @@ export default function DM3AGraderV5() {
     downloadKeyBackup(course.courseCode, blob); // backup by default
     // Purge plaintext PII from localStorage; keep metadata + vault flag.
     persistCourses(courses.map((c) => c.courseCode === course.courseCode
-      ? { ...c, roster: [], vaulted: true, vaultUpdatedAt: check.updatedAt || new Date().toISOString() }
+      ? { ...c, roster: [], vaulted: true, vaultCreatedAt: createdAt, vaultUpdatedAt: check.updatedAt || createdAt }
       : c));
     setUnlockedRosters((m) => ({ ...m, [course.courseCode]: withAliases }));
     setSessionPass((m) => ({ ...m, [course.courseCode]: passphrase }));
@@ -3045,6 +3062,7 @@ Return a JSON array with exactly ONE student object.`;
                     {isVaulted(c) ? (
                       <div style={{ fontSize: 12 }}>
                         <span style={{ color: "#0F6E56", fontWeight: 700 }}>🔒 Secured</span>
+                        {c.vaultCreatedAt && <span style={{ color: "#5A5A55", marginLeft: 8 }}>· aliases generated {new Date(c.vaultCreatedAt).toLocaleDateString()}</span>}
                         {unlockedRosters[c.courseCode]
                           ? <span style={{ color: "#0F6E56", marginLeft: 8 }}>· Unlocked ({unlockedRosters[c.courseCode].length} students · names in memory only)</span>
                           : <button type="button" style={{ ...styles.btnOutline, marginLeft: 8, padding: "2px 8px", fontSize: 12 }} onClick={() => openUnlock(c.courseCode, "Enter your course passphrase to unlock names for this session.", () => {})}>Unlock</button>}

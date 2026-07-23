@@ -6,7 +6,8 @@
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-export async function buildAliasCardPdf(courseCode, students) {
+export async function buildAliasCardPdf(courseCode, students, generatedAt) {
+  const genLabel = generatedAt ? new Date(generatedAt).toLocaleDateString() : new Date().toLocaleDateString();
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -28,7 +29,9 @@ export async function buildAliasCardPdf(courseCode, students) {
     const y = pageH - margin - (row + 1) * cardH;
 
     page.drawRectangle({ x: x + 4, y: y + 4, width: cardW - 8, height: cardH - 8, borderColor: brand, borderWidth: 1 });
-    page.drawText(`${courseCode}`, { x: x + 14, y: y + cardH - 22, size: 8, font, color: muted });
+    // Course + alias-generation date so an instructor can tell which generation a
+    // printed card belongs to (a re-secure invalidates older cards). (#19)
+    page.drawText(`${courseCode}  ·  gen ${genLabel}`, { x: x + 14, y: y + cardH - 22, size: 8, font, color: muted });
     const name = `${s.firstName || ''} ${s.lastName || ''}`.trim() || '(unnamed)';
     page.drawText(name, { x: x + 14, y: y + cardH - 40, size: 12, font });
     page.drawText(s.alias, { x: x + 14, y: y + cardH - 66, size: 20, font: bold, color: brand });
