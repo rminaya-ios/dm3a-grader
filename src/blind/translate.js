@@ -6,22 +6,26 @@
 // after session unlock) so views can translate for display only. Nothing here
 // ever touches the network.
 
+import { normalizeAlias } from './alias.js';
+
 // students: [{ alias, studentName?, firstName?, lastName?, studentEmail? }]
+// Aliases are keyed by normalizeAlias so an OCR-detected ID with stray spaces
+// ("TEST 11 - UEGR") still matches the clean vault form ("TEST11-UEGR").
 export function buildNameIndex(students) {
   const aliasToName = new Map();
   const nameToAlias = new Map();
   for (const s of students || []) {
     if (!s || !s.alias) continue;
     const name = s.studentName || `${s.firstName || ''} ${s.lastName || ''}`.trim();
-    aliasToName.set(s.alias.toLowerCase(), name || s.alias);
+    aliasToName.set(normalizeAlias(s.alias), name || s.alias);
     if (name) nameToAlias.set(name.toLowerCase(), s.alias);
   }
   return {
     // alias → real name (falls back to the input if not a known alias)
-    toName: (v) => aliasToName.get(String(v || '').toLowerCase()) ?? v,
+    toName: (v) => aliasToName.get(normalizeAlias(v)) ?? v,
     // real name → alias (falls back to the input if not a known name)
     toAlias: (v) => nameToAlias.get(String(v || '').toLowerCase()) ?? v,
-    isAlias: (v) => aliasToName.has(String(v || '').toLowerCase()),
+    isAlias: (v) => aliasToName.has(normalizeAlias(v)),
     size: aliasToName.size,
   };
 }

@@ -9,6 +9,13 @@
 
 export const ALIAS_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'; // 31 chars, no 0/O/1/I/L
 
+// Normalize an alias for matching. OCR of a handwritten ID often adds spaces
+// ("TEST 11 - UEGR"); the vault stores the clean form ("TEST11-UEGR"). Uppercase
+// + strip ALL whitespace so detected IDs key/match the vault reliably.
+export function normalizeAlias(s) {
+  return String(s || '').toUpperCase().replace(/\s+/g, '');
+}
+
 // Default course prefix: course code uppercased, alnum-only, ≤6 chars.
 export function coursePrefix(courseCode) {
   const cleaned = String(courseCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '');

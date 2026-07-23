@@ -4,7 +4,7 @@ const BBExport = lazy(() => import("./blind/BBExport.jsx"));
 // Blind Grading (Parts A/B). Only the tiny WebCrypto helpers are static-imported;
 // PapaParse and pdf-lib are dynamic-imported inside handlers so the grading
 // bundle stays lean.
-import { assignAliases } from "./blind/alias.js";
+import { assignAliases, normalizeAlias } from "./blind/alias.js";
 import { encryptMapping, decryptMapping, MIN_PASSPHRASE_LEN } from "./blind/vault.js";
 import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
 import { diffRoster } from "./blind/rosterDiff.js";
@@ -502,6 +502,7 @@ export default function DM3AGraderV5() {
   const [heicFailedFiles, setHeicFailedFiles] = useState([]);
   const [generatingReports, setGeneratingReports] = useState(false);
   const [includeNameOnReport, setIncludeNameOnReport] = useState(false); // blind: opt-in real name in report body
+  const [pageNotes, setPageNotes] = useState([]); // #18: reference-file page usage ("Using X of Y pages")
   const [problemInventory, setProblemInventory] = useState({}); // studentName → inventory array
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -893,8 +894,9 @@ export default function DM3AGraderV5() {
     results.forEach((s, i) => {
       if (activeVaulted) {
         // Blind: the AI read the student's alias; map it to the roster alias.
-        const match = activeRoster.find((r) => norm(r.alias) === norm(s.studentName));
-        mapping[i] = match ? match.alias : ""; // "" = Skip
+        // normalizeAlias absorbs OCR whitespace ("TEST 11 - UEGR" → "TEST11-UEGR").
+        const match = activeRoster.find((r) => normalizeAlias(r.alias) === normalizeAlias(s.studentName));
+        mapping[i] = match ? match.alias : ""; // "" = Skip (not in vault)
       } else {
         const match = activeRoster.find((r) => norm(r.studentName) === norm(s.studentName));
         mapping[i] = match ? match.studentEmail : ""; // "" = Skip
@@ -1324,7 +1326,7 @@ export default function DM3AGraderV5() {
       /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(file?.name || "");
   }
 
-  async function pdfToImages(file, maxPages = 16, maxDimension = 1200, quality = 0.75) {
+  async function pdfToImages(file, maxPages = 16, maxDimension = 1200, quality = 0.75, onPages) {
     console.log(`[pdfToImages] called: "${file?.name}" type="${file?.type}" maxPages=${maxPages}`);
     if (looksLikeImage(file)) {
       console.warn(`[pdfToImages] BLOCKED — image file passed to pdfToImages: ${file.name} — returning empty array`);
@@ -1336,6 +1338,8 @@ export default function DM3AGraderV5() {
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       console.log(`[pdfToImages] pdf.numPages=${pdf.numPages} maxPages=${maxPages}`);
+      // #18: report page usage so the instructor is never silently given a partial file.
+      if (typeof onPages === "function") onPages({ name: file?.name, numPages: pdf.numPages, used: Math.min(pdf.numPages, maxPages) });
       if (pdf.numPages > 20) console.warn(`[pdfToImages] PDF.js may be misreading page count — pdf.numPages=${pdf.numPages} seems too high`);
       const images = [];
       // Use try-catch per page rather than trusting pdf.numPages, which can misreport
@@ -1384,14 +1388,23 @@ export default function DM3AGraderV5() {
   }
 
   // Converts any file (PDF or image) into Anthropic image content blocks.
+  // #18: record when a reference file is truncated so it can be surfaced.
+  const notePages = (info) => {
+    if (info && info.numPages > info.used) {
+      setPageNotes((prev) => [...prev.filter((n) => n.name !== info.name), info]);
+    }
+  };
+
   // All PDFs go through pdfToImages so Claude can read handwritten/scanned content.
-  async function fileToImageBlocks(file, maxPages = 3) {
+  // #18: default raised 3 → 15 so multi-page reference material isn't silently
+  // truncated. onPages surfaces "Using X of Y pages" to the instructor.
+  async function fileToImageBlocks(file, maxPages = 15, onPages) {
     console.log(`[fileToImageBlocks] "${file?.name}" type="${file?.type}" looksLikeImage=${looksLikeImage(file)}`);
     if (looksLikeImage(file)) {
       const b64 = await convertToJpegViaCanvas(file, 0.75, 1200);
       return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }];
     }
-    const pages = await pdfToImages(file, maxPages, 1200, 0.75);
+    const pages = await pdfToImages(file, maxPages, 1200, 0.75, onPages);
     return pages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
   }
 
@@ -1567,6 +1580,7 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     setError("");
     setHeicFailedFiles([]);
     setProblemInventory({});
+    setPageNotes([]); // #18: fresh page-usage notes per grade run
     setLoading(true);
     setStep("grading");
     const courseConfig = COURSE_CONFIGS[subject];
@@ -1598,7 +1612,7 @@ work_present must be true ONLY when classification is HAS_WORK.`;
         setLoadingMsg(`${batchPageImages.length} pages detected · Compressed to ~${batchCompressedMB} MB · Est. ~${batchEstMin} min`);
         const sharedBlocks = [];
         if (assignmentFile) {
-          const blocks = await fileToImageBlocks(assignmentFile, 3);
+          const blocks = await fileToImageBlocks(assignmentFile, 15, notePages);
           sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT — the questions the student was asked to answer." });
         }
@@ -1740,7 +1754,7 @@ Return a JSON array with exactly ONE student object.`;
         // Build shared context blocks (assignment + answer key) — images only, no raw PDF base64
         const sharedBlocks = [];
         if (assignmentFile) {
-          const blocks = await fileToImageBlocks(assignmentFile, 3);
+          const blocks = await fileToImageBlocks(assignmentFile, 15, notePages);
           sharedBlocks.push(...blocks);
           sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
         }
@@ -1896,7 +1910,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
           // Build shared context blocks — images only, no raw PDF base64
           const sharedBlocks = [];
           if (assignmentFile) {
-            const blocks = await fileToImageBlocks(assignmentFile, 3);
+            const blocks = await fileToImageBlocks(assignmentFile, 15, notePages);
             sharedBlocks.push(...blocks);
             sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
           }
@@ -2070,7 +2084,7 @@ Return a JSON array with one object per student found in the submission.`;
     if (studentRubricFile) {
       try {
         setLoadingMsg("Reading rubric...");
-        rubricBlocks = await fileToImageBlocks(studentRubricFile, 3);
+        rubricBlocks = await fileToImageBlocks(studentRubricFile, 15, notePages);
       } catch { /* non-fatal — grade without rubric */ }
     }
 
@@ -2494,6 +2508,27 @@ Return a JSON array with exactly ONE student object.`;
     </div>
   ) : null;
 
+  // Unlock modal (Finding #15): shared so it renders on EVERY screen the doorway
+  // can be triggered from (setup + results). Previously it lived only in the setup
+  // return, so clicking "Unlock names" on the results screen was a dead click.
+  const unlockModal = unlockPrompt ? (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 360, maxWidth: "100%", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        <h3 style={{ margin: "0 0 6px", fontSize: 16 }}>🔒 Unlock {unlockPrompt.courseCode}</h3>
+        <p style={{ margin: "0 0 12px", fontSize: 13, color: "#5A5A55" }}>{unlockPrompt.message}</p>
+        <input type="password" autoFocus placeholder={`Course passphrase (≥${MIN_PASSPHRASE_LEN})`} value={unlockPass}
+          onChange={e => setUnlockPass(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") doUnlock(); }}
+          style={{ ...styles.input, marginBottom: 8 }} />
+        {unlockError && <div style={{ color: "#9f1239", fontSize: 12.5, marginBottom: 8 }}>{unlockError}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" style={styles.btn} disabled={vaultBusy} onClick={doUnlock}>{vaultBusy ? "Unlocking…" : "Unlock"}</button>
+          <button type="button" style={styles.btnOutline} disabled={vaultBusy} onClick={() => { setUnlockPrompt(null); setUnlockPass(""); setUnlockError(""); }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   if (step === "login" && showLanding)
     return <>
       {resumeBanner}
@@ -2896,24 +2931,8 @@ Return a JSON array with exactly ONE student object.`;
         <input style={styles.input} placeholder="e.g. Problems 1, 2a, 2b, 3, 4a, 4b, 4c, 5a, 5b" value={problemScope} onChange={e => setProblemScope(e.target.value)} />
       </div>
 
-      {/* Blind Grading — inline unlock prompt (graceful gate; renders over anything) */}
-      {unlockPrompt && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 360, maxWidth: "100%", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-            <h3 style={{ margin: "0 0 6px", fontSize: 16 }}>🔒 Unlock {unlockPrompt.courseCode}</h3>
-            <p style={{ margin: "0 0 12px", fontSize: 13, color: "#5A5A55" }}>{unlockPrompt.message}</p>
-            <input type="password" autoFocus placeholder={`Course passphrase (≥${MIN_PASSPHRASE_LEN})`} value={unlockPass}
-              onChange={e => setUnlockPass(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") doUnlock(); }}
-              style={{ ...styles.input, marginBottom: 8 }} />
-            {unlockError && <div style={{ color: "#9f1239", fontSize: 12.5, marginBottom: 8 }}>{unlockError}</div>}
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" style={styles.btn} disabled={vaultBusy} onClick={doUnlock}>{vaultBusy ? "Unlocking…" : "Unlock"}</button>
-              <button type="button" style={styles.btnOutline} disabled={vaultBusy} onClick={() => { setUnlockPrompt(null); setUnlockPass(""); setUnlockError(""); }}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Blind Grading — inline unlock prompt (shared; see unlockModal). */}
+      {unlockModal}
 
       {/* At-Risk Tracking — Course Profiles (optional; input + local storage only) */}
       <div style={styles.card}>
@@ -3463,7 +3482,7 @@ Return a JSON array with exactly ONE student object.`;
               try {
                 const sharedBlocks = [];
                 if (assignmentFile) {
-                  const blocks = await fileToImageBlocks(assignmentFile, 3);
+                  const blocks = await fileToImageBlocks(assignmentFile, 15, notePages);
                   sharedBlocks.push(...blocks);
                   sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
                 }
@@ -3641,6 +3660,14 @@ Return a JSON array with exactly ONE student object.`;
 
     return (
       <div style={styles.root}>
+        {unlockModal}
+        {pageNotes.length > 0 && (
+          <div style={{ background: "#FFF3CD", border: "1px solid #FFCA2C", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#856404" }}>
+            {pageNotes.map((n, i) => (
+              <div key={i}>⚠ Reference file “{n.name || "file"}”: used <b>{n.used} of {n.numPages}</b> pages. Grading saw a partial file — split it or reduce pages if the rest matters.</div>
+            ))}
+          </div>
+        )}
         <div style={styles.header}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
@@ -3755,6 +3782,11 @@ Return a JSON array with exactly ONE student object.`;
                   {showName(s.studentName)}
                   {namesUnlocked && nameIndex.isAlias(s.studentName) && (
                     <span style={{ fontWeight: 400, fontSize: 11, color: "#888", marginLeft: 6 }}>({s.studentName})</span>
+                  )}
+                  {/* #17: flag a detected ID that isn't in the course vault. */}
+                  {activeVaulted && namesUnlocked && !nameIndex.isAlias(s.studentName) && (
+                    <span style={{ fontWeight: 700, fontSize: 10, color: "#A32D2D", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
+                      title="This detected ID was not found in the course vault — check the handwriting/roster.">⚠ not in vault</span>
                   )}
                 </div>
                 <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => setStudentMapping(m => ({ ...m, [i]: e.target.value }))}>
