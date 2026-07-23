@@ -496,6 +496,7 @@ export default function DM3AGraderV5() {
   const [fileSizeWarnings, setFileSizeWarnings] = useState([]);
   const [heicFailedFiles, setHeicFailedFiles] = useState([]);
   const [generatingReports, setGeneratingReports] = useState(false);
+  const [includeNameOnReport, setIncludeNameOnReport] = useState(false); // blind: opt-in real name in report body
   const [problemInventory, setProblemInventory] = useState({}); // studentName → inventory array
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -2154,10 +2155,36 @@ Return a JSON array with exactly ONE student object.`;
 
   // ─── PDF REPORT GENERATION ───────────────────────────────────────────────
 
+  // Blind Grading (§4.3): resolve a graded student's REAL identity from the
+  // unlocked mapping (client-side only). Returns null unless the active course is
+  // vaulted + unlocked and the alias is found — so non-blind courses are untouched.
+  function resolveReportIdentity(student) {
+    if (!activeVaulted || !namesUnlocked) return null;
+    const alias = student.studentName; // the alias printed on the graded work
+    const roster = unlockedRosters[activeCourseCode] || [];
+    const n = (v) => String(v || "").trim().toLowerCase();
+    const m = roster.find((r) => n(r.alias) === n(alias));
+    if (!m) return null;
+    let lastName = m.lastName || "";
+    let firstName = m.firstName || "";
+    if (!lastName && !firstName) {
+      const full = String(m.studentName || "").trim();
+      if (full.includes(",")) { const [l, f] = full.split(","); lastName = l.trim(); firstName = (f || "").trim(); }
+      else { const p = full.split(/\s+/); lastName = p[p.length - 1] || ""; firstName = p.slice(0, -1).join(" "); }
+    }
+    return { alias, lastName, firstName, realName: m.studentName || `${firstName} ${lastName}`.trim() };
+  }
+
   function buildReportFilename(student) {
     const ov = overrides[student.studentName] || {};
-    const displayName = ov.renamedName || student.studentName;
     const tier = ov.overall || student.overallTier;
+    // Unlocked blind course: rename to LastName_FirstName_ALIAS_Report.pdf.
+    const id = resolveReportIdentity(student);
+    if (id) {
+      const san = (s) => String(s || "").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "") || "NA";
+      return `${san(id.lastName)}_${san(id.firstName)}_${san(id.alias)}_Report.pdf`;
+    }
+    const displayName = ov.renamedName || student.studentName;
     const namePart = displayName.includes(",")
       ? displayName.split(",").map(p => p.trim()).reverse().join("_")
       : displayName.replace(/\s+/g, "_");
@@ -2168,7 +2195,10 @@ Return a JSON array with exactly ONE student object.`;
   async function generateStudentPDF(student) {
     const { jsPDF } = await import("jspdf");
     const ov = overrides[student.studentName] || {};
-    const displayName = ov.renamedName || student.studentName;
+    // Blind (§4.3): body is alias-only by default (safe to distribute). Instructors
+    // handing back in person can opt in to the real name, rendered client-side here.
+    const id = includeNameOnReport ? resolveReportIdentity(student) : null;
+    const displayName = id ? id.realName : (ov.renamedName || student.studentName);
     const tier = ov.overall || student.overallTier;
     const NAVY = [10, 22, 40];
     const GOLD = [201, 168, 76];
@@ -3502,6 +3532,13 @@ Return a JSON array with exactly ONE student object.`;
               <button style={{ ...styles.btnOutline, opacity: generatingReports ? 0.6 : 1 }} onClick={downloadAllReports} disabled={generatingReports}>
                 {generatingReports ? "Generating reports…" : "⬇ Download All Reports"}
               </button>
+              {activeVaulted && namesUnlocked && (
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#5A5A55" }}
+                  title="Blind reports are alias-only by default. Enable to print the real name for in-person handback. Files are renamed LastName_FirstName_ALIAS_Report.pdf either way.">
+                  <input type="checkbox" checked={includeNameOnReport} onChange={e => setIncludeNameOnReport(e.target.checked)} />
+                  Include student name on report
+                </label>
+              )}
               <button style={styles.btnOutline} onClick={() => rosterInputRef.current.click()}>
                 👥 Load Roster
               </button>
