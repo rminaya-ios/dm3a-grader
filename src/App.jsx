@@ -503,6 +503,7 @@ export default function DM3AGraderV5() {
   const [generatingReports, setGeneratingReports] = useState(false);
   const [includeNameOnReport, setIncludeNameOnReport] = useState(false); // blind: opt-in real name in report body
   const [pageNotes, setPageNotes] = useState([]); // #18: reference-file page usage ("Using X of Y pages")
+  const [answerKeyPages, setAnswerKeyPages] = useState(null); // #20: answer-key page count surfaced
   const [problemInventory, setProblemInventory] = useState({}); // studentName → inventory array
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -625,6 +626,18 @@ export default function DM3AGraderV5() {
   // NOTE: named parseRosterLines (NOT parseRoster) to avoid colliding with the
   // pre-existing Blackboard parseRoster() below, which returns an ID->name map.
   // Function declarations hoist, so a duplicate name would shadow this one.
+  // Unified roster schema (#9): every entry carries the full identity set so the
+  // BB export can match by Username → Student ID → email → name.
+  //   { studentName, studentEmail, lastName, firstName, bbUsername, studentId }
+  function splitFullName(full) {
+    const n = String(full || "").trim();
+    if (!n) return { lastName: "", firstName: "" };
+    if (n.includes(",")) { const [l, f] = n.split(","); return { lastName: l.trim(), firstName: (f || "").trim() }; }
+    const p = n.split(/\s+/);
+    return p.length <= 1 ? { lastName: n, firstName: "" } : { lastName: p[p.length - 1], firstName: p.slice(0, -1).join(" ") };
+  }
+
+  // Paste box: "Full Name, email" lines → the unified schema.
   function parseRosterLines(text) {
     return String(text || "")
       .split(/\r?\n/)
@@ -634,9 +647,41 @@ export default function DM3AGraderV5() {
         const studentName = line.slice(0, idx).trim();
         const studentEmail = line.slice(idx + 1).trim().toLowerCase();
         if (!studentName || !studentEmail || !studentEmail.includes("@")) return null;
-        return { studentName, studentEmail };
+        const { lastName, firstName } = splitFullName(studentName);
+        return { studentName, studentEmail, lastName, firstName, bbUsername: "", studentId: "" };
       })
       .filter(Boolean);
+  }
+
+  // BB Grade Center CSV → the unified schema (#9). Captures Last/First/Username/
+  // Student ID/email. This is the canonical import so the export can round-trip.
+  async function importBBRoster(course, file) {
+    const Papa = (await import("papaparse")).default;
+    const rows = await new Promise((resolve, reject) => {
+      Papa.parse(file, { header: true, skipEmptyLines: true, complete: (r) => resolve(r.data || []), error: reject });
+    });
+    const n = (s) => String(s || "").replace(/^\uFEFF/, "").trim().toLowerCase().replace(/["']/g, "");
+    const fields = rows.length ? Object.keys(rows[0]) : [];
+    const pick = (cands) => { const m = new Map(fields.map((f) => [n(f), f])); for (const c of cands) { const h = m.get(n(c)); if (h) return h; } return null; };
+    const hLast = pick(["Last Name", "LastName", "Last"]);
+    const hFirst = pick(["First Name", "FirstName", "First"]);
+    const hUser = pick(["Username", "User Name", "User Id", "UserId"]);
+    const hId = pick(["Student ID", "StudentID", "Student Id"]);
+    const hEmail = pick(["Email", "Email Address", "E-mail", "EmailAddress"]);
+    const roster = rows.map((r) => {
+      const lastName = hLast ? String(r[hLast] || "").trim() : "";
+      const firstName = hFirst ? String(r[hFirst] || "").trim() : "";
+      const bbUsername = hUser ? String(r[hUser] || "").trim() : "";
+      return {
+        lastName, firstName, bbUsername,
+        studentName: `${firstName} ${lastName}`.trim() || bbUsername,
+        studentId: hId ? String(r[hId] || "").trim() : "",
+        studentEmail: hEmail ? String(r[hEmail] || "").trim().toLowerCase() : "",
+      };
+    }).filter((s) => s.lastName || s.bbUsername);
+    if (!roster.length) throw new Error("No students detected — need a Last Name or Username column.");
+    persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, roster } : c));
+    setVaultNote(`Imported ${roster.length} students from BB CSV into ${course.courseCode} — now set a passphrase and Secure the roster.`);
   }
 
   function rosterToText(roster) {
@@ -1405,6 +1450,16 @@ export default function DM3AGraderV5() {
   }
 
   // Converts any file (PDF or image) into Anthropic image content blocks.
+  // #20: read a PDF's page count (answer key is sent whole as a document block).
+  async function getPdfPageCount(file) {
+    try {
+      const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      return pdf.numPages;
+    } catch { return null; }
+  }
+
   // #18: record when a reference file is truncated so it can be surfaced.
   const notePages = (info) => {
     if (info && info.numPages > info.used) {
@@ -1598,6 +1653,10 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     setHeicFailedFiles([]);
     setProblemInventory({});
     setPageNotes([]); // #18: fresh page-usage notes per grade run
+    setAnswerKeyPages(null); // #20
+    if (answerKeyFile && /pdf/i.test(`${answerKeyFile.type} ${answerKeyFile.name}`)) {
+      getPdfPageCount(answerKeyFile).then((pc) => { if (pc) setAnswerKeyPages(pc); });
+    }
     setLoading(true);
     setStep("grading");
     const courseConfig = COURSE_CONFIGS[subject];
@@ -2298,10 +2357,13 @@ Return a JSON array with exactly ONE student object.`;
   // vaulted + unlocked and the alias is found — so non-blind courses are untouched.
   function resolveReportIdentity(student) {
     if (!activeVaulted || !namesUnlocked) return null;
-    const alias = student.studentName; // the alias printed on the graded work
+    // #20: key off the CONFIRMED mapping (the alias the instructor confirmed at
+    // Confirm Students), falling back to the detected ID. normalizeAlias absorbs
+    // OCR whitespace so "TEST 11 - UEGR" still resolves.
+    const i = results.indexOf(student);
+    const confirmedAlias = (i >= 0 && studentMapping[i]) ? studentMapping[i] : student.studentName;
     const roster = unlockedRosters[activeCourseCode] || [];
-    const n = (v) => String(v || "").trim().toLowerCase();
-    const m = roster.find((r) => n(r.alias) === n(alias));
+    const m = roster.find((r) => normalizeAlias(r.alias) === normalizeAlias(confirmedAlias));
     if (!m) return null;
     let lastName = m.lastName || "";
     let firstName = m.firstName || "";
@@ -2310,7 +2372,8 @@ Return a JSON array with exactly ONE student object.`;
       if (full.includes(",")) { const [l, f] = full.split(","); lastName = l.trim(); firstName = (f || "").trim(); }
       else { const p = full.split(/\s+/); lastName = p[p.length - 1] || ""; firstName = p.slice(0, -1).join(" "); }
     }
-    return { alias, lastName, firstName, realName: m.studentName || `${firstName} ${lastName}`.trim() };
+    // Return the CURRENT clean vault alias (not the detected one) for filenames/headers.
+    return { alias: m.alias, lastName, firstName, realName: m.studentName || `${firstName} ${lastName}`.trim() };
   }
 
   function buildReportFilename(student) {
@@ -3077,6 +3140,14 @@ Return a JSON array with exactly ONE student object.`;
                       </div>
                     ) : (
                       <div style={{ fontSize: 12 }}>
+                        {/* #9: BB Grade Center CSV import — the canonical roster source. */}
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ ...styles.btnOutline, padding: "4px 10px", fontSize: 12, cursor: "pointer", margin: 0, display: "inline-block" }}>
+                            📥 Import BB Grade Center CSV
+                            <input type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) runVault(() => importBBRoster(c, f)); }} />
+                          </label>
+                          <span style={{ color: "#888", marginLeft: 8 }}>captures Last/First/Username/Student ID/email for export matching</span>
+                        </div>
                         <div style={{ color: "#854F0B", marginBottom: 6 }}>⚠ {(c.roster?.length || 0)} names stored <b>unencrypted</b> on this device. Secure them:</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                           <input type="password" placeholder={`Passphrase (≥${MIN_PASSPHRASE_LEN})`} value={securePass[c.courseCode] || ""} onChange={e => setSecurePass(m => ({ ...m, [c.courseCode]: e.target.value }))} style={{ ...styles.input, flex: 1, minWidth: 160, marginBottom: 0, padding: "6px 8px", fontSize: 13 }} />
@@ -3679,8 +3750,9 @@ Return a JSON array with exactly ONE student object.`;
     return (
       <div style={styles.root}>
         {unlockModal}
-        {pageNotes.length > 0 && (
+        {(pageNotes.length > 0 || answerKeyPages) && (
           <div style={{ background: "#FFF3CD", border: "1px solid #FFCA2C", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#856404" }}>
+            {answerKeyPages && <div>📄 Answer key: <b>{answerKeyPages} page{answerKeyPages === 1 ? "" : "s"}</b> — all sent to the grader (document block).</div>}
             {pageNotes.map((n, i) => (
               <div key={i}>⚠ Reference file “{n.name || "file"}”: used <b>{n.used} of {n.numPages}</b> pages. Grading saw a partial file — split it or reduce pages if the rest matters.</div>
             ))}

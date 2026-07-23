@@ -72,13 +72,19 @@ export function makeGradeFormatter(mode = 'numeric', tierPct = DEFAULT_TIER_PCT)
 export function joinGrades({ headers, dataRows, results, mapping, columnIndex, formatGrade }) {
   const uCol = findCol(headers, ['Username', 'User Name', 'User Id', 'UserId']);
   const idCol = findCol(headers, ['Student ID', 'StudentID', 'Student Id']);
+  const emailCol = findCol(headers, ['Email', 'Email Address', 'E-mail', 'EmailAddress']);
+  const lastCol = findCol(headers, ['Last Name', 'LastName', 'Last']);
+  const firstCol = findCol(headers, ['First Name', 'FirstName', 'First']);
   const aliasToStudent = new Map((mapping || []).map((s) => [s.alias, s]));
 
-  const rowByUser = new Map();
-  const rowById = new Map();
+  // #9: match by Username → Student ID → email → Last|First name.
+  const nameKey = (last, first) => `${norm(last)}|${norm(first)}`;
+  const rowByUser = new Map(), rowById = new Map(), rowByEmail = new Map(), rowByName = new Map();
   dataRows.forEach((r, i) => {
     if (uCol >= 0 && r[uCol]) rowByUser.set(norm(r[uCol]), i);
     if (idCol >= 0 && r[idCol]) rowById.set(String(r[idCol]).trim(), i);
+    if (emailCol >= 0 && r[emailCol]) rowByEmail.set(norm(r[emailCol]), i);
+    if (lastCol >= 0 && r[lastCol]) rowByName.set(nameKey(r[lastCol], firstCol >= 0 ? r[firstCol] : ''), i);
   });
 
   const filled = dataRows.map((r) => r.slice());
@@ -92,8 +98,10 @@ export function joinGrades({ headers, dataRows, results, mapping, columnIndex, f
     let ri;
     if (stu.bbUsername && rowByUser.has(norm(stu.bbUsername))) ri = rowByUser.get(norm(stu.bbUsername));
     else if (stu.studentId && rowById.has(String(stu.studentId).trim())) ri = rowById.get(String(stu.studentId).trim());
+    else if (stu.studentEmail && rowByEmail.has(norm(stu.studentEmail))) ri = rowByEmail.get(norm(stu.studentEmail));
+    else if (stu.lastName && rowByName.has(nameKey(stu.lastName, stu.firstName))) ri = rowByName.get(nameKey(stu.lastName, stu.firstName));
     if (ri === undefined) {
-      unmatchedResults.push({ alias: res.alias, reason: 'no matching BB row (username/student id)' });
+      unmatchedResults.push({ alias: res.alias, reason: 'no matching BB row (username/id/email/name)' });
       continue;
     }
     if (columnIndex >= 0) filled[ri][columnIndex] = formatGrade(res);
