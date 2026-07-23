@@ -15,6 +15,11 @@ import LandingPage from "./LandingPage";
 // ── At-Risk Predictor (Phase 3) — input-layer constants ──
 // localStorage key for persisted course profiles.
 const DM3A_COURSES_KEY = "dm3a-courses";
+// Active grading session snapshot (Finding #16 resume). ONLY alias-keyed data is
+// ever written here (persistence is gated on a vaulted course + a plaintext scan);
+// never the unlocked mapping or activeRoster (those hold real names).
+const DM3A_SESSION_KEY = "dm3a-session";
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // offer resume for 24h
 // Assignment weight options: visible label -> stored lowercase value.
 // The backend treats quiz/midterm/exam as high-weight (R4) — values must be exact.
 const ASSIGNMENT_WEIGHTS = [
@@ -544,6 +549,11 @@ export default function DM3AGraderV5() {
   const [vaultBusy, setVaultBusy] = useState(false);
   const [vaultNote, setVaultNote] = useState("");
   const [securePass, setSecurePass] = useState({}); // courseCode -> passphrase input (secure action)
+
+  // ── Finding #16: session persistence + resume + SPA history ────────────────
+  const [pendingResume, setPendingResume] = useState(null); // { courseCode, count, savedAt } | null
+  const histReady = useRef(false); // replaceState the first entry, pushState after
+  const fromPop = useRef(false);   // suppress the push triggered by a popstate-driven setStep
   // Manage Courses editor state
   const [addCourseCode, setAddCourseCode] = useState("");
   const [addProfessorEmail, setAddProfessorEmail] = useState("");
@@ -892,6 +902,99 @@ export default function DM3AGraderV5() {
     });
     setStudentMapping(mapping);
   }, [results, activeCourseCode, activeRoster, activeVaulted]);
+
+  // ── Desync fix: activeRoster is a MIRROR of the unlock state, never a separate
+  // source that can drift from the doorway/Manage-Courses card. Both surfaces and
+  // this all read unlockedRosters, so they stay consistent by construction.
+  useEffect(() => {
+    const profile = courses.find((c) => c.courseCode === activeCourseCode);
+    setActiveRoster(unlockedRosters[activeCourseCode] || (profile ? profile.roster || [] : []));
+  }, [unlockedRosters, activeCourseCode, courses]);
+
+  // ── Finding #16 (1): persist the active session — BLIND-SAFE. Only for a
+  // vaulted course (results are alias-keyed by construction), and only if a
+  // plaintext scan against the unlocked mapping comes back clean. Never persists
+  // activeRoster or the unlocked mapping (those hold real names).
+  useEffect(() => {
+    try {
+      if (step !== "results" || results.length === 0 || !activeVaulted) return;
+      const snap = {
+        v: 1, savedAt: Date.now(), courseCode: activeCourseCode, count: results.length,
+        subject, assignment, assignmentWeight, assignmentIndex, semesterTag,
+        results, overrides, studentMapping, activeStudent,
+      };
+      if (namesUnlocked) {
+        const secrets = (unlockedRosters[activeCourseCode] || []).flatMap((r) => [r.studentName, r.studentEmail]).filter(Boolean);
+        if (secrets.length && findPlaintext(snap, secrets).length > 0) return; // a real name slipped in — don't persist
+      }
+      localStorage.setItem(DM3A_SESSION_KEY, JSON.stringify(snap));
+    } catch { /* storage unavailable */ }
+  }, [step, results, overrides, studentMapping, activeStudent, activeCourseCode, subject, assignment, assignmentWeight, assignmentIndex, semesterTag, activeVaulted, namesUnlocked, unlockedRosters]);
+
+  // Restore-on-mount: offer resume if a recent snapshot exists for a known course.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DM3A_SESSION_KEY);
+      if (!raw) return;
+      const snap = JSON.parse(raw);
+      if (!snap || !Array.isArray(snap.results) || !snap.results.length) return;
+      if (Date.now() - (snap.savedAt || 0) > SESSION_MAX_AGE_MS) { localStorage.removeItem(DM3A_SESSION_KEY); return; }
+      setPendingResume({ courseCode: snap.courseCode, count: snap.count || snap.results.length, savedAt: snap.savedAt });
+    } catch { /* ignore malformed */ }
+  }, []);
+
+  // ── Finding #16 (2): SPA history — Back navigates views instead of exiting. ──
+  useEffect(() => {
+    if (fromPop.current) { fromPop.current = false; return; }
+    if (step === "grading") return; // transient — don't create a Back target on the spinner
+    const state = { dm3aStep: step, showLanding, isStudentMode };
+    if (!histReady.current) { window.history.replaceState(state, ""); histReady.current = true; }
+    else { window.history.pushState(state, ""); }
+  }, [step, showLanding, isStudentMode]);
+  useEffect(() => {
+    const onPop = (e) => {
+      fromPop.current = true;
+      const s = e.state || { dm3aStep: "login", showLanding: true };
+      setStep(s.dm3aStep || "login");
+      setShowLanding(s.showLanding !== undefined ? s.showLanding : true);
+      setIsStudentMode(!!s.isStudentMode);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // ── Finding #16 (3): warn before unload while a graded session is open. ──
+  useEffect(() => {
+    if (!(step === "results" && results.length > 0)) return;
+    const onBeforeUnload = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [step, results.length]);
+
+  // Restore a persisted session into the results view (alias-keyed; names require unlock).
+  function resumeSession() {
+    try {
+      const snap = JSON.parse(localStorage.getItem(DM3A_SESSION_KEY) || "null");
+      if (!snap || !Array.isArray(snap.results)) { setPendingResume(null); return; }
+      setResults(snap.results);
+      setOverrides(snap.overrides || {});
+      setStudentMapping(snap.studentMapping || {});
+      setActiveStudent(snap.activeStudent || 0);
+      setSubject(snap.subject || "");
+      setAssignment(snap.assignment || "");
+      if (snap.assignmentWeight) setAssignmentWeight(snap.assignmentWeight);
+      if (snap.assignmentIndex !== undefined) setAssignmentIndex(snap.assignmentIndex);
+      if (snap.semesterTag) setSemesterTag(snap.semesterTag);
+      if (snap.courseCode) selectActiveCourse(snap.courseCode);
+      setPendingResume(null);
+      setShowLanding(false);
+      setStep("results");
+    } catch { setPendingResume(null); }
+  }
+  function dismissResume() {
+    setPendingResume(null);
+    try { localStorage.removeItem(DM3A_SESSION_KEY); } catch { /* ignore */ }
+  }
 
   // Confirm = build the roster NOW from the current result names + selections
   // (keyed to each result's CURRENT studentName, so it cannot diverge), then
@@ -2380,11 +2483,25 @@ Return a JSON array with exactly ONE student object.`;
 
 
   // ── LOGIN SCREEN ──────────────────────────────────────────────────────────
+  // Resume banner (Finding #16) — fixed top bar, shown wherever it's placed. One
+  // screen renders at a time, so including it in several returns can't duplicate it.
+  const resumeMins = pendingResume ? Math.max(1, Math.round((Date.now() - pendingResume.savedAt) / 60000)) : 0;
+  const resumeBanner = pendingResume ? (
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 1200, background: "#0f2d5a", color: "#fff", padding: "10px 16px", display: "flex", justifyContent: "center", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 14 }}>
+      <span>↩ Resume session: <b>{pendingResume.courseCode || "session"}</b> · {pendingResume.count} graded · {resumeMins} min ago</span>
+      <button style={{ background: "#f5c842", color: "#0f2d5a", border: "none", borderRadius: 6, padding: "5px 14px", fontWeight: 700, cursor: "pointer" }} onClick={resumeSession}>Resume</button>
+      <button style={{ background: "transparent", color: "#fff", border: "1px solid rgba(255,255,255,0.5)", borderRadius: 6, padding: "5px 12px", cursor: "pointer" }} onClick={dismissResume}>Dismiss</button>
+    </div>
+  ) : null;
+
   if (step === "login" && showLanding)
-    return <LandingPage
-      onSignIn={() => { setShowLanding(false); setStep("role-select"); }}
-      onStudentStart={() => { setShowLanding(false); setIsStudentMode(true); setStep("student-upload"); }}
-    />;
+    return <>
+      {resumeBanner}
+      <LandingPage
+        onSignIn={() => { setShowLanding(false); setStep("role-select"); }}
+        onStudentStart={() => { setShowLanding(false); setIsStudentMode(true); setStep("student-upload"); }}
+      />
+    </>;
 
   // ── ROLE SELECTOR ────────────────────────────────────────────────────────
   if (step === "role-select") return (
@@ -2725,6 +2842,7 @@ Return a JSON array with exactly ONE student object.`;
   // ── SETUP SCREEN ──────────────────────────────────────────────────────────
   if (step === "setup") return (
     <div style={styles.root}>
+      {resumeBanner}
       <HelpPanel />
       <TierGuideModal />
       <div style={styles.header}>
@@ -3594,7 +3712,7 @@ Return a JSON array with exactly ONE student object.`;
                 }}
               />
               <button style={styles.btnOutline} onClick={() => downloadStudentReport(student)}>⬇ Download Report</button>
-              <button style={styles.btn} onClick={() => { setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
+              <button style={styles.btn} onClick={() => { try { localStorage.removeItem(DM3A_SESSION_KEY); } catch { /* ignore */ } setPendingResume(null); setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
             </div>
           </div>
         </div>
