@@ -189,8 +189,12 @@ export default function BlindGrading() {
       const vault = await getVault(courseId);
       if (!vault) { setError('No server vault found for this course.'); return; }
       const mapping = await decryptMapping(vault.blob, passphrase);
-      setDecryptedPreview(mapping.students || []);
-      setStatus(`Decrypted ${mapping.students.length} students from the server vault (in memory only).`);
+      const loaded = mapping.students || [];
+      setDecryptedPreview(loaded);
+      // #21: populate students so the alias table renders and "Alias cards PDF"
+      // is enabled after Load + decrypt (it was disabled → dead click before).
+      setStudents(loaded);
+      setStatus(`Decrypted ${loaded.length} students. You can now view the alias table below and print alias cards.`);
     } catch (e) {
       setError(e.message); // wrong passphrase surfaces here, cleanly
     } finally {

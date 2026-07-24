@@ -551,6 +551,7 @@ export default function DM3AGraderV5() {
   const [vaultBusy, setVaultBusy] = useState(false);
   const [vaultNote, setVaultNote] = useState("");
   const [securePass, setSecurePass] = useState({}); // courseCode -> passphrase input (secure action)
+  const [viewAliases, setViewAliases] = useState(null); // #21: courseCode whose alias table is shown
 
   // ── Finding #16: session persistence + resume + SPA history ────────────────
   const [pendingResume, setPendingResume] = useState(null); // { courseCode, count, savedAt } | null
@@ -926,6 +927,21 @@ export default function DM3AGraderV5() {
     if (activeCourseCode === course.courseCode) setActiveRoster(live);
     persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, vaultUpdatedAt: new Date().toISOString() } : c));
     setVaultNote(`Roster updated for ${course.courseCode}: ${added.length} added, ${dropped.length} dropped (flagged, not deleted).`);
+  }
+
+  // #21: print alias cards for an UNLOCKED course (read the codes to distribute).
+  async function printAliasCards(course) {
+    const roster = unlockedRosters[course.courseCode] || [];
+    if (!roster.length) { setVaultNote("Unlock this course first to view/print alias cards."); return; }
+    const { buildAliasCardPdf } = await import("./blind/aliasCardPdf.js");
+    const bytes = await buildAliasCardPdf(course.courseCode, roster, course.vaultCreatedAt);
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${course.courseCode}-alias-cards.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   // Purge a course's server vault + in-memory copies (per-course purge button).
@@ -3130,6 +3146,15 @@ Return a JSON array with exactly ONE student object.`;
                           ? <span style={{ color: "#0F6E56", marginLeft: 8 }}>· Unlocked ({unlockedRosters[c.courseCode].length} students · names in memory only)</span>
                           : <button type="button" style={{ ...styles.btnOutline, marginLeft: 8, padding: "2px 8px", fontSize: 12 }} onClick={() => openUnlock(c.courseCode, "Enter your course passphrase to unlock names for this session.", () => {})}>Unlock</button>}
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                          {/* #21: view/print the codes so the instructor can distribute them (unlocked only). */}
+                          {unlockedRosters[c.courseCode] && (
+                            <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} onClick={() => setViewAliases(viewAliases === c.courseCode ? null : c.courseCode)}>
+                              {viewAliases === c.courseCode ? "Hide aliases" : "👁 View aliases"}
+                            </button>
+                          )}
+                          {unlockedRosters[c.courseCode] && (
+                            <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} disabled={vaultBusy} onClick={() => runVault(() => printAliasCards(c))}>🖨 Print alias cards</button>
+                          )}
                           <label style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, cursor: "pointer", margin: 0 }}>
                             Update roster (CSV)
                             <input type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) runVault(() => updateRosterFromCsv(c, f)); }} />
@@ -3137,6 +3162,19 @@ Return a JSON array with exactly ONE student object.`;
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} disabled={vaultBusy} onClick={() => runVault(async () => { const v = await getVault(c.courseCode); if (v) downloadKeyBackup(c.courseCode, v.blob); else setVaultNote("No vault found to back up."); })}>Re-download backup</button>
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, color: "#9f1239", borderColor: "#9f1239" }} disabled={vaultBusy} onClick={() => { if (window.confirm(`Purge the secured roster for ${c.courseCode}? Grade history stays; the encrypted name mapping is removed from the server and this session.`)) runVault(() => purgeCourseVault(c)); }}>Purge vault</button>
                         </div>
+                        {/* #21: current roster/aliases, so an instructor can read the codes before updating or distributing. */}
+                        {viewAliases === c.courseCode && unlockedRosters[c.courseCode] && (
+                          <div style={{ marginTop: 8, maxHeight: 200, overflowY: "auto", border: "1px solid #E6E4DC", borderRadius: 6 }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                              <thead><tr><th style={{ textAlign: "left", padding: "4px 8px", background: "#F8F7F4" }}>Alias</th><th style={{ textAlign: "left", padding: "4px 8px", background: "#F8F7F4" }}>Student</th></tr></thead>
+                              <tbody>
+                                {unlockedRosters[c.courseCode].map((s, si) => (
+                                  <tr key={si}><td style={{ padding: "4px 8px", fontFamily: "monospace", color: "#2860C8", borderTop: "1px solid #EFEEE8" }}>{s.alias}</td><td style={{ padding: "4px 8px", borderTop: "1px solid #EFEEE8" }}>{s.studentName || `${s.firstName || ""} ${s.lastName || ""}`.trim()}</td></tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div style={{ fontSize: 12 }}>
