@@ -10,6 +10,7 @@ import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
 import { diffRoster } from "./blind/rosterDiff.js";
 import { buildNameIndex } from "./blind/translate.js";
 import { findPlaintext } from "./blind/zeroPlaintext.js";
+import { redactNameZone, terminateRedactor } from "./blind/redact.js";
 import LandingPage from "./LandingPage";
 
 // ── At-Risk Predictor (Phase 3) — input-layer constants ──
@@ -504,6 +505,11 @@ export default function DM3AGraderV5() {
   const [includeNameOnReport, setIncludeNameOnReport] = useState(false); // blind: opt-in real name in report body
   const [pageNotes, setPageNotes] = useState([]); // #18: reference-file page usage ("Using X of Y pages")
   const [answerKeyPages, setAnswerKeyPages] = useState(null); // #20: answer-key page count surfaced
+  const [redactStats, setRedactStats] = useState(null); // §3.3: { checked, redacted, noun } | null — per-run name-zone redaction count
+  const [submissionImages, setSubmissionImages] = useState([]); // #23: per-result { image, redacted } — the page-1 AS GRADED (redacted for vaulted). In-memory only; never persisted or sent.
+  const [submissionOpen, setSubmissionOpen] = useState(false); // #23: show/hide the "submitted page as graded" image
+  const [redactWarning, setRedactWarning] = useState(false); // #25 invariant: vaulted+toggle ON but redaction never ran → surface loudly
+  const [bbStubNote, setBbStubNote] = useState(0); // #25: count of Blackboard .txt submission stubs excluded from grading
   const [problemInventory, setProblemInventory] = useState({}); // studentName → inventory array
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -767,6 +773,55 @@ export default function DM3AGraderV5() {
   // ── Blind Grading (Part A): vault migration + unlock + roster update ────────
   const courseByCode = (code) => courses.find((c) => c.courseCode === code);
   const isVaulted = (c) => !!(c && c.vaulted);
+  // §3.3: automatic name-zone redaction is ON by default for vaulted courses; the
+  // per-course toggle (c.redactNames === false) opts out.
+  const redactionOn = (c) => isVaulted(c) && c?.redactNames !== false;
+  const MIN_SCAN_WORDS = 6; // fewer OCR words than this on every page ⇒ treat as "couldn't scan" (blur/glare/angle)
+
+  // §3.3: redact the top-band name zone on page 1 of one or more submission page
+  // images BEFORE they are graded or stored. Fail-open by construction — a failed
+  // OCR/canvas op returns the original image so grading is never blocked. Returns
+  // { pages, checked, redacted }. `all` OCRs every page (used for batch scans where
+  // student boundaries aren't known until Claude's boundary pass).
+  async function redactPageImages(pages, { all = false } = {}) {
+    const out = (pages || []).slice();
+    const targets = all ? out.map((_, i) => i) : (out.length ? [0] : []);
+    let redacted = 0, maxWords = 0;
+    const perPage = new Array(out.length).fill(null); // per-page {redacted, words} for per-student attribution
+    for (const i of targets) {
+      try {
+        // The per-student alias isn't known at grade time (mapping is confirmed
+        // post-grade), so stamp a neutral, honest marker so the box reads as an
+        // intentional redaction rather than a scan artifact.
+        const r = await redactNameZone(out[i], "REDACTED");
+        out[i] = r.base64;
+        const words = typeof r.words === "number" ? r.words : 0;
+        perPage[i] = { redacted: !!r.redacted, words };
+        if (r.redacted) redacted++;
+        maxWords = Math.max(maxWords, words);
+      } catch { /* fail-open: keep the original page */ }
+    }
+    return { pages: out, checked: targets.length, redacted, maxWords, perPage };
+  }
+
+  // #26/§3.3 SINGLE SOURCE OF TRUTH. The banner count and the per-student badges are
+  // derived from ONE artifact: the per-result redaction fields (_subId/_pageRedacted/
+  // _pageScanned). Deduped by submission so a student Claude split into multiple result
+  // objects is never double-counted. A page whose OCR read almost nothing (MIN_SCAN_WORDS)
+  // is reported as "couldn't scan — verify manually", NOT silently as "no name detected".
+  function deriveRedactStats(entries) {
+    // entries: [{ subId, redacted, scanned, present } | null]. present = the submission
+    // actually went through OCR (had a page image). Deduped by subId.
+    const bySub = new Map();
+    for (const e of entries || []) {
+      if (!e || e.subId == null || !e.present) continue;
+      const cur = bySub.get(e.subId) || { redacted: false, scanned: false };
+      bySub.set(e.subId, { redacted: cur.redacted || !!e.redacted, scanned: cur.scanned || !!e.scanned });
+    }
+    let checked = 0, redacted = 0, unscanned = 0;
+    for (const v of bySub.values()) { checked++; if (v.redacted) redacted++; else if (!v.scanned) unscanned++; }
+    return { checked, redacted, unscanned, noun: "submissions" };
+  }
 
   // ── Blind Grading (Part B): client-side name overlay ────────────────────────
   // Alias→name index for the ACTIVE course, built from the in-memory decrypted
@@ -1066,6 +1121,9 @@ export default function DM3AGraderV5() {
       if (snap.assignmentIndex !== undefined) setAssignmentIndex(snap.assignmentIndex);
       if (snap.semesterTag) setSemesterTag(snap.semesterTag);
       if (snap.courseCode) selectActiveCourse(snap.courseCode);
+      // Resumed sessions carry no thumbnails/redaction counts (not persisted); clear
+      // any stale per-run notices so they don't bleed across sessions. (#23/#25)
+      setSubmissionImages([]); setRedactStats(null); setRedactWarning(false); setBbStubNote(0);
       setPendingResume(null);
       setShowLanding(false);
       setStep("results");
@@ -1670,6 +1728,16 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     setProblemInventory({});
     setPageNotes([]); // #18: fresh page-usage notes per grade run
     setAnswerKeyPages(null); // #20
+    setRedactStats(null); // §3.3: fresh redaction count per grade run
+    setSubmissionImages([]); // #23: fresh per-run submission thumbnails
+    setRedactWarning(false); setBbStubNote(0); // #25
+    // §3.3: name-zone redaction gate — active vaulted course + per-course toggle.
+    const doRedact = redactionOn(courseByCode(activeCourseCode));
+    // #23/#26: per-result redaction ledger AND thumbnail source, parallel to allResults.
+    // ONE artifact — the banner count and the badges both derive from this. padImages
+    // fills every result added for the current submission with the same entry.
+    const pageImages = [];
+    const padImages = (entry) => { while (pageImages.length < allResults.length) pageImages.push(entry || null); };
     if (answerKeyFile && /pdf/i.test(`${answerKeyFile.type} ${answerKeyFile.name}`)) {
       getPdfPageCount(answerKeyFile).then((pc) => { if (pc) setAnswerKeyPages(pc); });
     }
@@ -1694,7 +1762,7 @@ work_present must be true ONLY when classification is HAS_WORK.`;
         const isVeryLarge = fileMB > 20;
         setLoadingMsg(`Converting batch PDF to images${isLarge ? " (compressing — large file)..." : "..."}`);
         console.log(`[pdfToImages call] batch PDF: "${file?.name}" type="${file?.type}"`);
-        const batchPageImages = await pdfToImages(file, 60, isVeryLarge ? 800 : isLarge ? 1000 : 1200, isVeryLarge ? 0.5 : isLarge ? 0.6 : 0.75);
+        let batchPageImages = await pdfToImages(file, 60, isVeryLarge ? 800 : isLarge ? 1000 : 1200, isVeryLarge ? 0.5 : isLarge ? 0.6 : 0.75);
         console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
         if (!batchPageImages || batchPageImages.length === 0) {
           throw new Error("Could not convert PDF to images — please try a different file");
@@ -1723,6 +1791,8 @@ work_present must be true ONLY when classification is HAS_WORK.`;
           for (let c = 0; c < chunks.length; c++) {
             const studentNum = c + 1;
             setLoadingMsg(`Grading student ${studentNum} of ${chunks.length}...`);
+            let subRed = false, subScan = false;
+            if (doRedact) { const rr = await redactPageImages(chunks[c], { all: true }); chunks[c] = rr.pages; subRed = rr.redacted > 0; subScan = rr.maxWords >= MIN_SCAN_WORDS; }
             const chunkBlocks = chunks[c].flatMap((b64, i) => [
               { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
               { type: "text", text: `Page ${c * pagesPerStudent + i + 1}` }
@@ -1765,9 +1835,15 @@ Return a JSON array with exactly ONE student object.`;
                 instructorNote: `Failed on pages ${c * pagesPerStudent + 1}–${Math.min((c + 1) * pagesPerStudent, batchPageImages.length)}.`
               });
             }
+            padImages({ image: chunks[c][0], redacted: subRed, scanned: subScan, subId: `fixed${c}` }); // #23/#26
           }
         } else {
-          // Auto-detect: TWO-PASS — boundary detection first, then grade each student individually
+          // Auto-detect: TWO-PASS — boundary detection first, then grade each student individually.
+          // §3.3: boundaries aren't known yet and the boundary pass sends EVERY page to
+          // Claude, so redact the name zone on every page up front (all:true) — no name
+          // reaches the API even during boundary detection.
+          let batchPerPage = null;
+          if (doRedact) { const rr = await redactPageImages(batchPageImages, { all: true }); batchPageImages = rr.pages; batchPerPage = rr.perPage; }
           const boundarySystemPrompt = systemPrompt + `
 You are scanning a batch of student exams to find student boundaries only.
 Return ONLY a JSON array: [{"studentName":"Name","startPage":0,"endPage":2},...]
@@ -1825,6 +1901,15 @@ Return a JSON array with exactly ONE student object.`;
             } catch (err) {
               allResults.push({ studentName, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message, strengths: [], growthAreas: [], instructorNote: `Failed on pages ${startPage + 1}-${endPage + 1}.` });
             }
+            // #26: attribute the up-front bulk redaction to THIS student's page range.
+            let subRed = false, subScan = false;
+            if (doRedact && batchPerPage) {
+              for (let pi = startPage; pi <= endPage; pi++) {
+                const pp = batchPerPage[pi];
+                if (pp) { if (pp.redacted) subRed = true; if ((pp.words || 0) >= MIN_SCAN_WORDS) subScan = true; }
+              }
+            }
+            padImages({ image: studentPages[0], redacted: subRed, scanned: subScan, subId: `auto${s}` }); // #23/#26
           }
         }
         } catch (err) {
@@ -1842,6 +1927,9 @@ Return a JSON array with exactly ONE student object.`;
           if (b64 === null) { heicFailed.push(studentFiles[i].name); continue; }
           compressedPages.push(b64);
         }
+        // §3.3: redact the name zone on page 1 of this combined submission.
+        let combinedRedacted = false, combinedScanned = false;
+        if (doRedact && compressedPages.length) { const rr = await redactPageImages(compressedPages, { all: true }); rr.pages.forEach((p, i) => { compressedPages[i] = p; }); combinedRedacted = rr.redacted > 0; combinedScanned = rr.maxWords >= MIN_SCAN_WORDS; }
 
         // Build shared context blocks (assignment + answer key) — images only, no raw PDF base64
         const sharedBlocks = [];
@@ -1950,11 +2038,13 @@ Return a JSON array with exactly ONE student object covering only the problems o
           growthAreas: []
         });
       }
+      padImages({ image: compressedPages[0], redacted: combinedRedacted, scanned: combinedScanned, subId: "combined" }); // #23/#26
 
     } else {
       // ── INDIVIDUAL FILES MODE ─────────────────────────────────────────────
       for (let i = 0; i < studentFiles.length; i++) {
         setLoadingMsg(`Grading file ${i + 1} of ${studentFiles.length}...`);
+        let subImg = null, subRed = false, subScan = false; // #23/#26: page-1 as graded for this file
 
         try {
           let f = studentFiles[i]; // may be reassigned after server-side HEIC/DOCX conversion
@@ -1998,6 +2088,19 @@ Return a JSON array with exactly ONE student object covering only the problems o
             if (studentB64 === null) { heicFailed.push(f.name); continue; }
           }
           const studentMediaType = isImage(f) ? "image/jpeg" : f.type;
+
+          // §3.3: redact the name zone on page 1 of this student's submission before
+          // it is graded or stored. One submission = one file here.
+          if (doRedact) {
+            if (isPDF && pdfPageImages) {
+              const rr = await redactPageImages(pdfPageImages); pdfPageImages = rr.pages;
+              subRed = rr.redacted > 0; subScan = rr.maxWords >= MIN_SCAN_WORDS;
+            } else if (studentB64) {
+              const rr = await redactPageImages([studentB64]); studentB64 = rr.pages[0];
+              subRed = rr.redacted > 0; subScan = rr.maxWords >= MIN_SCAN_WORDS;
+            }
+          }
+          subImg = isPDF ? (pdfPageImages && pdfPageImages[0]) : studentB64; // #23: page-1 as graded
 
           // Build shared context blocks — images only, no raw PDF base64
           const sharedBlocks = [];
@@ -2072,13 +2175,30 @@ Return a JSON array with one object per student found in the submission.`;
             growthAreas: []
           });
         }
+        padImages({ image: subImg, redacted: subRed, scanned: subScan, subId: `file${i}` }); // #23/#26
       }
     }
 
+    padImages(null); // #23: reconcile any tail so pageImages aligns 1:1 with results
+    setSubmissionImages(pageImages.map(e => e ? { image: e.image, redacted: !!e.redacted, scanned: !!e.scanned } : null));
     setResults(allResults);
     setOverrides({});
     setActiveStudent(0);
     if (heicFailed.length > 0) setHeicFailedFiles(heicFailed);
+    // §3.3/#26: derive the banner from the SAME per-submission ledger the badges use.
+    if (doRedact) {
+      const stats = deriveRedactStats(pageImages.map(e => e ? { subId: e.subId, redacted: e.redacted, scanned: e.scanned, present: e.image != null } : null));
+      if (stats.checked > 0) setRedactStats(stats);
+      // #25/#26 invariant: banner redacted count MUST equal distinct redacted-badge
+      // submissions (same source ⇒ equal), and gradable work ⇒ something was checked.
+      const badgeSubs = new Set(pageImages.filter(e => e && e.redacted && e.image).map(e => e.subId)).size;
+      const anyGradable = allResults.some(r => !["HEIC", "DOCX"].includes(r.overallTier));
+      if (stats.redacted !== badgeSubs || (anyGradable && stats.checked === 0)) {
+        console.error(`[REDACT INVARIANT] banner redacted=${stats.redacted} vs badge submissions=${badgeSubs}, checked=${stats.checked}`);
+        setRedactWarning(true);
+      }
+      try { terminateRedactor(); } catch { /* ignore */ }
+    }
     setLoading(false);
     setStep("results");
   }
@@ -3162,6 +3282,11 @@ Return a JSON array with exactly ONE student object.`;
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} disabled={vaultBusy} onClick={() => runVault(async () => { const v = await getVault(c.courseCode); if (v) downloadKeyBackup(c.courseCode, v.blob); else setVaultNote("No vault found to back up."); })}>Re-download backup</button>
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, color: "#9f1239", borderColor: "#9f1239" }} disabled={vaultBusy} onClick={() => { if (window.confirm(`Purge the secured roster for ${c.courseCode}? Grade history stays; the encrypted name mapping is removed from the server and this session.`)) runVault(() => purgeCourseVault(c)); }}>Purge vault</button>
                         </div>
+                        {/* §3.3: automatic name-zone redaction toggle (default ON for vaulted courses). */}
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: "pointer", color: "#5A5A55" }}>
+                          <input type="checkbox" checked={c.redactNames !== false} onChange={e => persistCourses(courses.map(x => x.courseCode === c.courseCode ? { ...x, redactNames: e.target.checked } : x))} />
+                          <span>Auto-redact handwritten names on page 1 before grading{c.redactNames !== false ? "" : " (off)"}</span>
+                        </label>
                         {/* #21: current roster/aliases, so an instructor can read the codes before updating or distributing. */}
                         {viewAliases === c.courseCode && unlockedRosters[c.courseCode] && (
                           <div style={{ marginTop: 8, maxHeight: 200, overflowY: "auto", border: "1px solid #E6E4DC", borderRadius: 6 }}>
@@ -3582,8 +3707,13 @@ Return a JSON array with exactly ONE student object.`;
             console.log('[BB GROUPS]', JSON.stringify(bbGroups.map(g => ({ id: g.studentId, n: g.files.length }))));
             setStep("grading");
             setLoading(true);
+            setRedactStats(null); setSubmissionImages([]); setRedactWarning(false); setBbStubNote(0); // #25
             const allResults = [];
             const heicFailed = [];
+            // #25/§3.3/#23: this BB-batch path was previously uninstrumented — wire in
+            // the same name-zone redaction + thumbnail capture + counts as handleGrade.
+            const doRedact = redactionOn(courseByCode(activeCourseCode));
+            const bbStubFiles = []; // Blackboard .txt submission stubs excluded from grading
             const courseConf = COURSE_CONFIGS[subject] || {};
             const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"]);
             function chunkArray(arr, size) {
@@ -3601,11 +3731,19 @@ Return a JSON array with exactly ONE student object.`;
               // Reverse so later-uploaded files (notebook pages) come before cover sheet.
               // If instructor checked "skip cover sheet", drop the last file (earliest upload).
               let groupFiles = group.files.map(item => item.file).reverse();
+              // #25: Blackboard exports a per-submission .txt metadata stub alongside the
+              // real attachments — never gradable. Exclude and count for an honest note.
+              groupFiles = groupFiles.filter(f => {
+                if (/\.txt$/i.test(f.name)) { bbStubFiles.push(f.name); return false; }
+                return true;
+              });
               if (skipCoverSheet.has(group.studentId) && groupFiles.length > 1) {
                 console.log(`[${group.studentId}] Skipping cover sheet: ${groupFiles[groupFiles.length - 1].name}`);
                 groupFiles = groupFiles.slice(0, -1);
               }
               const studentLabel = `Student_${group.studentId}`;
+              // #25: a group with only a stub (no gradable attachment) — skip, don't grade blank.
+              if (groupFiles.length === 0) return [];
               try {
                 const sharedBlocks = [];
                 if (assignmentFile) {
@@ -3685,14 +3823,29 @@ Return a JSON array with exactly ONE student object.`;
                     }
                   } catch (err) { console.error("Error processing file", f.name, err); }
                 }
+                // §3.3/#25: redact name zones across ALL of this student's pages — BB
+                // reverses files so the name-bearing cover sheet can land anywhere, so
+                // page-1-only isn't safe here. Then capture page 1 as graded (#23).
+                let groupRedacted = false, groupScanned = false;
+                if (doRedact && pageBlocks.length) {
+                  const b64s = pageBlocks.map(b => b.source.data);
+                  const rr = await redactPageImages(b64s, { all: true });
+                  rr.pages.forEach((p, i) => { pageBlocks[i].source.data = p; });
+                  groupRedacted = rr.redacted > 0;
+                  groupScanned = rr.maxWords >= MIN_SCAN_WORDS;
+                }
+                const groupImg = pageBlocks.length ? pageBlocks[0].source.data : null;
+                // #26: tag every result for this submission with the SAME redaction fields
+                // that drive the banner — one truth. _subId dedupes multi-result groups.
+                const tagImg = (arr) => arr.map(s => ({ ...s, _pageImage: groupImg, _pageRedacted: groupRedacted, _pageScanned: groupScanned, _subId: `bb${gi}` }));
                 // If all files failed as HEIC, return a special unprocessable result instead of grading
                 if (pageBlocks.length === 0 && docxFailedForStudent.length > 0) {
                   console.warn(`[BB batch] ${studentLabel}: all files are DOCX — returning DOCX badge`);
-                  return [{ studentName: studentLabel, overallTier: "DOCX", dimensions: { conceptualUnderstanding: "DOCX", problemSolving: "DOCX", workShown: "DOCX", accuracy: "DOCX" }, problems: [], feedback: "Submission could not be processed — Word documents are not supported. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `DOCX files: ${docxFailedForStudent.join(", ")}` }];
+                  return tagImg([{ studentName: studentLabel, overallTier: "DOCX", dimensions: { conceptualUnderstanding: "DOCX", problemSolving: "DOCX", workShown: "DOCX", accuracy: "DOCX" }, problems: [], feedback: "Submission could not be processed — Word documents are not supported. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `DOCX files: ${docxFailedForStudent.join(", ")}` }]);
                 }
                 if (pageBlocks.length === 0 && heicFailedForStudent.length > 0) {
                   console.warn(`[BB batch] ${studentLabel}: all files are unprocessable HEIC — returning HEIC badge`);
-                  return [{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }];
+                  return tagImg([{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }]);
                 }
                 const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
@@ -3739,9 +3892,9 @@ Return a JSON array with exactly ONE student object.`;
                   _inventory: bbInventory || null
                 }));
                 if (bbInventory) setProblemInventory(prev => ({ ...prev, [studentLabel]: bbInventory }));
-                return normalized;
+                return tagImg(normalized);
               } catch (err) {
-                return [{ studentName: studentLabel, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message || "Error processing this student.", strengths: [], growthAreas: [] }];
+                return tagImg([{ studentName: studentLabel, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message || "Error processing this student.", strengths: [], growthAreas: [] }]);
               }
             });
 
@@ -3752,7 +3905,28 @@ Return a JSON array with exactly ONE student object.`;
               const chunkResults = await Promise.all(chunks[ci]);
               chunkResults.forEach(arr => allResults.push(...arr));
             }
-            setResults(allResults);
+            // #23/#26: derive the banner from the SAME per-submission fields as the
+            // badges (one truth), THEN lift thumbnails and strip transient fields so
+            // they never reach persisted results / the server.
+            if (doRedact) {
+              const stats = deriveRedactStats(allResults.map(r => ({ subId: r._subId, redacted: r._pageRedacted, scanned: r._pageScanned, present: r._pageImage != null })));
+              if (stats.checked > 0) setRedactStats(stats);
+              // #25/#26 invariant: the banner's redacted count MUST equal the number of
+              // distinct submissions showing a redacted badge — same source, so equal by
+              // construction; a mismatch (or gradable work with nothing checked) is a bug.
+              const badgeSubs = new Set(allResults.filter(r => r._pageRedacted && r._pageImage).map(r => r._subId)).size;
+              const anyGradable = allResults.some(r => !["HEIC", "DOCX"].includes(r.overallTier));
+              if (stats.redacted !== badgeSubs || (anyGradable && stats.checked === 0)) {
+                console.error(`[REDACT INVARIANT] BB batch: banner redacted=${stats.redacted} vs badge submissions=${badgeSubs}, checked=${stats.checked}`);
+                setRedactWarning(true);
+              }
+              try { terminateRedactor(); } catch { /* ignore */ }
+            }
+            const imgs = allResults.map(r => (r._pageImage ? { image: r._pageImage, redacted: !!r._pageRedacted, scanned: !!r._pageScanned } : null));
+            const cleanResults = allResults.map(({ _pageImage, _pageRedacted, _pageScanned, _subId, ...rest }) => rest);
+            setSubmissionImages(imgs);
+            setBbStubNote(bbStubFiles.length); // #25
+            setResults(cleanResults);
             setOverrides({});
             setActiveStudent(0);
             setLoading(false);
@@ -3788,6 +3962,37 @@ Return a JSON array with exactly ONE student object.`;
     return (
       <div style={styles.root}>
         {unlockModal}
+        {/* #25 invariant: redaction should have run on this vaulted batch but didn't. */}
+        {redactWarning && (
+          <div style={{ background: "#FCEBEB", border: "1px solid #E5A3A3", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#9f1239", fontWeight: 600 }}>
+            ⚠ Name-zone redaction did NOT run on this batch even though this course is secured and the toggle is on. Do not rely on redaction for this session — verify the sheets manually before sharing.
+          </div>
+        )}
+        {/* #25: Blackboard .txt submission stubs were excluded from grading. */}
+        {bbStubNote > 0 && (
+          <div style={{ background: "#EEF3FA", border: "1px solid #B9CDE8", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#2A4B7C" }}>
+            📎 {bbStubNote} file{bbStubNote === 1 ? "" : "s"} look{bbStubNote === 1 ? "s" : ""} like Blackboard submission stubs (.txt metadata) — excluded from grading.
+          </div>
+        )}
+        {/* §3.3/#26: name-zone redaction summary — count only, never a name, derived from
+            the SAME per-submission ledger as the per-student badges (one truth). */}
+        {redactStats && (() => {
+          const clean = Math.max(0, redactStats.checked - redactStats.redacted - redactStats.unscanned);
+          return (
+            <div style={{ background: "#E7F2EE", border: "1px solid #9FCBBB", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#0F6E56" }}>
+              {redactStats.redacted > 0 && <div>🛡 Redacted name zones on <b>{redactStats.redacted} of {redactStats.checked}</b> {redactStats.noun} before grading.</div>}
+              {clean > 0 && <div>No printed name field detected on <b>{clean}</b> {clean === 1 ? "submission" : "submissions"}. <span style={{ color: "#5A5A55" }}>(The scanner reads print, not handwriting — a handwritten name with no printed label can still pass through.)</span></div>}
+              {redactStats.redacted === 0 && clean === 0 && redactStats.unscanned === 0 && <div>Name-zone redaction ran on {redactStats.checked} {redactStats.noun}.</div>}
+            </div>
+          );
+        })()}
+        {/* #26: submissions OCR couldn't read — a real name may remain AND may have
+            reached the grader (Claude reads handwriting far better than Tesseract). */}
+        {redactStats && redactStats.unscanned > 0 && (
+          <div style={{ background: "#FDF2E3", border: "1px solid #E5B769", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#8a4b00", fontWeight: 600 }}>
+            ⚠ Could not scan <b>{redactStats.unscanned}</b> {redactStats.unscanned === 1 ? "submission" : "submissions"} — the photo was too blurry / angled / low-contrast for the redaction scanner, so {redactStats.unscanned === 1 ? "it was" : "they were"} NOT redacted. <b>The AI grader may still read what the scanner could not</b>, so a real name may have reached it. Verify by hand before sharing — look for the “⚠ couldn’t scan” tag on the student cards.
+          </div>
+        )}
         {(pageNotes.length > 0 || answerKeyPages) && (
           <div style={{ background: "#FFF3CD", border: "1px solid #FFCA2C", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#856404" }}>
             {answerKeyPages && <div>📄 Answer key: <b>{answerKeyPages} page{answerKeyPages === 1 ? "" : "s"}</b> — all sent to the grader (document block).</div>}
@@ -4041,6 +4246,30 @@ Return a JSON array with exactly ONE student object.`;
                   </div>
               }
               <p style={{ margin: 0, fontSize: 13, color: "#5A5A55" }}>{subject} · {assignment}</p>
+              {/* #23: the page-1 image exactly as it was graded/stored. For vaulted
+                  courses this is the REDACTED artifact — the black box + alias stamp
+                  where the handwritten name was — so the instructor (and a demo
+                  audience) can visually confirm the name never left the browser. */}
+              {submissionImages[activeStudent]?.image && (
+                <div style={{ marginTop: 8 }}>
+                  <button onClick={() => setSubmissionOpen(o => !o)} style={{ ...styles.btnOutline, padding: "3px 10px", fontSize: 12 }}>
+                    {submissionOpen ? "Hide submitted page" : "🖼 View submitted page (as graded)"}
+                  </button>
+                  {submissionImages[activeStudent].redacted
+                    ? <span style={{ marginLeft: 8, background: "#E7F2EE", color: "#0F6E56", border: "1px solid #9FCBBB", borderRadius: 4, fontSize: 11, fontWeight: 700, padding: "2px 7px" }}>🛡 name zone redacted</span>
+                    : (submissionImages[activeStudent].scanned === false && activeVaulted && (
+                        <span style={{ marginLeft: 8, background: "#FDF2E3", color: "#8a4b00", border: "1px solid #E5B769", borderRadius: 4, fontSize: 11, fontWeight: 700, padding: "2px 7px" }}>⚠ couldn’t scan — verify name by hand</span>
+                      ))}
+                  {submissionOpen && (
+                    <div style={{ marginTop: 8, border: "1px solid #E6E4DC", borderRadius: 8, overflow: "hidden", maxWidth: 520 }}>
+                      <img alt="Submitted page 1 as graded" src={`data:image/jpeg;base64,${submissionImages[activeStudent].image}`} style={{ display: "block", width: "100%" }} />
+                      <div style={{ padding: "6px 10px", fontSize: 11, color: "#5A5A55", background: "#FAF9F6" }}>
+                        Page 1 exactly as sent to the grader{submissionImages[activeStudent].redacted ? " — the handwritten name zone is boxed and stamped with the alias." : "."}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div style={{ textAlign: "right" }}>
               {(() => {
