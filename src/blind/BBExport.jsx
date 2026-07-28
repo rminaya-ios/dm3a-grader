@@ -35,9 +35,11 @@ export default function BBExport({ results, studentMapping, overrides, mapping, 
     reader.readAsText(file); // stays in the browser
   };
 
-  // Alias-keyed results for the join: the confirmed alias (or the AI-read one) + tier.
+  // Alias-keyed results for the join: ONLY the confirmed mapping alias. No fallback to
+  // s.studentName — on a BB batch that is "Student_<username>", which is not a real alias
+  // and would surface the raw username in the reconciliation. Skipped rows drop out. (#33)
   const exportResults = () => (results || []).map((s, i) => ({
-    alias: studentMapping[i] || s.studentName,
+    alias: studentMapping[i] || '',
     tier: (overrides[s.studentName] && overrides[s.studentName].overall) || s.overallTier,
   })).filter((r) => r.alias);
 

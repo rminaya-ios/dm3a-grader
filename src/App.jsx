@@ -4279,13 +4279,18 @@ Return a JSON array with exactly ONE student object.`;
         {(heicFailedFiles.length > 0 || results.some(s => s.overallTier === "DOCX")) && (
           <div style={{ background: "#FFF3CD", border: "2px solid #FFCA2C", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#856404" }}>
             {(() => {
-              const docxStudents = results.filter(s => s.overallTier === "DOCX").map(s => s.studentName);
+              const docxStudents = results.map((s, i) => ({ s, i })).filter(({ s }) => s.overallTier === "DOCX");
               const total = heicFailedFiles.length + docxStudents.length;
+              // #33: on a vaulted course the raw studentName/filename carries the username
+              // (or a real name in "jane_doe.pdf") — show a safe label / count, never the raw string.
+              const safeLabel = (s, i) => activeVaulted ? reportIdentity(s, i).display : s.studentName;
               return (<>
                 <strong>⚠️ {total} file(s) could not be processed (HEIC/DOCX format not supported).</strong> Ask those students to resubmit as JPG or PDF.
                 <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
-                  {heicFailedFiles.map((name, i) => <li key={"h" + i}>{name} (HEIC)</li>)}
-                  {docxStudents.map((name, i) => <li key={"d" + i}>{name} (DOCX)</li>)}
+                  {activeVaulted
+                    ? (heicFailedFiles.length > 0 && <li key="hc">{heicFailedFiles.length} HEIC file{heicFailedFiles.length === 1 ? "" : "s"} — check the ⚠ tags in the student list</li>)
+                    : heicFailedFiles.map((name, i) => <li key={"h" + i}>{name} (HEIC)</li>)}
+                  {docxStudents.map(({ s, i }) => <li key={"d" + i}>{safeLabel(s, i)} (DOCX)</li>)}
                 </ul>
               </>);
             })()}
