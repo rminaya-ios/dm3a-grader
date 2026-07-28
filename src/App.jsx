@@ -841,6 +841,16 @@ export default function DM3AGraderV5() {
   const showNameWithAlias = (value) =>
     (namesUnlocked && nameIndex.isAlias(value) ? `${nameIndex.toName(value)} (${value})` : value);
 
+  // #32: the roster student's display name for a chosen mapping value (alias | email).
+  const rosterLabelForValue = (val) => {
+    if (!val) return "";
+    const r = (activeRoster || []).find((rr) => (activeVaulted ? rr.alias : rr.studentEmail) === val);
+    return r ? (r.studentName || val) : val;
+  };
+  // #32: indices (other than `self`) already mapped to the same roster student.
+  const duplicateMapIndices = (val, self) =>
+    !val ? [] : results.map((_s, j) => j).filter((j) => j !== self && studentMapping[j] === val);
+
   function downloadKeyBackup(courseCode, blob) {
     try {
       const b = new Blob([JSON.stringify(blob, null, 2)], { type: "application/json" });
@@ -1149,6 +1159,17 @@ export default function DM3AGraderV5() {
         () => setVaultNote('Course unlocked — click “Confirm & record” again to record.')
       );
       return;
+    }
+    // #32: a roster student mapped to >1 submission loses a grade unless the student
+    // genuinely submitted more than once. Require an explicit override, not a hard block.
+    const usedBy = {};
+    results.forEach((_s, i) => { const v = studentMapping[i]; if (v) (usedBy[v] = usedBy[v] || []).push(i); });
+    const dups = Object.entries(usedBy).filter(([, idxs]) => idxs.length > 1);
+    if (dups.length) {
+      const lines = dups.map(([v, idxs]) => `• ${rosterLabelForValue(v)} → Submissions ${idxs.map((j) => j + 1).join(", ")}`).join("\n");
+      if (!window.confirm(`${dups.length} student${dups.length === 1 ? " is" : "s are"} assigned to more than one submission:\n\n${lines}\n\nThis is only correct if the student actually submitted more than once — otherwise a grade will be lost. Record anyway?`)) {
+        return;
+      }
     }
     // Build the recording roster + payload. Blind (vaulted) courses send
     // ALIAS-ONLY records — no studentName/studentEmail ever leaves the browser.
@@ -4128,27 +4149,43 @@ Return a JSON array with exactly ONE student object.`;
             {(() => {
               const mappedCount = results.reduce((n, _s, i) => n + (studentMapping[i] ? 1 : 0), 0);
               const skipCount = results.length - mappedCount;
+              const dupCount = Object.values(results.reduce((acc, _s, i) => { const v = studentMapping[i]; if (v) acc[v] = (acc[v] || 0) + 1; return acc; }, {})).filter((c) => c > 1).length;
               return (
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#5A5A55", marginBottom: 12 }}>
                   {mappedCount} of {results.length} students mapped · {skipCount} will be skipped (not tracked).
+                  {dupCount > 0 && <span style={{ color: "#9f1239", display: "block", marginTop: 4 }}>⚠ {dupCount} student{dupCount === 1 ? " is" : "s are"} assigned to more than one submission — a grade is lost unless they submitted more than once.</span>}
                 </div>
               );
             })()}
 
-            {results.map((s, i) => (
+            {results.map((s, i) => {
+              const dupIdx = duplicateMapIndices(studentMapping[i], i); // #32
+              return (
               <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "center", marginBottom: 8 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>
-                  {showName(s.studentName)}
-                  {namesUnlocked && nameIndex.isAlias(s.studentName) && (
-                    <span style={{ fontWeight: 400, fontSize: 11, color: "#888", marginLeft: 6 }}>({s.studentName})</span>
-                  )}
+                  {/* #28/#32: safe label on a vaulted course — never the source BB filename. */}
+                  {activeVaulted ? reportIdentity(s, i).display : showName(s.studentName)}
                   {/* #17: flag a detected ID that isn't in the course vault. */}
                   {activeVaulted && namesUnlocked && !nameIndex.isAlias(s.studentName) && (
                     <span style={{ fontWeight: 700, fontSize: 10, color: "#A32D2D", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
                       title="This detected ID was not found in the course vault — check the handwriting/roster.">⚠ not in vault</span>
                   )}
+                  {dupIdx.length > 0 && (
+                    <span style={{ fontWeight: 700, fontSize: 10, color: "#9f1239", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
+                      title="The same roster student is assigned to another submission.">⚠ also → Submission {dupIdx.map((j) => j + 1).join(", ")}</span>
+                  )}
                 </div>
-                <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => setStudentMapping(m => ({ ...m, [i]: e.target.value }))}>
+                <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => {
+                  const val = e.target.value;
+                  // #32: warn before creating a duplicate assignment; keep the old value if declined.
+                  if (val) {
+                    const other = results.map((_s, j) => j).find((j) => j !== i && studentMapping[j] === val);
+                    if (other !== undefined && !window.confirm(`${rosterLabelForValue(val)} is already assigned to Submission ${other + 1}. Assign anyway? (Only if this student submitted more than once.)`)) {
+                      return;
+                    }
+                  }
+                  setStudentMapping(m => ({ ...m, [i]: val }));
+                }}>
                   <option value="">— Skip (don't track) —</option>
                   {activeRoster.map((r, ri) => (
                     <option key={ri} value={activeVaulted ? r.alias : r.studentEmail}>
@@ -4157,7 +4194,8 @@ Return a JSON array with exactly ONE student object.`;
                   ))}
                 </select>
               </div>
-            ))}
+              );
+            })}
 
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
               <button type="button" style={styles.btn} onClick={confirmRoster}>
