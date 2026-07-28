@@ -67,6 +67,10 @@ const NAME_STOPWORDS = new Set([
   // titles + subjects — keep the instructor's own header line ("Dr. Minaya", "Precalculus")
   // from tripping the bare-pair rule on every sheet of a class template.
   'dr', 'mr', 'mrs', 'ms', 'mx', 'prof', 'professor', 'instructor', 'teacher', 'precalculus', 'precalc',
+  // assignment-title words — a title like "Radio Players - Performance Task" reads as a
+  // First-Last pair otherwise (#29).
+  'performance', 'task', 'project', 'presentation', 'essay', 'lab', 'report', 'portfolio',
+  'players', 'radio', 'satellite', 'portable', 'average', 'title', 'topic', 'due', 'name',
 ]);
 const isNameTok = (t) => {
   const c = clean(t);
@@ -162,6 +166,17 @@ export function findNameRegions(words, pairMaxY = Infinity) {
       if ((list[i].confidence ?? 100) < 30) continue;
       if (list[i].bbox.y1 > pairMaxY) continue;
       if (isNameTok(list[i].text) && isNameTok(list[i + 1].text)) {
+        // #29: a bare name line is JUST the name. If the pair sits on a line crowded
+        // with other Title-Case words it's a title/header ("Radio Players Performance
+        // Task"), not a name — skip it.
+        const py = (list[i].bbox.y0 + list[i].bbox.y1) / 2;
+        const lineH = list[i].bbox.y1 - list[i].bbox.y0;
+        let lineNameToks = 0;
+        for (const o of list) {
+          const om = (o.bbox.y0 + o.bbox.y1) / 2;
+          if (Math.abs(om - py) <= lineH && isNameTok(o.text)) lineNameToks++;
+        }
+        if (lineNameToks > 3) continue;
         const a = list[i].bbox, b = list[i + 1].bbox;
         regions.push({ x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) });
       }

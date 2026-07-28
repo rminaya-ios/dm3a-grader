@@ -2491,36 +2491,57 @@ Return a JSON array with exactly ONE student object.`;
   // Blind Grading (§4.3): resolve a graded student's REAL identity from the
   // unlocked mapping (client-side only). Returns null unless the active course is
   // vaulted + unlocked and the alias is found — so non-blind courses are untouched.
-  function resolveReportIdentity(student) {
-    if (!activeVaulted || !namesUnlocked) return null;
-    // #20: key off the CONFIRMED mapping (the alias the instructor confirmed at
-    // Confirm Students), falling back to the detected ID. normalizeAlias absorbs
-    // OCR whitespace so "TEST 11 - UEGR" still resolves.
-    const i = results.indexOf(student);
-    const confirmedAlias = (i >= 0 && studentMapping[i]) ? studentMapping[i] : student.studentName;
-    const roster = unlockedRosters[activeCourseCode] || [];
-    const m = roster.find((r) => normalizeAlias(r.alias) === normalizeAlias(confirmedAlias));
-    if (!m) return null;
-    let lastName = m.lastName || "";
-    let firstName = m.firstName || "";
-    if (!lastName && !firstName) {
-      const full = String(m.studentName || "").trim();
-      if (full.includes(",")) { const [l, f] = full.split(","); lastName = l.trim(); firstName = (f || "").trim(); }
-      else { const p = full.split(/\s+/); lastName = p[p.length - 1] || ""; firstName = p.slice(0, -1).join(" "); }
+  // ONE identity resolver for every surface — tabs, report title, both download paths.
+  // On a vaulted course it NEVER emits the source BB filename ("Student_<username>"):
+  // it resolves the CONFIRMED alias mapping to the real name, falls back to the alias,
+  // and finally to a neutral "Submission N" — never PII from the filename. (#24/#28/#30)
+  // `index` is passed explicitly (not results.indexOf) so the zip loop keys the mapping
+  // by the true results index. normalizeAlias absorbs OCR whitespace. (#20)
+  function reportIdentity(student, index) {
+    const i = (typeof index === "number" && index >= 0) ? index : results.indexOf(student);
+    const ov = overrides[student.studentName] || {};
+    const raw = String(student.studentName || "");
+    const isBBLabel = /^student[_-]/i.test(raw) || /_attempt_/i.test(raw); // filename-derived, never an identity
+    const submissionLabel = `Submission ${i >= 0 ? i + 1 : "?"}`;
+
+    if (!activeVaulted) {
+      const name = ov.renamedName || raw || submissionLabel;
+      return { resolved: false, realName: name, safeLabel: name, alias: "", lastName: "", firstName: "", display: name };
     }
-    // Return the CURRENT clean vault alias (not the detected one) for filenames/headers.
-    return { alias: m.alias, lastName, firstName, realName: m.studentName || `${firstName} ${lastName}`.trim() };
+    const confirmedAlias = (i >= 0 && studentMapping[i]) ? studentMapping[i] : (isBBLabel ? "" : raw);
+    const roster = unlockedRosters[activeCourseCode] || [];
+    const m = confirmedAlias ? roster.find((r) => normalizeAlias(r.alias) === normalizeAlias(confirmedAlias)) : null;
+    if (m) {
+      let lastName = m.lastName || "", firstName = m.firstName || "";
+      if (!lastName && !firstName) {
+        const full = String(m.studentName || "").trim();
+        if (full.includes(",")) { const [l, f] = full.split(","); lastName = l.trim(); firstName = (f || "").trim(); }
+        else { const p = full.split(/\s+/); lastName = p[p.length - 1] || ""; firstName = p.slice(0, -1).join(" "); }
+      }
+      const realName = m.studentName || `${firstName} ${lastName}`.trim();
+      const display = namesUnlocked ? `${realName} (${m.alias})` : m.alias;
+      return { resolved: true, realName, safeLabel: m.alias, alias: m.alias, lastName, firstName, display };
+    }
+    // Vaulted but unmapped: an alias if we somehow have one, else a NEUTRAL label — never `raw`.
+    const alias = (confirmedAlias && !isBBLabel) ? confirmedAlias : "";
+    const safe = alias || submissionLabel;
+    return { resolved: false, realName: safe, safeLabel: safe, alias, lastName: "", firstName: "", display: safe };
   }
 
-  function buildReportFilename(student) {
+  // Back-compat: the resolved real identity, or null when unresolved.
+  function resolveReportIdentity(student, index) {
+    const r = reportIdentity(student, index);
+    return r.resolved ? r : null;
+  }
+
+  function buildReportFilename(student, index) {
     const ov = overrides[student.studentName] || {};
     const tier = ov.overall || student.overallTier;
-    // Unlocked blind course: rename to LastName_FirstName_ALIAS_Report.pdf.
-    const id = resolveReportIdentity(student);
-    if (id) {
-      const san = (s) => String(s || "").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "") || "NA";
-      return `${san(id.lastName)}_${san(id.firstName)}_${san(id.alias)}_Report.pdf`;
-    }
+    const id = reportIdentity(student, index);
+    const san = (s) => String(s || "").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "") || "NA";
+    if (id.resolved) return `${san(id.lastName)}_${san(id.firstName)}_${san(id.alias)}_Report.pdf`;
+    // Vaulted-but-unresolved: alias or "Submission_N" — NEVER the BB filename. (#28/#30)
+    if (activeVaulted) return `${san(id.safeLabel)}_Report.pdf`;
     const displayName = ov.renamedName || student.studentName;
     const namePart = displayName.includes(",")
       ? displayName.split(",").map(p => p.trim()).reverse().join("_")
@@ -2529,13 +2550,15 @@ Return a JSON array with exactly ONE student object.`;
     return `${namePart}_${assignPart}_${tier}.pdf`;
   }
 
-  async function generateStudentPDF(student) {
+  async function generateStudentPDF(student, index) {
     const { jsPDF } = await import("jspdf");
     const ov = overrides[student.studentName] || {};
     // Blind (§4.3): body is alias-only by default (safe to distribute). Instructors
     // handing back in person can opt in to the real name, rendered client-side here.
-    const id = includeNameOnReport ? resolveReportIdentity(student) : null;
-    const displayName = id ? id.realName : (ov.renamedName || student.studentName);
+    // #28: the title is ALWAYS a safe label (alias / "Submission N") for a vaulted
+    // course — never the source BB filename — unless the real name is opted in.
+    const idobj = reportIdentity(student, index);
+    const displayName = (includeNameOnReport && idobj.resolved) ? idobj.realName : idobj.safeLabel;
     const tier = ov.overall || student.overallTier;
     const NAVY = [10, 22, 40];
     const GOLD = [201, 168, 76];
@@ -2656,22 +2679,25 @@ Return a JSON array with exactly ONE student object.`;
     return doc;
   }
 
-  async function downloadStudentReport(student) {
-    const doc = await generateStudentPDF(student);
-    doc.save(buildReportFilename(student));
+  async function downloadStudentReport(student, index) {
+    const doc = await generateStudentPDF(student, index);
+    doc.save(buildReportFilename(student, index));
   }
 
   async function downloadAllReports() {
     const { default: JSZip } = await import("jszip");
-    const gradeable = results.filter(s => !["HEIC", "DOCX"].includes(s.overallTier));
-    if (!gradeable.length) return;
+    if (!results.some(s => !["HEIC", "DOCX"].includes(s.overallTier))) return;
     setGeneratingReports(true);
     try {
       const zip = new JSZip();
-      for (const student of gradeable) {
-        const doc = await generateStudentPDF(student);
+      // #30: iterate by TRUE results index so buildReportFilename/reportIdentity read the
+      // confirmed studentMapping[i] — both download paths now share one identity resolver.
+      for (let i = 0; i < results.length; i++) {
+        const student = results[i];
+        if (["HEIC", "DOCX"].includes(student.overallTier)) continue;
+        const doc = await generateStudentPDF(student, i);
         const pdfBytes = doc.output("arraybuffer");
-        zip.file(buildReportFilename(student), pdfBytes);
+        zip.file(buildReportFilename(student, i), pdfBytes);
       }
       const blob = await zip.generateAsync({ type: "blob" });
       const date = new Date().toISOString().slice(0, 10);
@@ -4071,7 +4097,7 @@ Return a JSON array with exactly ONE student object.`;
                   e.target.value = "";
                 }}
               />
-              <button style={styles.btnOutline} onClick={() => downloadStudentReport(student)}>⬇ Download Report</button>
+              <button style={styles.btnOutline} onClick={() => downloadStudentReport(student, activeStudent)}>⬇ Download Report</button>
               <button style={styles.btn} onClick={() => { try { localStorage.removeItem(DM3A_SESSION_KEY); } catch { /* ignore */ } setPendingResume(null); setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
             </div>
           </div>
@@ -4208,7 +4234,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {activeVaulted ? showNameWithAlias(s.studentName) : (overrides[s.studentName]?.renamedName || showName(s.studentName))} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
+                {activeVaulted ? reportIdentity(s, i).display : (overrides[s.studentName]?.renamedName || showName(s.studentName))} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
               </button>
             );
           })}
@@ -4234,7 +4260,7 @@ Return a JSON array with exactly ONE student object.`;
                       style={{ ...styles.btn, padding: "4px 12px", fontSize: 12 }}>✓ Save</button>
                   </div>
                 : <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{activeVaulted ? showNameWithAlias(student.studentName) : (ov.renamedName || showName(student.studentName))}</h2>
+                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{activeVaulted ? reportIdentity(student, activeStudent).display : (ov.renamedName || showName(student.studentName))}</h2>
                     {!activeVaulted && (
                     <button
                       onClick={() => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: ov.renamedName || student.studentName } }))}

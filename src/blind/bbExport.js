@@ -40,12 +40,17 @@ export function findCol(headers, candidates) {
 }
 
 // Grade columns: BB score columns carry a "|<id>" suffix or "[Total Pts ...]"/
-// Points/Score/Grade, excluding the identity columns.
+// Points/Score/Grade, excluding identity columns AND calculated columns. Blackboard's
+// "Total" / "Weighted Total" are computed and ignore uploads, and filling them with tier
+// midpoints is semantically wrong — never offer them as a fill target. (#31)
 export function detectGradeColumns(headers) {
   const IDENTITY = /last name|first name|username|student id|availability|child course/i;
+  // The column NAME (before BB's "|<id>" suffix) being exactly a calculated total.
+  const CALCULATED = /^\s*(weighted\s+|running\s+)?total\s*$/i;
+  const baseName = (h) => String(h).split('|')[0].replace(/\[[^\]]*\]/g, '').trim();
   return (headers || [])
     .map((h, index) => ({ index, header: h }))
-    .filter((c) => c.header && !IDENTITY.test(c.header) &&
+    .filter((c) => c.header && !IDENTITY.test(c.header) && !CALCULATED.test(baseName(c.header)) &&
       /\|\s*\d|\[total pts|points|\bscore\b|\bgrade\b/i.test(c.header));
 }
 

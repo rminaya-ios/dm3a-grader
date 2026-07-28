@@ -28,8 +28,8 @@ export default function BBExport({ results, studentMapping, overrides, mapping, 
         const cols = detectGradeColumns(p.headers);
         setParsed(p);
         setGradeCols(cols);
-        setColIndex(cols.length ? cols[0].index : -1);
-        if (!cols.length) setError('No grade columns detected in this file — pick a column manually is not yet supported; check the BB export.');
+        setColIndex(-1); // #31: require an explicit column choice — never auto-pick (esp. a calculated Total)
+        if (!cols.length) setError('No fillable grade columns detected in this file (calculated Total/Weighted Total columns are excluded — Blackboard ignores uploads to them).');
       } catch (e) { setError(e.message); }
     };
     reader.readAsText(file); // stays in the browser
@@ -79,6 +79,7 @@ export default function BBExport({ results, studentMapping, overrides, mapping, 
         <div style={{ marginTop: 12 }}>
           <label style={S.label}>Grade column to fill</label>
           <select style={S.input} value={colIndex} onChange={(e) => setColIndex(Number(e.target.value))}>
+            <option value={-1}>— Select a grade column —</option>
             {gradeCols.map((c) => <option key={c.index} value={c.index}>{c.header}</option>)}
           </select>
 
