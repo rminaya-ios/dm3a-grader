@@ -508,6 +508,7 @@ export default function DM3AGraderV5() {
   const [redactStats, setRedactStats] = useState(null); // §3.3: { checked, redacted, noun } | null — per-run name-zone redaction count
   const [submissionImages, setSubmissionImages] = useState([]); // #23: per-result { image, redacted } — the page-1 AS GRADED (redacted for vaulted). In-memory only; never persisted or sent.
   const [submissionOpen, setSubmissionOpen] = useState(false); // #23: show/hide the "submitted page as graded" image
+  const [expandedThumb, setExpandedThumb] = useState(null); // #33: Confirm-row index whose thumbnail is expanded
   const [redactWarning, setRedactWarning] = useState(false); // #25 invariant: vaulted+toggle ON but redaction never ran → surface loudly
   const [bbStubNote, setBbStubNote] = useState(0); // #25: count of Blackboard .txt submission stubs excluded from grading
   const [problemInventory, setProblemInventory] = useState({}); // studentName → inventory array
@@ -573,6 +574,7 @@ export default function DM3AGraderV5() {
   // ── Phase 3 Step 2: roster confirmation (state only; nothing sent to server) ──
   const [confirmedRoster, setConfirmedRoster] = useState([]); // [{studentName, studentEmail}] — sent to /api/risk/record
   const [studentMapping, setStudentMapping] = useState({});   // result index -> chosen studentEmail ("" = skip)
+  const [autoMatched, setAutoMatched] = useState({});         // #33: result index -> true when pre-filled via BB-username join (verify)
   const [rosterConfirmed, setRosterConfirmed] = useState(false);
   const [trackingNote, setTrackingNote] = useState("");       // non-blocking status after a tracked confirm
 
@@ -841,6 +843,13 @@ export default function DM3AGraderV5() {
   const showNameWithAlias = (value) =>
     (namesUnlocked && nameIndex.isAlias(value) ? `${nameIndex.toName(value)} (${value})` : value);
 
+  // #33: a BB-download batch labels each result "Student_<username>". Recover that
+  // username (a JOIN KEY only — never displayed, never sent) so it can be matched
+  // against the vault's stored BB usernames.
+  const bbUsernameOf = (studentName) => {
+    const m = /^student[_-](.+)$/i.exec(String(studentName || "").trim());
+    return m ? m[1].trim() : "";
+  };
   // #32: the roster student's display name for a chosen mapping value (alias | email).
   const rosterLabelForValue = (val) => {
     if (!val) return "";
@@ -1034,18 +1043,27 @@ export default function DM3AGraderV5() {
     }
     const norm = (v) => String(v || "").trim().toLowerCase();
     const mapping = {};
+    const auto = {};
     results.forEach((s, i) => {
       if (activeVaulted) {
         // Blind: the AI read the student's alias; map it to the roster alias.
         // normalizeAlias absorbs OCR whitespace ("TEST 11 - UEGR" → "TEST11-UEGR").
         const match = activeRoster.find((r) => normalizeAlias(r.alias) === normalizeAlias(s.studentName));
-        mapping[i] = match ? match.alias : ""; // "" = Skip (not in vault)
+        if (match) { mapping[i] = match.alias; return; }
+        // #33: no alias on the sheet (a BB-download batch) — join the submission's
+        // source-filename username against the vault's stored BB username. The username
+        // is a key only; it is never displayed and never leaves the browser.
+        const user = bbUsernameOf(s.studentName);
+        const userMatch = user ? activeRoster.find((r) => r.bbUsername && norm(r.bbUsername) === norm(user)) : null;
+        if (userMatch) { mapping[i] = userMatch.alias; auto[i] = true; return; }
+        mapping[i] = ""; // Skip (not in vault)
       } else {
         const match = activeRoster.find((r) => norm(r.studentName) === norm(s.studentName));
         mapping[i] = match ? match.studentEmail : ""; // "" = Skip
       }
     });
     setStudentMapping(mapping);
+    setAutoMatched(auto);
   }, [results, activeCourseCode, activeRoster, activeVaulted]);
 
   // ── Desync fix: activeRoster is a MIRROR of the unlock state, never a separate
@@ -4143,16 +4161,18 @@ Return a JSON array with exactly ONE student object.`;
               {rosterConfirmed && <span style={{ fontSize: 12, fontWeight: 700, color: "#0F6E56" }}>✓ Confirmed</span>}
             </div>
             <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
-              Map each graded student to your roster. Names with no exact match default to Skip and won't be tracked. Nothing is sent to the server in this step.
+              Blackboard downloads map themselves — each submission is matched to your roster by its file, in your browser (the username is never shown or sent). Verify the ✓ auto-matches; assign any leftover ones. Nothing is sent to the server in this step.
             </p>
 
             {(() => {
               const mappedCount = results.reduce((n, _s, i) => n + (studentMapping[i] ? 1 : 0), 0);
+              const autoCount = results.reduce((n, _s, i) => n + ((autoMatched[i] && studentMapping[i]) ? 1 : 0), 0);
               const skipCount = results.length - mappedCount;
               const dupCount = Object.values(results.reduce((acc, _s, i) => { const v = studentMapping[i]; if (v) acc[v] = (acc[v] || 0) + 1; return acc; }, {})).filter((c) => c > 1).length;
               return (
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#5A5A55", marginBottom: 12 }}>
                   {mappedCount} of {results.length} students mapped · {skipCount} will be skipped (not tracked).
+                  {autoCount > 0 && <span style={{ color: "#0F6E56", display: "block", marginTop: 4 }}>✓ {autoCount} auto-matched from the submission files — verify below.</span>}
                   {dupCount > 0 && <span style={{ color: "#9f1239", display: "block", marginTop: 4 }}>⚠ {dupCount} student{dupCount === 1 ? " is" : "s are"} assigned to more than one submission — a grade is lost unless they submitted more than once.</span>}
                 </div>
               );
@@ -4160,39 +4180,59 @@ Return a JSON array with exactly ONE student object.`;
 
             {results.map((s, i) => {
               const dupIdx = duplicateMapIndices(studentMapping[i], i); // #32
+              const isBB = !!bbUsernameOf(s.studentName); // #33
+              const thumb = submissionImages[i]?.image; // #33: redacted page as graded
               return (
-              <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "center", marginBottom: 8 }}>
-                <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>
-                  {/* #28/#32: safe label on a vaulted course — never the source BB filename. */}
-                  {activeVaulted ? reportIdentity(s, i).display : showName(s.studentName)}
-                  {/* #17: flag a detected ID that isn't in the course vault. */}
-                  {activeVaulted && namesUnlocked && !nameIndex.isAlias(s.studentName) && (
-                    <span style={{ fontWeight: 700, fontSize: 10, color: "#A32D2D", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
-                      title="This detected ID was not found in the course vault — check the handwriting/roster.">⚠ not in vault</span>
+              <div key={i} style={{ marginBottom: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: `${thumb ? "46px " : ""}1fr 1fr`, gap: 10, alignItems: "center" }}>
+                  {thumb && (
+                    <img src={`data:image/jpeg;base64,${thumb}`} alt={`Submission ${i + 1}`} onClick={() => setExpandedThumb(expandedThumb === i ? null : i)}
+                      title="Click to enlarge the submitted page (as graded)"
+                      style={{ width: 46, height: 46, objectFit: "cover", objectPosition: "top", borderRadius: 4, border: "1px solid #D8D6CE", cursor: "pointer" }} />
                   )}
-                  {dupIdx.length > 0 && (
-                    <span style={{ fontWeight: 700, fontSize: 10, color: "#9f1239", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
-                      title="The same roster student is assigned to another submission.">⚠ also → Submission {dupIdx.map((j) => j + 1).join(", ")}</span>
-                  )}
-                </div>
-                <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => {
-                  const val = e.target.value;
-                  // #32: warn before creating a duplicate assignment; keep the old value if declined.
-                  if (val) {
-                    const other = results.map((_s, j) => j).find((j) => j !== i && studentMapping[j] === val);
-                    if (other !== undefined && !window.confirm(`${rosterLabelForValue(val)} is already assigned to Submission ${other + 1}. Assign anyway? (Only if this student submitted more than once.)`)) {
-                      return;
+                  <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>
+                    {/* #28/#32: safe label on a vaulted course — never the source BB filename. */}
+                    {activeVaulted ? reportIdentity(s, i).display : showName(s.studentName)}
+                    {/* #33: pre-filled via the BB-username join — asks the instructor to verify. */}
+                    {autoMatched[i] && studentMapping[i] && (
+                      <span style={{ fontWeight: 700, fontSize: 10, color: "#0F6E56", background: "#E7F2EE", border: "1px solid #9FCBBB", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
+                        title="Pre-filled by matching this submission's file to your roster (in your browser). Please verify.">✓ auto-matched from file — verify</span>
+                    )}
+                    {/* #17: flag a detected ALIAS that isn't in the vault (not applicable to BB-file rows). */}
+                    {activeVaulted && namesUnlocked && !isBB && !nameIndex.isAlias(s.studentName) && !studentMapping[i] && (
+                      <span style={{ fontWeight: 700, fontSize: 10, color: "#A32D2D", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
+                        title="This detected ID was not found in the course vault — check the handwriting/roster.">⚠ not in vault</span>
+                    )}
+                    {dupIdx.length > 0 && (
+                      <span style={{ fontWeight: 700, fontSize: 10, color: "#9f1239", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
+                        title="The same roster student is assigned to another submission.">⚠ also → Submission {dupIdx.map((j) => j + 1).join(", ")}</span>
+                    )}
+                  </div>
+                  <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => {
+                    const val = e.target.value;
+                    // #32: warn before creating a duplicate assignment; keep the old value if declined.
+                    if (val) {
+                      const other = results.map((_s, j) => j).find((j) => j !== i && studentMapping[j] === val);
+                      if (other !== undefined && !window.confirm(`${rosterLabelForValue(val)} is already assigned to Submission ${other + 1}. Assign anyway? (Only if this student submitted more than once.)`)) {
+                        return;
+                      }
                     }
-                  }
-                  setStudentMapping(m => ({ ...m, [i]: val }));
-                }}>
-                  <option value="">— Skip (don't track) —</option>
-                  {activeRoster.map((r, ri) => (
-                    <option key={ri} value={activeVaulted ? r.alias : r.studentEmail}>
-                      {activeVaulted ? `${r.studentName} (${r.alias})` : `${r.studentName} — ${r.studentEmail}`}
-                    </option>
-                  ))}
-                </select>
+                    setStudentMapping(m => ({ ...m, [i]: val }));
+                    setAutoMatched(a => ({ ...a, [i]: false })); // #33: a manual choice is no longer "auto — verify"
+                  }}>
+                    <option value="">— Skip (don't track) —</option>
+                    {activeRoster.map((r, ri) => (
+                      <option key={ri} value={activeVaulted ? r.alias : r.studentEmail}>
+                        {activeVaulted ? `${r.studentName} (${r.alias})` : `${r.studentName} — ${r.studentEmail}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {expandedThumb === i && thumb && (
+                  <div style={{ marginTop: 6, border: "1px solid #E6E4DC", borderRadius: 6, overflow: "hidden", maxWidth: 420 }}>
+                    <img src={`data:image/jpeg;base64,${thumb}`} alt={`Submission ${i + 1} — page as graded`} style={{ display: "block", width: "100%" }} />
+                  </div>
+                )}
               </div>
               );
             })}
