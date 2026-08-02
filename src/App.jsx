@@ -1465,7 +1465,7 @@ export default function DM3AGraderV5() {
   async function convertToJpegViaCanvas(file, quality = 0.75, maxDimension = 1600, { index, total } = {}) {
     const label = index != null ? `${index} of ${total}` : "";
     const originalKB = (file.size / 1024).toFixed(0);
-    console.log(`Converting image ${label}: ${file.name} (${originalKB} KB)`);
+    console.log(`Converting image ${label}: [submission] (${originalKB} KB)`);
 
     const conversionPromise = new Promise((resolve, reject) => {
       const img = new Image();
@@ -1504,15 +1504,15 @@ export default function DM3AGraderV5() {
     try {
       const b64 = await Promise.race([conversionPromise, timeoutPromise]);
       const outKB = (b64.length * 0.75 / 1024).toFixed(0);
-      console.log(`Converted ${file.name}: ${originalKB}KB -> ${outKB}KB`);
+      console.log(`Converted [submission]: ${originalKB}KB -> ${outKB}KB`);
       return b64;
     } catch(e) {
       const isHeicExt = /\.(heic|heif)$/i.test(file?.name || "");
       if (isHeicExt) {
-        console.warn(`[canvas failed] ${file.name}: HEIC conversion failed — returning null (not sending raw bytes)`);
+        console.warn(`[canvas failed] [submission]: HEIC conversion failed — returning null (not sending raw bytes)`);
         return null;
       }
-      console.warn(`[canvas failed] ${file.name}: ${e.message} — sending raw for server-side conversion`);
+      console.warn(`[canvas failed] [submission]: ${e.message} — sending raw for server-side conversion`);
       return fileToBase64(file);
     }
   }
@@ -1616,7 +1616,7 @@ export default function DM3AGraderV5() {
   // #18: default raised 3 → 15 so multi-page reference material isn't silently
   // truncated. onPages surfaces "Using X of Y pages" to the instructor.
   async function fileToImageBlocks(file, maxPages = 15, onPages) {
-    console.log(`[fileToImageBlocks] "${file?.name}" type="${file?.type}" looksLikeImage=${looksLikeImage(file)}`);
+    console.log(`[fileToImageBlocks] "[submission]" type="${file?.type}" looksLikeImage=${looksLikeImage(file)}`);
     if (looksLikeImage(file)) {
       const b64 = await convertToJpegViaCanvas(file, 0.75, 1200);
       return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }];
@@ -1832,11 +1832,11 @@ work_present must be true ONLY when classification is HAS_WORK.`;
       setLoadingMsg("Reading batch PDF and identifying students...");
       try {
         const fileMB = file.size / 1024 / 1024;
-        console.log(`[grading] batch PDF — file: "${file.name}", size: ${fileMB.toFixed(1)} MB`);
+        console.log(`[grading] batch PDF — file: "[submission]", size: ${fileMB.toFixed(1)} MB`);
         const isLarge = fileMB > 5;
         const isVeryLarge = fileMB > 20;
         setLoadingMsg(`Converting batch PDF to images${isLarge ? " (compressing — large file)..." : "..."}`);
-        console.log(`[pdfToImages call] batch PDF: "${file?.name}" type="${file?.type}"`);
+        console.log(`[pdfToImages call] batch PDF: "[submission]" type="${file?.type}"`);
         let batchPageImages = await pdfToImages(file, 60, isVeryLarge ? 800 : isLarge ? 1000 : 1200, isVeryLarge ? 0.5 : isLarge ? 0.6 : 0.75);
         console.log(`[batch PDF] converted ${batchPageImages.length} pages to images`);
         if (!batchPageImages || batchPageImages.length === 0) {
@@ -2144,16 +2144,16 @@ Return a JSON array with exactly ONE student object covering only the problems o
           // Image files: compress directly.
           let studentB64 = null;
           let pdfPageImages = null;
-          console.log(`[ROUTING] file: ${f.name}, size: ${fileSize}, isPDF: ${isPDF}`);
+          console.log(`[ROUTING] file: [submission], size: ${fileSize}, isPDF: ${isPDF}`);
           if (isPDF) {
             const fMB = f.size / 1024 / 1024;
             const fLarge = fMB > 5;
             const fVeryLarge = fMB > 20;
-            console.log(`[grading] individual PDF — file: "${f.name}", size: ${fMB.toFixed(1)} MB`);
+            console.log(`[grading] individual PDF — file: "[submission]", size: ${fMB.toFixed(1)} MB`);
             setLoadingMsg(`Converting ${f.name} to images${fLarge ? " (compressing — large file)..." : "..."}`);
-            console.log(`[pdfToImages call] individual: "${f?.name}" type="${f?.type}" — calling with maxPages=8`);
+            console.log(`[pdfToImages call] individual: "[submission]" type="${f?.type}" — calling with maxPages=8`);
             pdfPageImages = await pdfToImages(f, 8, fVeryLarge ? 800 : fLarge ? 1000 : 1200, fVeryLarge ? 0.5 : fLarge ? 0.6 : 0.75);
-            console.log(`[PDF→images] ${f.name}: pdfToImages returned ${pdfPageImages.length} page(s) (maxPages was 8)`);
+            console.log(`[PDF→images] [submission]: pdfToImages returned ${pdfPageImages.length} page(s) (maxPages was 8)`);
             if (!pdfPageImages || pdfPageImages.length === 0) {
               throw new Error("Could not convert PDF to images — please try a different file");
             }
@@ -3514,7 +3514,7 @@ Return a JSON array with exactly ONE student object.`;
                 // ── BB Batch Mode detection ──────────────────────────────
                 // Detect by presence of "_attempt_" — works for both numeric and username-based BB filenames
                 const hasBBFiles = files.length > 1 && files.some(f => f.name.includes("_attempt_"));
-                console.log('[BB DETECT] first filename:', files[0]?.name);
+                console.log('[BB DETECT] first filename:', '[submission]');
                 console.log('[BB DETECT] hasBBFiles:', hasBBFiles, '(any file contains "_attempt_":', files.some(f => f.name.includes("_attempt_")), ')');
                 setIsBBBatch(hasBBFiles);
                 if (hasBBFiles) {
@@ -3877,7 +3877,7 @@ Return a JSON array with exactly ONE student object.`;
                 return true;
               });
               if (skipCoverSheet.has(group.studentId) && groupFiles.length > 1) {
-                console.log(`[${group.studentId}] Skipping cover sheet: ${groupFiles[groupFiles.length - 1].name}`);
+                console.log(`[${group.studentId}] Skipping cover sheet: [submission]`);
                 groupFiles = groupFiles.slice(0, -1);
               }
               const studentLabel = `Student_${group.studentId}`;
@@ -3910,14 +3910,14 @@ Return a JSON array with exactly ONE student object.`;
                     const parsed = parseBBFilename(f.name);
                     const origName = parsed ? parsed.originalName : f.name;
                     if (seenOriginalNames.has(origName)) {
-                      console.log(`Skipping duplicate file: ${f.name} (original: ${origName})`);
+                      console.log(`Skipping duplicate file: [submission] (original: [submission])`);
                       continue;
                     }
                     seenOriginalNames.add(origName);
                     if (assignFingerprint) {
                       const fp = (await fileToBase64(f)).slice(0, 200);
                       if (fp === assignFingerprint) {
-                        console.log(`Skipping ${f.name} — matches Zone 1 assignment prompt`);
+                        console.log(`Skipping [submission] — matches Zone 1 assignment prompt`);
                         continue;
                       }
                     }
@@ -3926,7 +3926,7 @@ Return a JSON array with exactly ONE student object.`;
                     const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
                     const isDocxFile = /\.docx$/i.test(f.name) || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
                     if (isPDFFile) {
-                      console.log(`[pdfToImages call] BB batch student: "${f?.name}" type="${f?.type}"`);
+                      console.log(`[pdfToImages call] BB batch student: "[submission]" type="${f?.type}"`);
                     const imgs = await pdfToImages(f, 8, 2400, 0.92);
                       imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                     } else if (isDocxFile) {
@@ -3936,7 +3936,7 @@ Return a JSON array with exactly ONE student object.`;
                         const imgs = await pdfToImages(converted, 8, 2400, 0.92);
                         imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
                       } else {
-                        console.warn(`[BB batch] DOCX conversion failed, marking as badge: ${f.name}`);
+                        console.warn(`[BB batch] DOCX conversion failed, marking as badge: [submission]`);
                         docxFailedForStudent.push(f.name);
                       }
                     } else if (isHEICFile) {
@@ -3946,7 +3946,7 @@ Return a JSON array with exactly ONE student object.`;
                         const b64 = await fileToBase64(converted);
                         pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
                       } else {
-                        console.warn(`[BB batch] HEIC conversion failed, marking as badge: ${f.name}`);
+                        console.warn(`[BB batch] HEIC conversion failed, marking as badge: [submission]`);
                         heicFailed.push(f.name);
                         heicFailedForStudent.push(f.name);
                       }
@@ -3958,9 +3958,9 @@ Return a JSON array with exactly ONE student object.`;
                         pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
                       }
                     } else {
-                      console.warn(`Skipping unrecognised file type: ${f.name} (${f.type})`);
+                      console.warn(`Skipping unrecognised file type: [submission] (${f.type})`);
                     }
-                  } catch (err) { console.error("Error processing file", f.name, err); }
+                  } catch (err) { console.error("Error processing file", "[submission]", err); }
                 }
                 // §3.3/#25: redact name zones across ALL of this student's pages — BB
                 // reverses files so the name-bearing cover sheet can land anywhere, so
