@@ -823,7 +823,13 @@ export default function DM3AGraderV5() {
       if (r.redacted) redacted++;
       maxWords = Math.max(maxWords, words);
     }
-    console.log(`[REDACT] processed ${targets.length} page(s), page-1 name zone`);
+    // Report what actually happened so every grade shows plainly whether a name was
+    // found and blacked out — not just that the step ran. "no name detected" is a cue
+    // to eyeball the page-1 thumbnail.
+    const coverage = redacted > 0
+      ? `covered a name on ${redacted} of ${targets.length} page(s)`
+      : `no name detected in the name zone`;
+    console.log(`[REDACT] processed ${targets.length} page(s), page-1 name zone — ${coverage}`);
     return { pages: out, checked: targets.length, redacted, maxWords, perPage };
   }
 
@@ -1528,9 +1534,9 @@ export default function DM3AGraderV5() {
   }
 
   async function pdfToImages(file, maxPages = 16, maxDimension = 1200, quality = 0.75, onPages) {
-    console.log(`[pdfToImages] called: "${file?.name}" type="${file?.type}" maxPages=${maxPages}`);
+    console.log(`[pdfToImages] called: [submission] type="${file?.type}" maxPages=${maxPages}`);
     if (looksLikeImage(file)) {
-      console.warn(`[pdfToImages] BLOCKED — image file passed to pdfToImages: ${file.name} — returning empty array`);
+      console.warn(`[pdfToImages] BLOCKED — image file passed to pdfToImages (type=${file?.type}) — returning empty array`);
       return [];
     }
     try {
@@ -1566,7 +1572,7 @@ export default function DM3AGraderV5() {
       console.log(`[pdfToImages] produced ${images.length} images`);
       return images;
     } catch (err) {
-      console.error(`[pdfToImages] failed for file "${file?.name}":`, err);
+      console.error(`[pdfToImages] failed for submission (type=${file?.type}):`, err);
       throw err;
     }
   }
@@ -1783,7 +1789,7 @@ work_present must be true ONLY when classification is HAS_WORK.`;
   }
 
   async function handleGrade() {
-    console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.map(f => f.name));
+    console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.length);
     if (!subject || !studentFiles.length) {
       setError("Please select a subject and upload at least one student file.");
       return;
