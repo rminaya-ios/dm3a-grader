@@ -269,8 +269,10 @@ export async function redactNameZone(base64, alias) {
     }
     return { base64, redacted: false, words: maxWords };
   } catch (e) {
-    // Fail-open: never block grading on an OCR/canvas error.
-    if (typeof console !== 'undefined') console.warn('[redact] passing image through:', e && e.message);
-    return { base64, redacted: false, words: 0 };
+    // FAIL CLOSED (was fail-open): a genuine OCR/canvas/decode error must NOT let the
+    // image through unredacted. Re-throw so the caller aborts grading and asks the user
+    // to retry. (A clean page with no detected name returns normally above — not an error.)
+    if (typeof console !== 'undefined') console.warn('[redact] OCR/redaction error — aborting:', e && e.message);
+    throw e;
   }
 }

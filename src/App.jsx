@@ -775,34 +775,55 @@ export default function DM3AGraderV5() {
   // ── Blind Grading (Part A): vault migration + unlock + roster update ────────
   const courseByCode = (code) => courses.find((c) => c.courseCode === code);
   const isVaulted = (c) => !!(c && c.vaulted);
-  // §3.3: automatic name-zone redaction is ON by default for vaulted courses; the
-  // per-course toggle (c.redactNames === false) opts out.
-  const redactionOn = (c) => isVaulted(c) && c?.redactNames !== false;
+  // §3.3: automatic name-zone redaction runs on EVERY grading path by default —
+  // no course, non-secured, or secured alike (privacy-first). The ONLY way it's off
+  // is an explicit per-course opt-out (c.redactNames === false), which we log so a
+  // deliberate skip is always visible in the console and never looks like a silent
+  // failure. New courses have no such setting, so they default ON.
+  const redactionOn = (c) => {
+    if (c && c.redactNames === false) {
+      console.log("[REDACT] skipped — disabled by course setting");
+      return false;
+    }
+    return true;
+  };
   const MIN_SCAN_WORDS = 6; // fewer OCR words than this on every page ⇒ treat as "couldn't scan" (blur/glare/angle)
+  const REDACT_TIMEOUT_MS = 25000; // per-page OCR timeout — a stuck OCR must not hang grading
 
   // §3.3: redact the top-band name zone on page 1 of one or more submission page
-  // images BEFORE they are graded or stored. Fail-open by construction — a failed
-  // OCR/canvas op returns the original image so grading is never blocked. Returns
-  // { pages, checked, redacted }. `all` OCRs every page (used for batch scans where
-  // student boundaries aren't known until Claude's boundary pass).
+  // images BEFORE they are graded or stored. FAIL CLOSED — on any OCR/canvas error or a
+  // timeout it throws a tagged error (err.isRedaction) and the grading path aborts; an
+  // unredacted image must never reach the payload. Returns { pages, checked, redacted }.
+  // `all` OCRs every page (used for batch scans where student boundaries aren't known
+  // until Claude's boundary pass).
   async function redactPageImages(pages, { all = false } = {}) {
     const out = (pages || []).slice();
     const targets = all ? out.map((_, i) => i) : (out.length ? [0] : []);
     let redacted = 0, maxWords = 0;
     const perPage = new Array(out.length).fill(null); // per-page {redacted, words} for per-student attribution
     for (const i of targets) {
+      let r;
       try {
         // The per-student alias isn't known at grade time (mapping is confirmed
         // post-grade), so stamp a neutral, honest marker so the box reads as an
-        // intentional redaction rather than a scan artifact.
-        const r = await redactNameZone(out[i], "REDACTED");
-        out[i] = r.base64;
-        const words = typeof r.words === "number" ? r.words : 0;
-        perPage[i] = { redacted: !!r.redacted, words };
-        if (r.redacted) redacted++;
-        maxWords = Math.max(maxWords, words);
-      } catch { /* fail-open: keep the original page */ }
+        // intentional redaction rather than a scan artifact. Bounded by a timeout.
+        r = await Promise.race([
+          redactNameZone(out[i], "REDACTED"),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("OCR timed out")), REDACT_TIMEOUT_MS)),
+        ]);
+      } catch (e) {
+        // Fail closed: abort the whole grade run rather than send an unredacted image.
+        const err = new Error(`Name-zone redaction failed on page ${i + 1} (${e.message}).`);
+        err.isRedaction = true;
+        throw err;
+      }
+      out[i] = r.base64;
+      const words = typeof r.words === "number" ? r.words : 0;
+      perPage[i] = { redacted: !!r.redacted, words };
+      if (r.redacted) redacted++;
+      maxWords = Math.max(maxWords, words);
     }
+    console.log(`[REDACT] processed ${targets.length} page(s), page-1 name zone`);
     return { pages: out, checked: targets.length, redacted, maxWords, perPage };
   }
 
@@ -1285,11 +1306,16 @@ export default function DM3AGraderV5() {
       reader.onload = async () => {
         try {
           const base64 = reader.result.split(',')[1];
-          console.log('[convertOnServer] calling', endpoint, 'for', file.name, 'base64 length:', base64?.length);
+          // Privacy (Change 4): never send the student's real filename (e.g. "Jane Doe.pdf")
+          // off the device. The server only uses this to swap the extension on the output,
+          // so a generic "submission.<ext>" is all it needs.
+          const safeExt = (file.name.split('.').pop() || 'bin').toLowerCase();
+          const safeName = `submission.${safeExt}`;
+          console.log('[convertOnServer] calling', endpoint, 'base64 length:', base64?.length);
           const res = await fetch(`${SERVER_URL}/${endpoint}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base64, filename: file.name })
+            body: JSON.stringify({ base64, filename: safeName })
           });
           console.log('[convertOnServer] response status:', res.status);
           const data = await res.json();
@@ -1792,6 +1818,10 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     const isSinglePDF = studentFiles.length === 1 && file.type === "application/pdf" && isBatchPDF;
     const isTrueBatch = isSinglePDF && batchMode !== "single";
 
+    // Fail-closed redaction (Change 3): a tagged redaction error from any path below
+    // propagates to the catch at the end of this block and STOPS the whole grade run
+    // with a retry message — an unredacted image is never graded.
+    try {
     if (isTrueBatch) {
       setLoadingMsg("Reading batch PDF and identifying students...");
       try {
@@ -1952,7 +1982,8 @@ Return a JSON array with exactly ONE student object.`;
           }
         }
         } catch (err) {
-          allResults.push({ studentName: file.name, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: "Error processing batch PDF.", strengths: [], growthAreas: [], instructorNote: "Batch setup failed (PDF conversion or network error). Try uploading individual files per student." });
+          if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
+          allResults.push({ studentName: "Submission", overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: "Error processing batch PDF.", strengths: [], growthAreas: [], instructorNote: "Batch setup failed (PDF conversion or network error). Try uploading individual files per student." });
         }
     } else if (combineImages && studentFiles.length > 1 && studentFiles.every(f => f.type.startsWith("image/"))) {
       // ── COMBINED IMAGES MODE — chunk 2 images per API call, merge results ─
@@ -2066,6 +2097,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
         });
 
       } catch (err) {
+        if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
         allResults.push({
           studentName: studentLabel,
           overallTier: "P1",
@@ -2203,8 +2235,9 @@ Return a JSON array with one object per student found in the submission.`;
           const parsed = JSON.parse(cleaned);
           allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
         } catch (err) {
+          if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
           allResults.push({
-            studentName: f.name,
+            studentName: `Submission ${i + 1}`,
             overallTier: "P1",
             error: err.message,
             dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
@@ -2216,6 +2249,19 @@ Return a JSON array with one object per student found in the submission.`;
         }
         padImages({ image: subImg, redacted: subRed, scanned: subScan, subId: `file${i}` }); // #23/#26
       }
+    }
+    } catch (err) {
+      // Fail-closed abort (Change 3): a redaction failure stops the WHOLE grade run
+      // with a clear retry message — an unredacted image is never graded.
+      if (err && err.isRedaction) {
+        console.warn("[REDACT] grading aborted — " + err.message);
+        setError("Couldn't verify the name-zone redaction on page 1 — grading was stopped to protect privacy. Please retry.");
+        try { terminateRedactor(); } catch { /* ignore */ }
+        setLoading(false);
+        setStep("setup");
+        return;
+      }
+      throw err; // unexpected error — let it surface
     }
 
     padImages(null); // #23: reconcile any tail so pageImages aligns 1:1 with results
@@ -2314,6 +2360,28 @@ Return a JSON array with one object per student found in the submission.`;
           else heicFailed.push(f.name);
         }
       } catch { heicFailed.push(f.name); }
+    }
+
+    // ── NAME-ZONE REDACTION (Change 5) ────────────────────────────────────
+    // Redact the student's OWN submission before anything sends these images to the
+    // API — BOTH the gatekeeper check below and the grading call do. Privacy-first:
+    // student self-grading always redacts (no instructor opt-out applies) and fails
+    // closed. Files are flattened here with no per-file page-1 boundary, so we redact
+    // EVERY page — a handwritten name can land on any of them.
+    if (allImageBlocks.length) {
+      try {
+        const b64s = allImageBlocks.map(b => b.source.data);
+        const rr = await redactPageImages(b64s, { all: true });
+        rr.pages.forEach((p, i) => { allImageBlocks[i].source.data = p; });
+      } catch (err) {
+        console.warn("[REDACT] student grading aborted — " + (err && err.message));
+        setError("Couldn't verify the name-zone redaction — grading was stopped to protect privacy. Please retry.");
+        setLoading(false);
+        setStep("student-upload");
+        return;
+      } finally {
+        try { terminateRedactor(); } catch { /* ignore */ }
+      }
     }
 
     // ── GATEKEEPER ────────────────────────────────────────────────────────
@@ -3959,10 +4027,12 @@ Return a JSON array with exactly ONE student object.`;
                 if (bbInventory) setProblemInventory(prev => ({ ...prev, [studentLabel]: bbInventory }));
                 return tagImg(normalized);
               } catch (err) {
+                if (err && err.isRedaction) throw err; // fail-closed: abort the whole run, don't fake a row
                 return tagImg([{ studentName: studentLabel, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message || "Error processing this student.", strengths: [], growthAreas: [] }]);
               }
             });
 
+            try {
             const CHUNK_SIZE = 5;
             const chunks = chunkArray(gradingPromises, CHUNK_SIZE);
             for (let ci = 0; ci < chunks.length; ci++) {
@@ -3996,6 +4066,19 @@ Return a JSON array with exactly ONE student object.`;
             setActiveStudent(0);
             setLoading(false);
             setStep("results");
+            } catch (err) {
+              // Fail-closed abort (Change 3d): a redaction failure in ANY BB group stops
+              // the whole batch with a retry message — no unredacted image is graded.
+              if (err && err.isRedaction) {
+                console.warn("[REDACT] BB batch grading aborted — " + err.message);
+                setError("Couldn't verify the name-zone redaction on page 1 — grading was stopped to protect privacy. Please retry.");
+                try { terminateRedactor(); } catch { /* ignore */ }
+                setLoading(false);
+                setStep("setup");
+                return;
+              }
+              throw err; // unexpected error — let it surface
+            }
           }}>
           Grade All {bbGroups.length} Student(s) →
         </button>
