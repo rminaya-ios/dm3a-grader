@@ -2315,7 +2315,7 @@ Return a JSON array with one object per student found in the submission.`;
 
     // ── ALLOWANCE CHECK ───────────────────────────────────────────────────────
     try {
-      const checkRes = await fetch("/student-check-allowance", {
+      const checkRes = await fetch(`${SERVER_URL}/student-check-allowance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: normalEmail }),
@@ -2457,7 +2457,7 @@ Return a JSON array with exactly ONE student object.`;
     // ── RECORD SUBMISSION (only when gatekeeper passed and grading ran) ───────
     if (gradeSucceeded) {
       try {
-        const recRes = await fetch("/student-record-submission", {
+        const recRes = await fetch(`${SERVER_URL}/student-record-submission`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email: normalEmail }),
