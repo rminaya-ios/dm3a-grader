@@ -534,6 +534,8 @@ export default function DM3AGraderV5() {
   const [gatekeeperReason, setGatekeeperReason] = useState("");
   const [studentEmail, setStudentEmail] = useState("");
   const [studentClassCode, setStudentClassCode] = useState(""); // optional instructor code → unlimited
+  const [codeStatus, setCodeStatus] = useState("idle"); // idle|checking|valid|capped|invalid|error
+  const [codeCourse, setCodeCourse] = useState("");     // course name when a code checks out
   const [studentSubmissionsLeft, setStudentSubmissionsLeft] = useState(null);
   const [studentRubricFile, setStudentRubricFile] = useState(null);
 
@@ -1200,6 +1202,28 @@ export default function DM3AGraderV5() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
+
+  // Live-check the student's class code as they type (debounced). Drives the status
+  // line and whether the email field is shown/required — a valid code hides it.
+  useEffect(() => {
+    const code = (studentClassCode || "").trim();
+    if (!code) { setCodeStatus("idle"); setCodeCourse(""); return; }
+    setCodeStatus("checking");
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`${SERVER_URL}/code-check`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        });
+        const data = await res.json();
+        if (data.valid && data.allowed) { setCodeStatus("valid"); setCodeCourse(data.course || ""); }
+        else if (data.valid && !data.allowed) { setCodeStatus("capped"); setCodeCourse(data.course || ""); }
+        else { setCodeStatus("invalid"); setCodeCourse(""); }
+      } catch { setCodeStatus("error"); setCodeCourse(""); }
+    }, 700);
+    return () => clearTimeout(t);
+  }, [studentClassCode]);
 
   // ── Finding #16 (3): warn before unload while a graded session is open. ──
   useEffect(() => {
@@ -2348,11 +2372,6 @@ Return a JSON array with one object per student found in the submission.`;
   //   (b) blocks and returns early if the gatekeeper fires.
   // Never called from the instructor flow.
   async function handleStudentGrade() {
-    const normalEmail = (studentEmail || "").trim().toLowerCase();
-    if (!normalEmail || !normalEmail.includes("@")) {
-      setError("Please enter your email address before grading.");
-      return;
-    }
     if (!subject || !studentFiles.length) {
       setError("Please select a subject and upload your work.");
       return;
@@ -2362,8 +2381,9 @@ Return a JSON array with one object per student found in the submission.`;
     setGatekeeperReason("");
 
     // ── ACCESS CODE / ALLOWANCE CHECK ─────────────────────────────────────────
-    // A valid instructor code = unlimited for the session (free counter skipped).
+    // A valid instructor code = unlimited for the session with NO email collected.
     // codeContext, when set, rides along on the grade so the server can count/tag it.
+    // Invalid code => fall through to the free tier. Capped code => friendly screen.
     let codeContext = null;
     const enteredCode = (studentClassCode || "").trim();
 
@@ -2376,28 +2396,29 @@ Return a JSON array with one object per student found in the submission.`;
         });
         const data = await res.json();
         if (data.valid && data.allowed) {
-          // Unlimited for this session — no free-tier counter.
           codeContext = { code: enteredCode.toUpperCase(), course: data.course || "" };
-          setStudentSubmissionsLeft(null);
+          setStudentSubmissionsLeft(null); // unlimited — no counter, no email
         } else if (data.valid && !data.allowed) {
-          // The code is real but hit its daily cap — same friendly screen as free tier.
+          // Real code, daily cap reached — same friendly screen as the free tier.
           setStudentSubmissionsLeft(0);
           setError("");
           setStep("student-upload");
           return;
-        } else {
-          // Not recognized — gentle note; they can clear the box (blank = free tier)
-          // and grade, or get the right code. We don't grade on an unrecognized code.
-          setError("Code not recognized — check with your instructor. (Leave the code box empty to use the free tier.)");
-          return;
         }
+        // else: unrecognized — leave codeContext null and fall through to the free
+        // tier (the live status line under the code box already explains this).
       } catch {
         // Couldn't reach the check — fall through to the free tier rather than block.
       }
     }
 
+    const normalEmail = (studentEmail || "").trim().toLowerCase();
     if (!codeContext) {
-      // Free tier: the anonymous per-email counter (unchanged behavior).
+      // Free tier requires an email (for the anonymous per-email counter).
+      if (!normalEmail || !normalEmail.includes("@")) {
+        setError("Enter your email to use the free tier, or add a valid class code from your instructor.");
+        return;
+      }
       try {
         const checkRes = await fetch(`${SERVER_URL}/student-check-allowance`, {
           method: "POST",
@@ -3118,19 +3139,31 @@ Return a JSON array with exactly ONE student object.`;
 
         {(studentSubmissionsLeft === null || studentSubmissionsLeft > 0) && !gatekeeperBlocked && (
           <div style={styles.card}>
-            <label style={styles.label}>Your Email *</label>
-            <input
-              style={{ ...styles.input, marginBottom: 14 }}
-              type="email"
-              placeholder="you@school.edu"
-              value={studentEmail}
-              onChange={e => setStudentEmail(e.target.value)} />
+            {/* Class code first — a valid code hides the email field entirely. */}
             <label style={styles.label}>Have a class code from your instructor? <span style={{ fontWeight: 400, color: "#888" }}>(optional)</span></label>
             <input
-              style={{ ...styles.input, marginBottom: 14, fontFamily: "monospace", letterSpacing: "0.04em" }}
+              style={{ ...styles.input, marginBottom: codeStatus === "idle" ? 14 : 6, fontFamily: "monospace", letterSpacing: "0.04em" }}
               placeholder="e.g. DM3A-7K9QP2"
               value={studentClassCode}
               onChange={e => setStudentClassCode(e.target.value)} />
+            {codeStatus === "checking" && <div style={{ fontSize: 12.5, color: "#5A5A55", marginBottom: 14 }}>Checking code…</div>}
+            {codeStatus === "valid" && <div style={{ fontSize: 12.5, color: "#0F6E56", fontWeight: 600, marginBottom: 14 }}>✓ Class code accepted{codeCourse ? ` for ${codeCourse}` : ""} — unlimited access. No email needed.</div>}
+            {codeStatus === "capped" && <div style={{ fontSize: 12.5, color: "#9a6a00", marginBottom: 14 }}>This class code has reached today's limit. Remove it to use the free tier, or try again tomorrow.</div>}
+            {codeStatus === "invalid" && <div style={{ fontSize: 12.5, color: "#9a6a00", marginBottom: 14 }}>Code not recognized — check with your instructor, or leave it blank to use the free tier.</div>}
+            {codeStatus === "error" && <div style={{ fontSize: 12.5, color: "#5A5A55", marginBottom: 14 }}>Couldn't check that code right now — you can still use the free tier below.</div>}
+
+            {/* Email — only for the free tier; hidden once a code checks out. */}
+            {codeStatus !== "valid" && (
+              <>
+                <label style={styles.label}>Your Email *</label>
+                <input
+                  style={{ ...styles.input, marginBottom: 14 }}
+                  type="email"
+                  placeholder="you@school.edu"
+                  value={studentEmail}
+                  onChange={e => setStudentEmail(e.target.value)} />
+              </>
+            )}
             <label style={styles.label}>Subject *</label>
             <select style={{ ...styles.input, marginBottom: 14 }} value={subject} onChange={e => setSubject(e.target.value)}>
               <option value="">— Select a subject —</option>
@@ -3162,7 +3195,7 @@ Return a JSON array with exactly ONE student object.`;
             {error && <p style={{ color: "#A32D2D", fontSize: 13, marginTop: 10 }}>{error}</p>}
             <button
               style={{ ...styles.btn, width: "100%", marginTop: 16 }}
-              disabled={loading || !subject || !studentFiles.length || !studentEmail.trim()}
+              disabled={loading || !subject || !studentFiles.length || (codeStatus !== "valid" && !studentEmail.trim())}
               onClick={handleStudentGrade}>
               {loading ? loadingMsg || "Checking..." : "Get my feedback →"}
             </button>
@@ -3171,7 +3204,7 @@ Return a JSON array with exactly ONE student object.`;
 
         <p style={{ textAlign: "center", fontSize: 12, color: "#888", marginTop: 8 }}>
           <button style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
-            onClick={() => { setIsStudentMode(false); setStep("role-select"); setGatekeeperBlocked(false); setStudentFiles([]); setStudentEmail(""); setStudentSubmissionsLeft(null); setStudentRubricFile(null); }}>
+            onClick={() => { setIsStudentMode(false); setStep("role-select"); setGatekeeperBlocked(false); setStudentFiles([]); setStudentEmail(""); setStudentClassCode(""); setCodeStatus("idle"); setCodeCourse(""); setStudentSubmissionsLeft(null); setStudentRubricFile(null); }}>
             ← Back
           </button>
         </p>

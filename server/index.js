@@ -751,26 +751,31 @@ app.post('/instructor/access-code/generate', requireAdminKey, async (req, res) =
   }
 });
 
-// Validate a code + report today's headroom. PUBLIC but rate-limited per IP so
-// codes can't be brute-forced. body: { code } -> { valid, allowed, course?, usedToday?, max }
+// Validate a code + report today's headroom. PUBLIC. Anti-brute-force limiter
+// counts ONLY wrong guesses per IP/minute — a correct code is never rate-limited,
+// so a whole computer lab sharing one NAT IP and entering the SAME valid code is
+// never throttled, while guessing (mostly-invalid) attempts are still capped.
+// body: { code } -> { valid, allowed, course?, usedToday?, max }
 app.post('/code-check', async (req, res) => {
-  try {
-    const minute = Math.floor(Date.now() / 60000);
-    const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
-      .toString().split(',')[0].trim();
-    const rlKey = `codecheck:rl:${ip}:${minute}`;
-    const hits = await redis.incr(rlKey);
-    if (hits === 1) await redis.expire(rlKey, 65);
-    if (hits > CODE_CHECK_RL_PER_MIN) {
-      return res.status(429).json({ error: 'Too many attempts — try again shortly.' });
-    }
-  } catch (_e) { /* limiter is best-effort — never block a real student */ }
-
   try {
     const code = normalizeCode(req.body?.code);
     if (!code) return res.json({ valid: false });
     const raw = await redis.get(`accesscode:${code}`);
-    if (!raw) return res.json({ valid: false });
+    if (!raw) {
+      // Unknown code — count as a guess against the per-IP limit (best-effort).
+      try {
+        const minute = Math.floor(Date.now() / 60000);
+        const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+          .toString().split(',')[0].trim();
+        const rlKey = `codecheck:bad:${ip}:${minute}`;
+        const bad = await redis.incr(rlKey);
+        if (bad === 1) await redis.expire(rlKey, 65);
+        if (bad > CODE_CHECK_RL_PER_MIN) {
+          return res.status(429).json({ error: 'Too many attempts — try again shortly.' });
+        }
+      } catch (_e) { /* limiter is best-effort — never block a real student */ }
+      return res.json({ valid: false });
+    }
     const meta = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const countRaw = await redis.get(`codecount:${code}:${etDayKey()}`);
     const used = countRaw ? parseInt(countRaw, 10) : 0;
