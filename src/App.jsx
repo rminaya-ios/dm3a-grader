@@ -533,6 +533,7 @@ export default function DM3AGraderV5() {
   const [gatekeeperBlocked, setGatekeeperBlocked] = useState(false);
   const [gatekeeperReason, setGatekeeperReason] = useState("");
   const [studentEmail, setStudentEmail] = useState("");
+  const [studentClassCode, setStudentClassCode] = useState(""); // optional instructor code → unlimited
   const [studentSubmissionsLeft, setStudentSubmissionsLeft] = useState(null);
   const [studentRubricFile, setStudentRubricFile] = useState(null);
 
@@ -567,6 +568,12 @@ export default function DM3AGraderV5() {
   // Manage Courses editor state
   const [addCourseCode, setAddCourseCode] = useState("");
   const [addProfessorEmail, setAddProfessorEmail] = useState("");
+  // Student Access Codes: the admin key (shared with the admin dashboard via
+  // sessionStorage) authorizes code creation; per-course transient UI state.
+  const [accessKeyInput, setAccessKeyInput] = useState(() => sessionStorage.getItem("dm3a_admin_key") || "");
+  const [accessBusy, setAccessBusy] = useState("");     // courseCode currently generating, or ""
+  const [accessNote, setAccessNote] = useState("");     // small status/error line for the access-code area
+  const [copiedCode, setCopiedCode] = useState("");     // courseCode whose code was just copied
   const [editingCourseCode, setEditingCourseCode] = useState(null); // courseCode being edited, or null
   const [editCourseCode, setEditCourseCode] = useState("");
   const [editProfessorEmail, setEditProfessorEmail] = useState("");
@@ -717,6 +724,47 @@ export default function DM3AGraderV5() {
       setActiveRoster([]);
     }
     if (editingCourseCode === code) setEditingCourseCode(null);
+  }
+
+  // Generate (or regenerate) a Student Access Code for a course. Requires the admin
+  // key (server enforces it too). Regenerating passes the old code so the server
+  // invalidates it immediately. The returned code is stored with the course.
+  async function generateAccessCode(course, { regenerate = false } = {}) {
+    const key = (accessKeyInput || "").trim();
+    if (!key) { setAccessNote("Enter your admin key above to create access codes."); return; }
+    if (regenerate && !window.confirm(`Regenerate the code for ${course.courseCode}? The current code (${course.studentAccessCode}) stops working immediately, and any student using it will need the new one.`)) return;
+    setAccessNote("");
+    setAccessBusy(course.courseCode);
+    try {
+      const res = await fetch(`${SERVER_URL}/instructor/access-code/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({
+          course: course.courseCode,
+          professorEmail: course.professorEmail || "",
+          previousCode: regenerate ? (course.studentAccessCode || "") : "",
+        }),
+      });
+      if (res.status === 401) { setAccessNote("Admin key not accepted — check the key and try again."); return; }
+      const data = await res.json();
+      if (!res.ok || !data.code) { setAccessNote(data.error || "Could not create a code — try again."); return; }
+      // Remember the working key for the session (shared with the admin dashboard).
+      sessionStorage.setItem("dm3a_admin_key", key);
+      persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, studentAccessCode: data.code } : c));
+      setAccessNote(`${regenerate ? "Regenerated" : "Created"} code for ${course.courseCode}: ${data.code}`);
+    } catch {
+      setAccessNote("Network error reaching the server — try again.");
+    } finally {
+      setAccessBusy("");
+    }
+  }
+
+  function copyAccessCode(course) {
+    const code = course.studentAccessCode || "";
+    if (!code) return;
+    try { navigator.clipboard?.writeText(code); } catch { /* clipboard unavailable */ }
+    setCopiedCode(course.courseCode);
+    setTimeout(() => setCopiedCode((c) => c === course.courseCode ? "" : c), 1500);
   }
 
   function startEdit(course) {
@@ -2313,25 +2361,62 @@ Return a JSON array with one object per student found in the submission.`;
     setGatekeeperBlocked(false);
     setGatekeeperReason("");
 
-    // ── ALLOWANCE CHECK ───────────────────────────────────────────────────────
-    try {
-      const checkRes = await fetch(`${SERVER_URL}/student-check-allowance`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: normalEmail }),
-      });
-      const checkData = await checkRes.json();
-      if (!checkData.allowed) {
-        setStudentSubmissionsLeft(0);
-        setError("");
-        setStep("student-upload");
-        return;
+    // ── ACCESS CODE / ALLOWANCE CHECK ─────────────────────────────────────────
+    // A valid instructor code = unlimited for the session (free counter skipped).
+    // codeContext, when set, rides along on the grade so the server can count/tag it.
+    let codeContext = null;
+    const enteredCode = (studentClassCode || "").trim();
+
+    if (enteredCode) {
+      try {
+        const res = await fetch(`${SERVER_URL}/code-check`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: enteredCode }),
+        });
+        const data = await res.json();
+        if (data.valid && data.allowed) {
+          // Unlimited for this session — no free-tier counter.
+          codeContext = { code: enteredCode.toUpperCase(), course: data.course || "" };
+          setStudentSubmissionsLeft(null);
+        } else if (data.valid && !data.allowed) {
+          // The code is real but hit its daily cap — same friendly screen as free tier.
+          setStudentSubmissionsLeft(0);
+          setError("");
+          setStep("student-upload");
+          return;
+        } else {
+          // Not recognized — gentle note; they can clear the box (blank = free tier)
+          // and grade, or get the right code. We don't grade on an unrecognized code.
+          setError("Code not recognized — check with your instructor. (Leave the code box empty to use the free tier.)");
+          return;
+        }
+      } catch {
+        // Couldn't reach the check — fall through to the free tier rather than block.
       }
-      setStudentSubmissionsLeft(checkData.remaining);
-    } catch {
-      // fail open — network error doesn't block the student
     }
-    // ── END ALLOWANCE CHECK ───────────────────────────────────────────────────
+
+    if (!codeContext) {
+      // Free tier: the anonymous per-email counter (unchanged behavior).
+      try {
+        const checkRes = await fetch(`${SERVER_URL}/student-check-allowance`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: normalEmail }),
+        });
+        const checkData = await checkRes.json();
+        if (!checkData.allowed) {
+          setStudentSubmissionsLeft(0);
+          setError("");
+          setStep("student-upload");
+          return;
+        }
+        setStudentSubmissionsLeft(checkData.remaining);
+      } catch {
+        // fail open — network error doesn't block the student
+      }
+    }
+    // ── END ACCESS CODE / ALLOWANCE CHECK ─────────────────────────────────────
 
     setLoading(true);
     setStep("grading");
@@ -2437,7 +2522,7 @@ Return a JSON array with exactly ONE student object.`;
       const effectivePrompt = problemScope.trim()
         ? buildScopeDirectPrefix(problemScope.trim()) + userPrompt
         : userPrompt;
-      const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectivePrompt });
+      const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectivePrompt, codeContext });
       const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
       setResults(Array.isArray(parsed) ? parsed : [parsed]);
       gradeSucceeded = true;
@@ -2454,8 +2539,9 @@ Return a JSON array with exactly ONE student object.`;
       }]);
     }
 
-    // ── RECORD SUBMISSION (only when gatekeeper passed and grading ran) ───────
-    if (gradeSucceeded) {
+    // ── RECORD SUBMISSION (free tier only — coded sessions are counted server-side
+    //    against the code's daily budget by /grade, not the per-email counter) ────
+    if (gradeSucceeded && !codeContext) {
       try {
         const recRes = await fetch(`${SERVER_URL}/student-record-submission`, {
           method: "POST",
@@ -2998,15 +3084,17 @@ Return a JSON array with exactly ONE student object.`;
         {studentSubmissionsLeft !== null && studentSubmissionsLeft <= 0 && (
           <div style={{ background: "#FEF9EC", border: "1px solid #F5C842", borderRadius: 8, padding: 24, marginBottom: 16, textAlign: "center" }}>
             <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 10, color: "#1A1A18" }}>
-              You've used your 5 free submissions
+              You've used your free submissions
             </div>
             <p style={{ fontSize: 14, color: "#5A5A55", lineHeight: 1.65, marginBottom: 20 }}>
-              You've reached the limit for the free pilot. To keep getting feedback on your work, contact your instructor or join the waitlist.
+              Ask your instructor about DM3A Grader — a class access code gives you unlimited feedback on your work.
             </p>
             <a
-              href="mailto:support@dm3agrader.com?subject=Student%20Access%20Request"
+              href="https://dm3agrader.com"
+              target="_blank"
+              rel="noreferrer"
               style={{ display: "inline-block", ...styles.btn, textDecoration: "none" }}>
-              Join the waitlist / contact for access
+              dm3agrader.com
             </a>
           </div>
         )}
@@ -3037,6 +3125,12 @@ Return a JSON array with exactly ONE student object.`;
               placeholder="you@school.edu"
               value={studentEmail}
               onChange={e => setStudentEmail(e.target.value)} />
+            <label style={styles.label}>Have a class code from your instructor? <span style={{ fontWeight: 400, color: "#888" }}>(optional)</span></label>
+            <input
+              style={{ ...styles.input, marginBottom: 14, fontFamily: "monospace", letterSpacing: "0.04em" }}
+              placeholder="e.g. DM3A-7K9QP2"
+              value={studentClassCode}
+              onChange={e => setStudentClassCode(e.target.value)} />
             <label style={styles.label}>Subject *</label>
             <select style={{ ...styles.input, marginBottom: 14 }} value={subject} onChange={e => setSubject(e.target.value)}>
               <option value="">— Select a subject —</option>
@@ -3354,6 +3448,18 @@ Return a JSON array with exactly ONE student object.`;
             </div>
             {vaultNote && <div style={{ fontSize: 12.5, background: "#EEF4FF", border: "1px solid #cfe0ff", borderRadius: 6, padding: "6px 10px", marginBottom: 10 }}>{vaultNote}</div>}
 
+            {/* Admin key — authorizes creating Student Access Codes (same key as the admin dashboard) */}
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ ...styles.label, display: "block", marginBottom: 4 }}>Admin key <span style={{ fontWeight: 400, color: "#888" }}>(to create student access codes)</span></label>
+              <input
+                style={{ ...styles.input, fontFamily: "monospace" }}
+                type="password"
+                placeholder="Your admin dashboard key"
+                value={accessKeyInput}
+                onChange={e => setAccessKeyInput(e.target.value)} />
+              {accessNote && <div style={{ fontSize: 12, color: "#5A5A55", marginTop: 6 }}>{accessNote}</div>}
+            </div>
+
             {/* Add course */}
             <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
               <input style={{ ...styles.input, flex: 2, minWidth: 140 }} placeholder="Course code / section" value={addCourseCode} onChange={e => setAddCourseCode(e.target.value)} />
@@ -3393,6 +3499,25 @@ Return a JSON array with exactly ONE student object.`;
                       <button type="button" style={styles.btnOutline} onClick={() => startEdit(c)}>Edit</button>
                       <button type="button" style={{ ...styles.btnOutline, color: "#9f1239", borderColor: "#9f1239" }} onClick={() => deleteCourse(c.courseCode)}>Delete</button>
                     </div>
+                  </div>
+
+                  {/* Student Access Code — instructor-linked unlimited Student Mode */}
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #D8D6CE" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#5A5A55", marginBottom: 6 }}>Student Access Code</div>
+                    {c.studentAccessCode ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, letterSpacing: "0.04em", color: "#1B2A4A", background: "#F1F5FF", border: "1px solid #cfe0ff", borderRadius: 6, padding: "3px 10px" }}>{c.studentAccessCode}</span>
+                        <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} onClick={() => copyAccessCode(c)}>{copiedCode === c.courseCode ? "✓ Copied" : "Copy"}</button>
+                        <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} disabled={accessBusy === c.courseCode} onClick={() => generateAccessCode(c, { regenerate: true })}>{accessBusy === c.courseCode ? "Working…" : "Regenerate"}</button>
+                        <span style={{ fontSize: 11.5, color: "#888" }}>Students enter this for unlimited access (up to {"100"}/day).</span>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 12.5, color: "#888" }}>Not generated yet.</span>
+                        <button type="button" style={{ ...styles.btnOutline, padding: "3px 10px", fontSize: 12 }} disabled={accessBusy === c.courseCode || !accessKeyInput.trim()} onClick={() => generateAccessCode(c, { regenerate: false })}>{accessBusy === c.courseCode ? "Working…" : "Generate code"}</button>
+                        {!accessKeyInput.trim() && <span style={{ fontSize: 11.5, color: "#888" }}>Enter your admin key above first.</span>}
+                      </div>
+                    )}
                   </div>
 
                   {/* Blind Grading per-course controls (Part A) */}
