@@ -796,20 +796,26 @@ app.post('/code-check', async (req, res) => {
 // what a device's browser OCR missed (e.g. iPad). FAIL CLOSED: if ANY page can't be
 // verified, respond 422 so the client aborts grading instead of sending it onward.
 // body: { images: [base64,...] } -> { images: [base64,...], perPage: [{redacted,words}] }
+// Top fraction of the first page to black out as a safety net when OCR finds no name
+// (catches handwritten names OCR can't read). Tunable via env.
+const REDACT_BAND_FRACTION = Number(process.env.REDACT_BAND_FRACTION || 0.15);
+
 app.post('/redact', async (req, res) => {
   try {
     const images = Array.isArray(req.body?.images) ? req.body.images : [];
     if (!images.length) return res.json({ images: [], perPage: [] });
     const out = [];
     const perPage = [];
-    let redactedCount = 0;
-    for (const b64 of images) {
-      const r = await redactImageServer(b64); // throws (fail-closed) on error / no-text
+    let redactedCount = 0, positionalCount = 0;
+    for (let idx = 0; idx < images.length; idx++) {
+      // Positional safety net only on the first page (where a name would be).
+      const r = await redactImageServer(images[idx], { positionalBand: idx === 0 ? REDACT_BAND_FRACTION : 0 });
       out.push(r.base64);
-      perPage.push({ redacted: !!r.redacted, words: r.words || 0 });
+      perPage.push({ redacted: !!r.redacted, words: r.words || 0, positional: !!r.positional });
       if (r.redacted) redactedCount++;
+      if (r.positional) positionalCount++;
     }
-    console.log(`[REDACT SERVER] verified ${images.length} page(s); blacked out a name on ${redactedCount}`);
+    console.log(`[REDACT SERVER] verified ${images.length} page(s); redacted ${redactedCount} (positional safety net on ${positionalCount})`);
     res.json({ images: out, perPage });
   } catch (err) {
     console.error('[REDACT SERVER] fail-closed:', err.message);

@@ -152,7 +152,11 @@ async function rotateFull(inputBuf, deg) {
 
 // Redact the name zone on ONE image. base64 in → { base64, redacted, words } out.
 // FAIL CLOSED: throws on decode/OCR error or when OCR reads no text anywhere.
-async function redactImageServer(base64) {
+// positionalBand > 0: when OCR finds NO name but the page has text, black out the top
+// `positionalBand` fraction of the page as a safety net (catches a handwritten name that
+// OCR can't read — only Claude reads handwriting). Pass it only for a submission's first
+// page (where names sit); 0 disables the net (page passes through unchanged).
+async function redactImageServer(base64, { positionalBand = 0 } = {}) {
   const inputBuf = Buffer.from(stripDataUri(base64), 'base64');
   const meta0 = await sharp(inputBuf).metadata();
   if (!meta0.width || !meta0.height) throw new Error('image did not decode (no dimensions)');
@@ -204,6 +208,19 @@ async function redactImageServer(base64) {
   // FAIL CLOSED: OCR read no text anywhere ⇒ it did not actually process the page
   // (blank / decode issue) — we cannot claim there is no name.
   if (maxAnyWords === 0) throw new Error('OCR read no text from the page — cannot verify it contains no name');
+
+  // POSITIONAL SAFETY NET: OCR read text but found no name. A handwritten name with no
+  // printed label is unreadable to OCR (only Claude reads handwriting), so as a precaution
+  // black out the top header strip where names sit. Imperfect on badly angled photos, but
+  // it closes the handwritten-name leak. Only applied when the caller opts in (first page).
+  if (positionalBand > 0) {
+    const stripH = Math.max(1, Math.round(meta0.height * Math.min(0.5, positionalBand)));
+    const out = await sharp(inputBuf)
+      .composite([{ input: { create: { width: meta0.width, height: stripH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } } }, left: 0, top: 0 }])
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    return { base64: out.toString('base64'), redacted: true, positional: true, words: maxWords };
+  }
 
   // OCR read text but found no name ⇒ a genuinely nameless page: return unchanged.
   return { base64: stripDataUri(base64), redacted: false, words: maxWords };
