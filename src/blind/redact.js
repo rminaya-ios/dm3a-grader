@@ -11,9 +11,11 @@
 // browser, so the server and Claude never see the handwritten name.
 //
 // tesseract.js is lazy-loaded (heavy WASM) so it only downloads when redaction
-// actually runs. Never throws to the caller — on any failure the original image
-// is returned so grading is never blocked (redaction is fail-open by design; the
-// per-course toggle + count surface let the instructor see coverage honestly).
+// actually runs. FAIL CLOSED: on an OCR/decode error, OR when OCR reads no text at
+// all from the page (a strong signal it did not actually run — e.g. an iOS Safari
+// blank-canvas), redactNameZone THROWS so the caller aborts grading and asks the
+// student to retry, rather than letting an unverified image through. Only a page the
+// OCR genuinely read (some text) with no name detected returns normally.
 
 const BAND_FRACTION = 0.30; // top ~30% of the frame: where form name-labels live + the zone the pair heuristic is confined to
 const OCR_MAX_DIM = 1600;   // OCR at ≤ this longest-edge (downscaled for speed); boxes scale back to full res
@@ -46,7 +48,13 @@ function loadImage(base64) {
   const src = String(base64).startsWith('data:') ? base64 : `data:image/jpeg;base64,${base64}`;
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(img);
+    img.onload = async () => {
+      // iOS Safari can fire onload BEFORE the bitmap is actually decoded, so a later
+      // canvas drawImage() yields a BLANK canvas and OCR reads nothing. Awaiting
+      // decode() forces the pixels to be ready before we hand the image back.
+      try { if (typeof img.decode === 'function') await img.decode(); } catch { /* fall back to onload timing */ }
+      resolve(img);
+    };
     img.onerror = () => reject(new Error('image decode failed'));
     img.src = src;
   });
@@ -230,13 +238,15 @@ export async function redactNameZone(base64, alias) {
     const img = await loadImage(base64);
     const W = img.naturalWidth || img.width;
     const H = img.naturalHeight || img.height;
-    if (!W || !H) return { base64, redacted: false, words: 0 };
+    // FAIL CLOSED: no dimensions means the image never decoded — we cannot verify it.
+    if (!W || !H) throw new Error('image did not decode (no dimensions) — cannot verify redaction');
 
     const scale = Math.min(1, OCR_MAX_DIM / Math.max(W, H));
     const sw = Math.max(1, Math.round(W * scale));
     const sh = Math.max(1, Math.round(H * scale));
     const worker = await getWorker();
-    let maxWords = 0;
+    let maxWords = 0;      // max HIGH-confidence words (upright-readable signal)
+    let maxAnyWords = 0;   // max words at ANY confidence — 0 everywhere ⇒ OCR read nothing
 
     for (const deg of [0, 90, 270, 180]) {
       // OCR the whole frame (downscaled, rotated by deg) so a name label is caught
@@ -244,6 +254,7 @@ export async function redactNameZone(base64, alias) {
       const { canvas: ocrCanvas } = rotatedCanvas(img, sw, sh, deg);
       const { data } = await worker.recognize(ocrCanvas, {}, { tsv: true });
       const words = wordsFromTsv(data.tsv);
+      maxAnyWords = Math.max(maxAnyWords, words.length);
       // HIGH-confidence words only — rotated text still yields lots of low-confidence
       // garbage, so raw word count can't tell "upright & readable" from "sideways noise".
       const goodWords = words.reduce((a, w) => a + ((w.confidence ?? 0) >= 60 ? 1 : 0), 0);
@@ -266,6 +277,13 @@ export async function redactNameZone(base64, alias) {
       // words AND a high good/total ratio. Rotated pages yield many LOW-confidence garbage
       // words (low ratio), so they fall through to the 90/270/180 trials.
       if (deg === 0 && upright) break;
+    }
+    // FAIL CLOSED when OCR read NOTHING across every orientation: a real page of work
+    // always yields some recognizable text, so zero words means the OCR did not actually
+    // function on this device (e.g. an iOS Safari blank-canvas) — NOT that the page has
+    // no name. Aborting (student retries) is safe; letting it through would leak the name.
+    if (maxAnyWords === 0) {
+      throw new Error('OCR read no text from the page — cannot verify it contains no name');
     }
     return { base64, redacted: false, words: maxWords };
   } catch (e) {
