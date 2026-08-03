@@ -44,6 +44,12 @@ const gradingEventSchema = new mongoose.Schema(
     //   'auto'       -> main /grade grading call
     //   'gatekeeper' -> Student Mode /detect-work work-detection call
     recordedVia: { type: String, default: 'auto', index: true },
+
+    // Student-Mode access-code attribution. IDENTITY-FREE: a course code + access
+    // code only, NEVER a student. Empty for instructor/anonymous grading. Lets the
+    // admin endpoints break usage/cost down per course later.
+    accessCode: { type: String, default: '', index: true },
+    courseCode: { type: String, default: '' },
   },
   {
     timestamps: true, // createdAt is the event timestamp used by all time-series

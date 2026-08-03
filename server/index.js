@@ -33,6 +33,10 @@ try {
 // ── Admin dashboard aggregation API (Admin Dashboard, Phase 2) ─
 const adminStatsRoutes = require('./routes/adminStats.js');
 
+// ── Student access codes (instructor-linked unlimited Student Mode) ─
+const { requireAdminKey } = require('./lib/adminAuth.js');
+const { sendTelegramMessage } = require('./services/alertDispatcher.js');
+
 // ── Blind Grading Mode — roster vault + PII guard (Phase 1) ────
 const coursesRoutes = require('./routes/courses.js');
 const { piiGuard } = require('./middleware/piiGuard.js');
@@ -256,6 +260,8 @@ async function recordGradingEvent({
   gradingDurationMs = 0,
   apiCalls = 1,
   recordedVia = 'auto',
+  accessCode = '',
+  courseCode = '',
 }) {
   try {
     const u = usage || {};
@@ -263,6 +269,8 @@ async function recordGradingEvent({
       submissionCount,
       gradingDurationMs,
       recordedVia,
+      accessCode,
+      courseCode,
       apiUsage: {
         inputTokens:         u.inputTokens || 0,
         outputTokens:        u.outputTokens || 0,
@@ -454,6 +462,10 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
       res.json({ result: text });
       // At-Risk Predictor: opportunistic, non-blocking, runs after the response.
       maybeRecordSubmissions(req.body.riskContext, parsed);
+      // Access-code daily counter + early-warning alert (fire-and-forget). Only
+      // does anything when the client forwarded a valid coded session.
+      const codeCtx = req.body.codeContext || null;
+      if (codeCtx && codeCtx.code) tallyCodedSubmission(codeCtx);
       // API cost: identity-free GradingEvent, fire-and-forget, never blocks/breaks.
       recordGradingEvent({
         usage,
@@ -461,6 +473,8 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
         submissionCount: Array.isArray(parsed) ? parsed.length : 1,
         gradingDurationMs: Date.now() - gradeStartedAt,
         recordedVia: 'auto',
+        accessCode: normalizeCode(codeCtx?.code),
+        courseCode: codeCtx?.course || '',
       });
     } catch (parseErr) {
       console.error('[parse] AI returned non-JSON response. Full text:', text.slice(0, 500));
@@ -475,13 +489,18 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
         instructorNote: 'Server could not parse AI response as JSON. Raw preview: ' + text.slice(0, 200)
       }]);
       res.json({ result: fallback });
-      // Tokens were still consumed even though the AI response was unparseable.
+      // Tokens were still consumed even though the AI response was unparseable —
+      // still count it against the code's daily budget and tag the cost record.
+      const codeCtxErr = req.body.codeContext || null;
+      if (codeCtxErr && codeCtxErr.code) tallyCodedSubmission(codeCtxErr);
       recordGradingEvent({
         usage,
         model: usedModel,
         submissionCount: 1,
         gradingDurationMs: Date.now() - gradeStartedAt,
         recordedVia: 'auto',
+        accessCode: normalizeCode(codeCtxErr?.code),
+        courseCode: codeCtxErr?.course || '',
       });
     }
   } catch (err) {
@@ -638,6 +657,130 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+// ── STUDENT ACCESS CODES (instructor-linked unlimited Student Mode) ────────────
+// A code maps ONLY to a course (course code + instructor email) — never to a
+// student. Creating codes requires the admin key (they grant unlimited API use).
+// Checking a code is public but rate-limited. A daily circuit breaker caps each
+// code at CODE_DAILY_MAX submissions/day (reset at ET midnight) so a leaked code
+// produces at most a one-day burst; at CODE_ALERT_AT the first crossing pushes one
+// Telegram warning for the day.
+const CODE_DAILY_MAX        = Number(process.env.CODE_DAILY_MAX || 100);
+const CODE_ALERT_AT         = Number(process.env.CODE_ALERT_AT || 60);
+const CODE_CHECK_RL_PER_MIN = Number(process.env.CODE_CHECK_RL_PER_MIN || 20);
+const CODE_TZ               = process.env.DASHBOARD_TZ || 'America/New_York';
+const CODE_ALPHABET         = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no I/L/O/0/1
+const CODE_KEY_TTL          = 129600; // ~36h — daily counters/alert flags auto-clean
+
+// YYYY-MM-DD in Eastern time — the daily bucket. Rolls over at ET midnight.
+function etDayKey(d = new Date()) {
+  return d.toLocaleDateString('en-CA', { timeZone: CODE_TZ });
+}
+function normalizeCode(raw) {
+  return String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+function makeCode() {
+  let s = '';
+  for (let i = 0; i < 6; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+  return `DM3A-${s}`;
+}
+
+// Fire-and-forget: count one coded submission for today and, the first time the
+// day's count crosses CODE_ALERT_AT, push ONE Telegram warning. Validates the code
+// first and no-ops on an unknown code. The daily CAP is enforced by /code-check
+// before grading, not here. Never throws (grading must be unaffected).
+async function tallyCodedSubmission(codeContext) {
+  try {
+    const code = normalizeCode(codeContext?.code);
+    if (!code) return;
+    const raw = await redis.get(`accesscode:${code}`);
+    if (!raw) return; // unknown code — don't count or alert
+    const meta = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const day = etDayKey();
+    const countKey = `codecount:${code}:${day}`;
+    const count = await redis.incr(countKey);
+    if (count === 1) await redis.expire(countKey, CODE_KEY_TTL);
+    console.log(`[ACCESS CODE] ${code} (${meta.course || '?'}) — ${count}/${CODE_DAILY_MAX} today`);
+    if (count >= CODE_ALERT_AT) {
+      const alertKey = `codealert:${code}:${day}`;
+      const first = await redis.set(alertKey, '1', { nx: true, ex: CODE_KEY_TTL });
+      if (first) {
+        console.warn(`[ACCESS CODE ALERT] ${code} (${meta.course || '?'}) crossed ${CODE_ALERT_AT} — ${count} today`);
+        await sendTelegramMessage([
+          `⚠️ *DM3A Access-Code Usage*`,
+          `🔑 Code: ${code}`,
+          `📚 Course: ${meta.course || '(unknown)'}`,
+          `📈 Today: ${count}/${CODE_DAILY_MAX} submissions (warn at ${CODE_ALERT_AT})`,
+          `Daily cap ${CODE_DAILY_MAX} contains a leaked code within a day.`,
+        ].join('\n'));
+      }
+    }
+  } catch (err) {
+    console.error('[ACCESS CODE] tally failed (grading unaffected):', err.message);
+  }
+}
+
+// Generate (or regenerate) an access code for a course. ADMIN-ONLY (same key as
+// /api/admin). Regenerating invalidates the previous code immediately.
+// body: { course, professorEmail?, previousCode? } -> { code, course }
+app.post('/instructor/access-code/generate', requireAdminKey, async (req, res) => {
+  try {
+    const course = String(req.body?.course || '').trim();
+    if (!course) return res.status(400).json({ error: 'course is required' });
+    const professorEmail = String(req.body?.professorEmail || '').trim().toLowerCase();
+    const previousCode = normalizeCode(req.body?.previousCode);
+
+    if (previousCode) await redis.del(`accesscode:${previousCode}`); // invalidate old
+
+    let code = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const candidate = makeCode();
+      const ok = await redis.set(
+        `accesscode:${candidate}`,
+        JSON.stringify({ course, professorEmail, createdAt: new Date().toISOString() }),
+        { nx: true }
+      );
+      if (ok) { code = candidate; break; }
+    }
+    if (!code) return res.status(500).json({ error: 'Could not allocate a unique code — try again.' });
+    console.log(`[ACCESS CODE] generated ${code} for "${course}"${previousCode ? ` (replaced ${previousCode})` : ''}`);
+    res.json({ code, course });
+  } catch (err) {
+    console.error('[ACCESS CODE] generate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Validate a code + report today's headroom. PUBLIC but rate-limited per IP so
+// codes can't be brute-forced. body: { code } -> { valid, allowed, course?, usedToday?, max }
+app.post('/code-check', async (req, res) => {
+  try {
+    const minute = Math.floor(Date.now() / 60000);
+    const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+      .toString().split(',')[0].trim();
+    const rlKey = `codecheck:rl:${ip}:${minute}`;
+    const hits = await redis.incr(rlKey);
+    if (hits === 1) await redis.expire(rlKey, 65);
+    if (hits > CODE_CHECK_RL_PER_MIN) {
+      return res.status(429).json({ error: 'Too many attempts — try again shortly.' });
+    }
+  } catch (_e) { /* limiter is best-effort — never block a real student */ }
+
+  try {
+    const code = normalizeCode(req.body?.code);
+    if (!code) return res.json({ valid: false });
+    const raw = await redis.get(`accesscode:${code}`);
+    if (!raw) return res.json({ valid: false });
+    const meta = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const countRaw = await redis.get(`codecount:${code}:${etDayKey()}`);
+    const used = countRaw ? parseInt(countRaw, 10) : 0;
+    res.json({ valid: true, allowed: used < CODE_DAILY_MAX, course: meta.course || '', usedToday: used, max: CODE_DAILY_MAX });
+  } catch (err) {
+    console.error('[ACCESS CODE] check error:', err.message);
+    // Fail SAFE for students: on our error, don't grant unlimited — fall to free tier.
+    res.json({ valid: false, error: 'check_failed' });
+  }
+});
 
 function generateTrialPassword() {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789';

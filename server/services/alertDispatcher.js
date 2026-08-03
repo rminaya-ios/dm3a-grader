@@ -211,4 +211,26 @@ const sendTelegramAlert = async (flag) => {
   );
 };
 
-module.exports = { dispatchAlerts };
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic Telegram push over the SAME bot/chat as the At-Risk alerts. Used for
+// operational alerts (e.g. access-code daily-usage warnings). Never throws.
+// ─────────────────────────────────────────────────────────────────────────────
+const sendTelegramMessage = async (text) => {
+  if (!BOT_TOKEN || !CHAT_ID) {
+    console.warn('Telegram credentials not set — skipping push notification.');
+    return false;
+  }
+  try {
+    await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      chat_id:    CHAT_ID,
+      text,
+      parse_mode: 'Markdown',
+    });
+    return true;
+  } catch (err) {
+    console.error(`Telegram send failed: ${err.message}`);
+    return false;
+  }
+};
+
+module.exports = { dispatchAlerts, sendTelegramMessage };
