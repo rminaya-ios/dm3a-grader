@@ -1228,6 +1228,32 @@ export default function DM3AGraderV5() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  // Self-heal stale cached clients (privacy-critical): a phone can keep running an old
+  // cached version that predates a redaction fix and would skip the server safety net.
+  // On load AND when a backgrounded tab is reopened (bfcache), compare the running
+  // bundle hash to the deployed one and reload ONCE if they differ. sessionStorage guard
+  // prevents any reload loop.
+  useEffect(() => {
+    const runningHash = (([...document.scripts].map(s => s.src).find(s => /\/index-[A-Za-z0-9_-]+\.js/.test(s))) || "").match(/index-([A-Za-z0-9_-]+)\.js/)?.[1];
+    if (!runningHash) return; // dev server / no hashed bundle — nothing to compare
+    const check = async () => {
+      try {
+        const html = await fetch("/", { cache: "no-store" }).then(r => r.text());
+        const latestHash = (html.match(/index-([A-Za-z0-9_-]+)\.js/) || [])[1];
+        const key = "dm3a_reloaded_" + latestHash;
+        if (latestHash && latestHash !== runningHash && !sessionStorage.getItem(key)) {
+          sessionStorage.setItem(key, "1");
+          console.warn("[VERSION] newer app deployed — reloading to stay current");
+          window.location.reload();
+        }
+      } catch { /* offline / fetch failed — ignore */ }
+    };
+    check();
+    const onShow = (e) => { if (e.persisted) check(); };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
+
   // Live-check the student's class code as they type (debounced). Drives the status
   // line and whether the email field is shown/required — a valid code hides it.
   useEffect(() => {
