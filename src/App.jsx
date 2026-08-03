@@ -840,46 +840,71 @@ export default function DM3AGraderV5() {
   const MIN_SCAN_WORDS = 6; // fewer OCR words than this on every page ⇒ treat as "couldn't scan" (blur/glare/angle)
   const REDACT_TIMEOUT_MS = 25000; // per-page OCR timeout — a stuck OCR must not hang grading
 
-  // §3.3: redact the top-band name zone on page 1 of one or more submission page
-  // images BEFORE they are graded or stored. FAIL CLOSED — on any OCR/canvas error or a
-  // timeout it throws a tagged error (err.isRedaction) and the grading path aborts; an
-  // unredacted image must never reach the payload. Returns { pages, checked, redacted }.
-  // `all` OCRs every page (used for batch scans where student boundaries aren't known
-  // until Claude's boundary pass).
+  // §3.3: redact the top-band name zone on one or more submission page images BEFORE
+  // they are graded or stored. TWO PASSES:
+  //   1) BEST-EFFORT browser pass — on a capable device this blacks out the name so it
+  //      never leaves the browser. A browser OCR failure here is NON-fatal (iOS Safari
+  //      OCR is unreliable); the server pass is the guarantee.
+  //   2) AUTHORITATIVE server pass (/redact) — device-independent OCR that catches what
+  //      the browser missed (e.g. iPad). FAIL CLOSED: if the server can't verify a page
+  //      it throws a tagged error (err.isRedaction) and the grading path aborts, so an
+  //      unverified image never reaches the payload.
+  // Returns { pages, checked, redacted, maxWords, perPage }. `all` covers every page.
   async function redactPageImages(pages, { all = false } = {}) {
     const out = (pages || []).slice();
     const targets = all ? out.map((_, i) => i) : (out.length ? [0] : []);
-    let redacted = 0, maxWords = 0;
-    const perPage = new Array(out.length).fill(null); // per-page {redacted, words} for per-student attribution
+    if (targets.length === 0) return { pages: out, checked: 0, redacted: 0, maxWords: 0, perPage: [] };
+
+    // Pass 1 — best-effort browser redaction (keeps the name in the browser when it works).
     for (const i of targets) {
-      let r;
       try {
-        // The per-student alias isn't known at grade time (mapping is confirmed
-        // post-grade), so stamp a neutral, honest marker so the box reads as an
-        // intentional redaction rather than a scan artifact. Bounded by a timeout.
-        r = await Promise.race([
+        const r = await Promise.race([
           redactNameZone(out[i], "REDACTED"),
           new Promise((_, reject) => setTimeout(() => reject(new Error("OCR timed out")), REDACT_TIMEOUT_MS)),
         ]);
+        out[i] = r.base64;
       } catch (e) {
-        // Fail closed: abort the whole grade run rather than send an unredacted image.
-        const err = new Error(`Name-zone redaction failed on page ${i + 1} (${e.message}).`);
-        err.isRedaction = true;
-        throw err;
+        // Non-fatal: keep the original image and let the authoritative server pass handle it.
+        console.warn(`[REDACT] browser pass could not verify page ${i + 1} — deferring to server:`, e && e.message);
       }
-      out[i] = r.base64;
-      const words = typeof r.words === "number" ? r.words : 0;
-      perPage[i] = { redacted: !!r.redacted, words };
-      if (r.redacted) redacted++;
-      maxWords = Math.max(maxWords, words);
     }
-    // Report what actually happened so every grade shows plainly whether a name was
-    // found and blacked out — not just that the step ran. "no name detected" is a cue
-    // to eyeball the page-1 thumbnail.
+
+    // Pass 2 — authoritative server redaction. FAIL CLOSED on any failure.
+    let data;
+    try {
+      const resp = await fetch(`${SERVER_URL}/redact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ images: targets.map((i) => out[i]) }),
+      });
+      if (!resp.ok) throw new Error(`server responded ${resp.status}`);
+      data = await resp.json();
+    } catch (e) {
+      const err = new Error(`Could not verify the name-zone redaction (${e && e.message}).`);
+      err.isRedaction = true;
+      throw err;
+    }
+    if (!data || !Array.isArray(data.images) || data.images.length !== targets.length) {
+      const err = new Error("The redaction service returned an unexpected response.");
+      err.isRedaction = true;
+      throw err;
+    }
+
+    let redacted = 0, maxWords = 0;
+    const perPage = new Array(out.length).fill(null);
+    targets.forEach((i, k) => {
+      out[i] = data.images[k];
+      const pp = (data.perPage && data.perPage[k]) || {};
+      const words = typeof pp.words === "number" ? pp.words : 0;
+      perPage[i] = { redacted: !!pp.redacted, words };
+      if (pp.redacted) redacted++;
+      maxWords = Math.max(maxWords, words);
+    });
+
     const coverage = redacted > 0
       ? `covered a name on ${redacted} of ${targets.length} page(s)`
       : `no name detected in the name zone`;
-    console.log(`[REDACT] processed ${targets.length} page(s), page-1 name zone — ${coverage}`);
+    console.log(`[REDACT] processed ${targets.length} page(s) via server safety net — ${coverage}`);
     return { pages: out, checked: targets.length, redacted, maxWords, perPage };
   }
 

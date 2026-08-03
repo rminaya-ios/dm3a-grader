@@ -37,6 +37,9 @@ const adminStatsRoutes = require('./routes/adminStats.js');
 const { requireAdminKey } = require('./lib/adminAuth.js');
 const { sendTelegramMessage } = require('./services/alertDispatcher.js');
 
+// ── Server-side name-zone redaction (authoritative pass — reliable on every device) ─
+const { redactImageServer } = require('./lib/serverRedact.js');
+
 // ── Blind Grading Mode — roster vault + PII guard (Phase 1) ────
 const coursesRoutes = require('./routes/courses.js');
 const { piiGuard } = require('./middleware/piiGuard.js');
@@ -784,6 +787,33 @@ app.post('/code-check', async (req, res) => {
     console.error('[ACCESS CODE] check error:', err.message);
     // Fail SAFE for students: on our error, don't grant unlimited — fall to free tier.
     res.json({ valid: false, error: 'check_failed' });
+  }
+});
+
+// ── SERVER-SIDE NAME-ZONE REDACTION (authoritative pass) ──────────────────────
+// The browser attempts redaction first (so on a capable device the name never
+// leaves it), then sends the page images here for the reliable pass — this catches
+// what a device's browser OCR missed (e.g. iPad). FAIL CLOSED: if ANY page can't be
+// verified, respond 422 so the client aborts grading instead of sending it onward.
+// body: { images: [base64,...] } -> { images: [base64,...], perPage: [{redacted,words}] }
+app.post('/redact', async (req, res) => {
+  try {
+    const images = Array.isArray(req.body?.images) ? req.body.images : [];
+    if (!images.length) return res.json({ images: [], perPage: [] });
+    const out = [];
+    const perPage = [];
+    let redactedCount = 0;
+    for (const b64 of images) {
+      const r = await redactImageServer(b64); // throws (fail-closed) on error / no-text
+      out.push(r.base64);
+      perPage.push({ redacted: !!r.redacted, words: r.words || 0 });
+      if (r.redacted) redactedCount++;
+    }
+    console.log(`[REDACT SERVER] verified ${images.length} page(s); blacked out a name on ${redactedCount}`);
+    res.json({ images: out, perPage });
+  } catch (err) {
+    console.error('[REDACT SERVER] fail-closed:', err.message);
+    res.status(422).json({ error: 'Could not verify name-zone redaction: ' + err.message });
   }
 });
 
