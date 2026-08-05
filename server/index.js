@@ -823,6 +823,20 @@ app.post('/redact', async (req, res) => {
   }
 });
 
+// TEMPORARY (diagnostic): reports this service's outbound public IP + uptime so we can
+// see where Railway's egress moved and confirm a fresh container. Read-only, no secret.
+app.get('/debug/egress-ip', async (req, res) => {
+  try {
+    const [a, b] = await Promise.all([
+      fetch('https://api.ipify.org').then((r) => r.text()).catch(() => ''),
+      fetch('https://ifconfig.me/ip').then((r) => r.text()).catch(() => ''),
+    ]);
+    res.json({ egressIp: (a || b || '').trim(), crossCheck: (b || '').trim(), uptimeSec: Math.round(process.uptime()), commit: (process.env.RAILWAY_GIT_COMMIT_SHA || '').slice(0, 7), mongo: require('mongoose').connection.readyState });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 function generateTrialPassword() {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
   let pwd = 'trial-';

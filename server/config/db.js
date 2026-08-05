@@ -16,9 +16,13 @@ const connectDB = async () => {
 
     console.log(`✅ MongoDB connected: ${conn.connection.host}`);
   } catch (error) {
-    console.error(`❌ MongoDB connection error: ${error.message}`);
-    // Exit process so Railway restarts the container cleanly
-    process.exit(1);
+    // FAIL OPEN: a DB connection failure must NOT take the whole backend down. Grading,
+    // access codes (Redis), and redaction all work without Mongo; only DB-backed features
+    // (admin stats, at-risk) degrade until it reconnects. Previously this did process.exit(1),
+    // so a single DB/network blip (e.g. Railway egress moving outside the Atlas allow-list)
+    // crash-looped the entire service. Log, keep serving, and retry in the background.
+    console.error(`❌ MongoDB connection error (continuing WITHOUT DB, retrying in 15s): ${error.message}`);
+    setTimeout(connectDB, 15000);
   }
 };
 
