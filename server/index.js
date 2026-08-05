@@ -832,7 +832,7 @@ app.get('/debug/egress-ip', async (req, res) => {
       fetch('https://api.ipify.org').then((r) => r.text()).catch(() => ''),
       fetch('https://ifconfig.me/ip').then((r) => r.text()).catch(() => ''),
     ]);
-    res.json({ egressIp: (a || b || '').trim(), crossCheck: (b || '').trim(), uptimeSec: Math.round(process.uptime()) });
+    res.json({ egressIp: (a || b || '').trim(), crossCheck: (b || '').trim(), uptimeSec: Math.round(process.uptime()), commit: (process.env.RAILWAY_GIT_COMMIT_SHA || '').slice(0, 7) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
