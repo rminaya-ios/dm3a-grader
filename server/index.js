@@ -823,21 +823,6 @@ app.post('/redact', async (req, res) => {
   }
 });
 
-// TEMPORARY (remove after Atlas network hardening): reports this service's outbound
-// public IP so we can confirm it falls inside Railway's US-East egress range before
-// tightening the Atlas IP access list. Additive + read-only; exposes no secret.
-app.get('/debug/egress-ip', async (req, res) => {
-  try {
-    const [a, b] = await Promise.all([
-      fetch('https://api.ipify.org').then((r) => r.text()).catch(() => ''),
-      fetch('https://ifconfig.me/ip').then((r) => r.text()).catch(() => ''),
-    ]);
-    res.json({ egressIp: (a || b || '').trim(), crossCheck: (b || '').trim(), uptimeSec: Math.round(process.uptime()), commit: (process.env.RAILWAY_GIT_COMMIT_SHA || '').slice(0, 7) });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 function generateTrialPassword() {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
   let pwd = 'trial-';
