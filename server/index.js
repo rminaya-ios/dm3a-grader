@@ -823,18 +823,11 @@ app.post('/redact', async (req, res) => {
   }
 });
 
-// TEMPORARY (diagnostic): reports this service's outbound public IP + uptime so we can
-// see where Railway's egress moved and confirm a fresh container. Read-only, no secret.
-app.get('/debug/egress-ip', async (req, res) => {
-  try {
-    const [a, b] = await Promise.all([
-      fetch('https://api.ipify.org').then((r) => r.text()).catch(() => ''),
-      fetch('https://ifconfig.me/ip').then((r) => r.text()).catch(() => ''),
-    ]);
-    res.json({ egressIp: (a || b || '').trim(), crossCheck: (b || '').trim(), uptimeSec: Math.round(process.uptime()), commit: (process.env.RAILWAY_GIT_COMMIT_SHA || '').slice(0, 7), mongo: require('mongoose').connection.readyState });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+// Health check for uptime monitoring (e.g. UptimeRobot). Returns 200 whenever the server
+// is up. DB state is informational only — Mongo is fail-open, so a DB blip must NOT read
+// as "site down". mongo: 1=connected, 0/2=reconnecting.
+app.get('/healthz', (req, res) => {
+  res.json({ ok: true, uptimeSec: Math.round(process.uptime()), mongo: require('mongoose').connection.readyState });
 });
 
 function generateTrialPassword() {
