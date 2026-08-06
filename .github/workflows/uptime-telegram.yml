@@ -1,0 +1,57 @@
+name: Uptime → Telegram (@drm3a_bot)
+
+# Pings the Grader's /healthz every ~5 min and messages @drm3a_bot if it's DOWN.
+# Runs on GitHub's servers, so it alerts even when Railway itself is down. Free on this
+# public repo. Add the two secrets in: repo Settings → Secrets and variables → Actions
+# (copy the values from the Railway dm3a-grader service → Variables).
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'          # ~every 5 min (GitHub may delay under load)
+  workflow_dispatch:                # manual run button (with an optional test message)
+    inputs:
+      test:
+        description: 'Send a test Telegram message even if the site is UP'
+        type: boolean
+        default: false
+
+permissions: {}                     # least privilege — this job only makes outbound calls
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /healthz and alert @drm3a_bot if down
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST_MODE: ${{ inputs.test }}
+        run: |
+          set -u
+          URL="https://dm3a-grader-production.up.railway.app/healthz"
+
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::warning::Telegram secrets not set yet — add TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID in Settings → Secrets and variables → Actions. Skipping."
+            exit 0
+          fi
+
+          send() {
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              --data-urlencode text="$1" \
+              -o /dev/null -w 'telegram send: HTTP %{http_code}\n'
+          }
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$URL" || echo 000)
+          echo "healthz HTTP $code"
+
+          if [ "${TEST_MODE:-false}" = "true" ]; then
+            send "✅ DM3A uptime test — Telegram alerts via @drm3a_bot are working. (/healthz = ${code})"
+            exit 0
+          fi
+
+          if [ "$code" != "200" ]; then
+            send "🔴 DM3A Grader is DOWN — /healthz returned ${code} at $(date -u '+%Y-%m-%d %H:%M UTC'). Students may be unable to grade. Check Railway → dm3a-grader → Logs."
+          else
+            echo "up — no alert sent"
+          fi
