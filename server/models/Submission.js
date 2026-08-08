@@ -17,6 +17,18 @@ const rubricBreakdownSchema = new mongoose.Schema(
 
 const submissionSchema = new mongoose.Schema(
   {
+    // ── Ownership (instructor accounts) ──────────────────────────────────
+    // Backfilled from professorEmail by scripts/migrateToAccounts.js. Optional
+    // and unset by default: the grading pipeline is unauthenticated and does not
+    // populate it, so professorEmail remains the operative key for new records.
+    // Purely additive — no existing query filters on this.
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+
     // ── Identity ─────────────────────────────────────────────────────────
     // Blind Grading (Part C-1): identity may be alias-only. studentEmail/
     // studentName are now OPTIONAL; a record must carry `alias` OR `studentEmail`

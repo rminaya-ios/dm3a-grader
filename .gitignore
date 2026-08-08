@@ -17,6 +17,11 @@ dist-ssr
 .env.*
 !.env.example
 
+# Stray Tesseract language data in the repo root. The copy the app actually uses
+# is server/eng.traineddata, which IS committed (Railway needs it at runtime with
+# no download). Leading slash = root only, so it never matches the server copy.
+/eng.traineddata
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

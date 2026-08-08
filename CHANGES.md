@@ -50,6 +50,69 @@ iPhone Safari ran a **cached old bundle** that skipped `/redact` and leaked. Add
 version-check in `src/App.jsx` that reloads once when the running bundle is stale (on load +
 bfcache `pageshow`). A client cached *before* this needs one manual refresh to adopt it.
 
+## Instructor accounts (2026-08-08) — BUILT, TESTED LOCALLY, **NOT DEPLOYED**
+Replaces the single shared app password with per-instructor email+password logins.
+Nothing is on Railway/Vercel yet — deploy is gated on the DNS step below.
+
+- **Two new collections.** `models/User.js` (email, bcrypt hash cost 12, name, reset
+  token *hash* + expiry) and `models/Course.js` (userId + the course metadata the
+  frontend already used). Rosters are NOT in Course — student names stay in the
+  client-encrypted `RosterVault`, untouched.
+- **`/api/auth`** (`routes/auth.js`): register, login, logout, me, legacy-login,
+  request-reset, reset. Session = JWT in an httpOnly cookie, 7 days, `SameSite=Lax`,
+  `Secure` + `Domain=.dm3agrader.com` in production. `lib/auth.js` fails closed when
+  `JWT_SECRET` is unset (same policy as `lib/adminAuth.js`).
+- **`/api/my/courses`** (`routes/myCourses.js`): every query filtered by
+  `req.user.id`. Unique index on `{userId, courseCode}` + an explicit duplicate
+  check (don't trust the index alone). `POST /import` is idempotent.
+- **The shared password was NOT in `.env`** — it was hardcoded at `src/App.jsx:596`
+  (a literal `APP_PASSWORD` constant, unchanged since 2026-05-21) and therefore shipped in
+  the public JS bundle. It now lives ONLY in server env as `LEGACY_SHARED_PASSWORD`,
+  gated by `ALLOW_LEGACY_LOGIN`. Confirmed absent from `dist/` after rebuild.
+  **A legacy session is deliberately account-less** (no uid): that password is
+  public, so binding it to a real account would hand strangers that instructor's
+  data. Legacy users keep browser-local courses — exactly the old behavior.
+- **Courses moved server-side.** They previously lived only in localStorage
+  (`dm3a-courses`) — which is why `RosterVault.js` says "there is no Course
+  collection". The sync seam is the single existing `persistCourses()` in App.jsx,
+  so the monolith barely changed. localStorage is now an offline cache. A one-time
+  **"Import courses from this browser"** button moves them in (once per browser).
+- **`scripts/migrateToAccounts.js`** — DRY RUN by default, `--commit` to write,
+  `--create-user` to create the account. Backfills `userId` on Submission and
+  AtRiskFlag by professorEmail (case-insensitive), idempotent. Both models gained an
+  optional `userId` (default null, nothing queries it yet — the unauthenticated
+  grading pipeline does not populate it, so `professorEmail` stays the operative key
+  for NEW records). Dry run against production on 2026-08-08: **43 submissions, 0
+  at-risk flags** for ralph.minaya@gmail.com.
+- **Trial passwords still work** (`/validate-trial`, untouched) via the same
+  fallback screen. Student Access Codes, piiGuard, roster vault, `/redact`,
+  `/grade`, and the Redis limiters were not modified.
+- **Incidental fix:** `new Resend(...)` was constructed eagerly in three places
+  (`services/alertDispatcher.js`, `index.js`, and new code). Resend THROWS without an
+  API key, so the server was **unbootable on any machine without `RESEND_API_KEY`** —
+  i.e. every local dev environment. All three are now lazy. Railway behavior unchanged.
+
+### Deploying this (NOT done — needs a DNS step first)
+The site is `dm3agrader.com` but the API is on `up.railway.app`. A login cookie
+between two different domains is a **third-party cookie, which Safari blocks** — so
+accounts would silently fail on iPhone. Fix chosen: put the API on
+`api.dm3agrader.com` so both are first-party to `dm3agrader.com`.
+1. Add `api.dm3agrader.com` as a custom domain on the Railway service; add the CNAME
+   it gives you at the registrar. Wait for it to resolve.
+2. Set on Railway: `JWT_SECRET` (long random), `ALLOW_LEGACY_LOGIN=true`,
+   `LEGACY_SHARED_PASSWORD` (the old shared password — recover it from
+   `git show c7e2305:src/App.jsx | grep APP_PASSWORD` if needed),
+   `APP_BASE_URL=https://dm3agrader.com`.
+   See `server/.env.example`.
+3. Deploy backend (push to main), THEN frontend (`vercel --prod`). The frontend
+   points at `https://api.dm3agrader.com` — deploying it first yields a dead app.
+4. Run the migration: dry run, read it, then `--commit`.
+5. Only after accounts are confirmed working: `ALLOW_LEGACY_LOGIN=false`.
+
+**Risk to remember:** accounts REQUIRE Mongo, but `config/db.js` is deliberately
+fail-open so grading survives a DB outage. If Atlas goes down, nobody can sign in.
+`ALLOW_LEGACY_LOGIN=true` is the break-glass — keep it on until confident.
+
 ## Atlas / MongoDB security hardening (2026-08-04 → 2026-08-06)
 Both apps share ONE Atlas cluster (`dm3a`, project "Project 0", M0/free). Two DB users:
 `checkpoint` (CheckPoint app, `readWriteAnyDatabase`) and `ralphminaya_db_user` (Grader

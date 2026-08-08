@@ -9,6 +9,8 @@ import App from './App.jsx'
 // visited — the grading app (App.jsx) stays untouched and its bundle stays lean.
 const AdminDashboard = lazy(() => import('./AdminDashboard.jsx'))
 const BlindGrading = lazy(() => import('./blind/BlindGrading.jsx'))
+// Password reset needs a real URL because the link arrives by email (/reset?token=…).
+const ResetPage = lazy(() => import('./auth/ResetPage.jsx'))
 const path = window.location.pathname.replace(/\/+$/, '')
 
 createRoot(document.getElementById('root')).render(
@@ -17,6 +19,8 @@ createRoot(document.getElementById('root')).render(
       <Suspense fallback={null}><AdminDashboard /></Suspense>
     ) : path === '/blind' ? (
       <Suspense fallback={null}><BlindGrading /></Suspense>
+    ) : path === '/reset' ? (
+      <Suspense fallback={null}><ResetPage /></Suspense>
     ) : (
       <App />
     )}
