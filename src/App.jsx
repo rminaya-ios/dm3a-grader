@@ -12,6 +12,10 @@ import { buildNameIndex } from "./blind/translate.js";
 import { findPlaintext } from "./blind/zeroPlaintext.js";
 import { redactNameZone, terminateRedactor } from "./blind/redact.js";
 import LandingPage from "./LandingPage";
+// Instructor accounts. AuthGate replaces the old shared-password screen; authApi
+// also carries the account-scoped course endpoints used by persistCourses().
+import AuthGate from "./auth/AuthGate.jsx";
+import * as authApi from "./auth/api.js";
 
 // ── At-Risk Predictor (Phase 3) — input-layer constants ──
 // localStorage key for persisted course profiles.
@@ -480,13 +484,25 @@ ${partialCreditRules ? `\n## PARTIAL CREDIT RULES (apply these before scoring)\n
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
-const SERVER_URL = 'https://dm3a-grader-production.up.railway.app';
+// api.dm3agrader.com is a sibling of the site's own domain, which keeps the login
+// cookie first-party (iOS Safari blocks third-party cookies outright). Override
+// with VITE_SERVER_URL for local development — same pattern as AdminDashboard.jsx.
+const SERVER_URL =
+  (import.meta.env && import.meta.env.VITE_SERVER_URL) ||
+  'https://api.dm3agrader.com';
 
 export default function DM3AGraderV5() {
   const [step, setStep] = useState("login");
-  const [password, setPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
+  // ── Instructor account session ──────────────────────────────────────────────
+  // authUser is the signed-in account (null when signed out OR on a legacy
+  // shared-password session, which is deliberately account-less).
+  const [authUser, setAuthUser] = useState(null);
+  const [authLegacy, setAuthLegacy] = useState(false);
+  const [courseSyncNote, setCourseSyncNote] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  // Which AuthGate screen to open on — so "Create an account" on the role picker
+  // lands directly on sign-up instead of making people find it again.
+  const [authInitialView, setAuthInitialView] = useState("login");
   const [showTierGuide, setShowTierGuide] = useState(false);
   const [subject, setSubject] = useState("");
   const [assignment, setAssignment] = useState("");
@@ -593,8 +609,6 @@ export default function DM3AGraderV5() {
   const studentRef = useRef();
   const studentRubricRef = useRef();
 
-  const APP_PASSWORD = "dmgof50c";
-
   // ─── AT-RISK: COURSE PROFILE STORE (localStorage `dm3a-courses`) ────────────
   // Load saved course profiles on mount.
   useEffect(() => {
@@ -629,6 +643,12 @@ export default function DM3AGraderV5() {
   // written to localStorage (Blind Grading, Part C-final). Only stripped metadata
   // (course code, professor email, vault flag) is persisted; secure a course to
   // persist its roster encrypted in the vault.
+  //
+  // Instructor accounts: when signed in, the same metadata is ALSO synced to the
+  // account so courses follow the instructor between devices. localStorage stays
+  // as the offline cache and as the whole story for legacy (account-less)
+  // sessions. Every course mutation in this file already funnels through here,
+  // so this one function is the entire sync seam.
   function persistCourses(next) {
     setCourses(next);
     try {
@@ -636,6 +656,126 @@ export default function DM3AGraderV5() {
       localStorage.setItem(DM3A_COURSES_KEY, JSON.stringify(stripped));
     } catch {
       /* storage unavailable — keep in-memory */
+    }
+    syncCoursesToAccount(next);
+  }
+
+  // Push course metadata to the signed-in account. Best-effort and non-blocking:
+  // a sync failure must never interrupt grading, so it only leaves a note.
+  // Deletions are handled by removeCourse, which knows which code disappeared.
+  function syncCoursesToAccount(next) {
+    if (!authUser) return; // signed out, or a legacy session with no account
+    Promise.all(
+      next.map((c) =>
+        authApi.saveCourse(c.courseCode, {
+          professorEmail: c.professorEmail || "",
+          studentAccessCode: c.studentAccessCode || "",
+          vaulted: !!c.vaulted,
+          vaultUpdatedAt: c.vaultUpdatedAt || null,
+          redactNames: c.redactNames !== false,
+        })
+      )
+    )
+      .then(() => setCourseSyncNote(""))
+      .catch(() => setCourseSyncNote("Couldn't save your courses to your account — they're still saved on this device."));
+  }
+
+  // ─── INSTRUCTOR ACCOUNTS: session restore + course load ─────────────────────
+  // Ask the server who we are on every load. A valid session cookie means the
+  // instructor skips the sign-in screen entirely.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { user, legacy } = await authApi.me();
+      if (cancelled) return;
+      if (user) {
+        setAuthUser(user);
+        setStep((s) => (s === "login" ? "setup" : s));
+        loadAccountCourses();
+      } else if (legacy) {
+        setAuthLegacy(true);
+        setStep((s) => (s === "login" ? "setup" : s));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []); // run once on mount
+
+  // Replace local course state with the account's courses. The roster is never
+  // stored server-side, so entries come back roster-less — matching what
+  // localStorage holds after the plaintext purge.
+  async function loadAccountCourses() {
+    try {
+      const { courses: mine } = await authApi.listCourses();
+      const withRoster = (mine || []).map((c) => ({
+        courseCode: c.courseCode,
+        professorEmail: c.professorEmail || "",
+        studentAccessCode: c.studentAccessCode || "",
+        vaulted: !!c.vaulted,
+        vaultUpdatedAt: c.vaultUpdatedAt || null,
+        redactNames: c.redactNames !== false,
+        roster: [],
+      }));
+      setCourses(withRoster);
+      try {
+        localStorage.setItem(DM3A_COURSES_KEY, JSON.stringify(withRoster));
+      } catch { /* storage unavailable */ }
+    } catch {
+      setCourseSyncNote("Couldn't load your courses from your account — showing what's saved on this device.");
+    }
+  }
+
+  // Called by AuthGate once a session exists.
+  function handleAuthed({ user, legacy }) {
+    setAuthUser(user || null);
+    setAuthLegacy(!!legacy);
+    setStep("setup");
+    setShowTierGuide(true);
+    if (user) loadAccountCourses();
+  }
+
+  async function handleSignOut() {
+    try { await authApi.logout(); } catch { /* sign out locally regardless */ }
+    setAuthUser(null);
+    setAuthLegacy(false);
+    setCourses([]);
+    setCourseSyncNote("");
+    setStep("login");
+    setShowLanding(true);
+  }
+
+  // One-time import of the courses sitting in THIS browser's localStorage. Skips
+  // codes the account already has, so re-clicking (or importing from a second
+  // machine) is safe.
+  async function importLocalCourses() {
+    setImportBusy(true);
+    setCourseSyncNote("");
+    try {
+      const raw = localStorage.getItem(DM3A_COURSES_KEY);
+      const local = raw ? JSON.parse(raw) : [];
+      const payload = (Array.isArray(local) ? local : [])
+        .filter((c) => c && c.courseCode)
+        .map((c) => ({
+          courseCode: c.courseCode,
+          professorEmail: c.professorEmail || "",
+          studentAccessCode: c.studentAccessCode || "",
+          vaulted: !!c.vaulted,
+          vaultUpdatedAt: c.vaultUpdatedAt || null,
+          redactNames: c.redactNames !== false,
+        }));
+      if (!payload.length) {
+        setCourseSyncNote("No courses found in this browser to import.");
+        return;
+      }
+      const { imported, skipped } = await authApi.importCourses(payload);
+      await loadAccountCourses();
+      setCourseSyncNote(
+        `Imported ${imported} course${imported === 1 ? "" : "s"}` +
+        (skipped ? `, skipped ${skipped} already on your account.` : ".")
+      );
+    } catch (e) {
+      setCourseSyncNote(e.message || "Could not import courses from this browser.");
+    } finally {
+      setImportBusy(false);
     }
   }
 
@@ -720,6 +860,9 @@ export default function DM3AGraderV5() {
 
   function deleteCourse(code) {
     persistCourses(courses.filter((c) => c.courseCode !== code));
+    // Mirror the removal to the account. Best-effort: the encrypted roster vault
+    // and grade history are untouched, exactly as before accounts existed.
+    if (authUser) authApi.deleteCourse(code).catch(() => {});
     if (activeCourseCode === code) {
       setActiveCourseCode("");
       setProfessorEmail("");
@@ -792,6 +935,9 @@ export default function DM3AGraderV5() {
         : c
     );
     persistCourses(next);
+    // A rename creates the new code on the account (via persistCourses); drop the
+    // old one so it doesn't linger as a duplicate.
+    if (authUser && newCode !== originalCode) authApi.deleteCourse(originalCode).catch(() => {});
     // Keep active selection in sync if the edited course is the active one.
     if (activeCourseCode === originalCode) {
       setActiveCourseCode(newCode);
@@ -1528,34 +1674,8 @@ export default function DM3AGraderV5() {
     return map;
   }
 
-  async function handleLogin(e) {
-    e.preventDefault();
-    if (password === APP_PASSWORD) {
-      setStep("setup");
-      setShowTierGuide(true);
-      return;
-    }
-    // Check trial password via Railway
-    try {
-      setLoginError("Checking password...");
-      const res = await fetch(`${SERVER_URL}/validate-trial`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password })
-      });
-      const { valid, reason } = await res.json();
-      if (valid) {
-        setStep("setup");
-        setShowTierGuide(true);
-      } else {
-        setLoginError(reason === "expired"
-          ? "Trial password has expired. Contact support@dm3agrader.com to renew."
-          : "Incorrect password. Contact support@dm3agrader.com for access.");
-      }
-    } catch {
-      setLoginError("Could not verify password — check your connection and try again.");
-    }
-  }
+  // Sign-in now lives in src/auth/AuthGate.jsx (accounts + the shared-password
+  // and trial-password fallbacks). handleAuthed() above takes it from there.
 
   // ─── FILE HELPERS ─────────────────────────────────────────────────────────
 
@@ -3070,9 +3190,19 @@ Return a JSON array with exactly ONE student object.`;
             </p>
             <button
               style={{ ...styles.btn, background: "#C9A84C", color: "#1B2A4A", marginTop: 8 }}
-              onClick={() => setStep("login")}>
-              Enter Grader →
+              onClick={() => { setAuthInitialView("login"); setStep("login"); }}>
+              Sign in →
             </button>
+            {/* Instructors now need an account, so the way to make one has to be
+                visible from the front door — not buried on the next screen. */}
+            <p style={{ margin: 0, textAlign: "center", fontSize: 12, color: "#C4BFAD" }}>
+              New here?{" "}
+              <button
+                style={{ background: "none", border: "none", padding: 0, color: "#C9A84C", cursor: "pointer", fontSize: 12, textDecoration: "underline", fontFamily: "inherit" }}
+                onClick={() => { setAuthInitialView("signup"); setStep("login"); }}>
+                Create an account
+              </button>
+            </p>
           </div>
           {/* Student card */}
           <div style={{ background: "#fff", border: "2px solid #1B2A4A", borderRadius: 12, padding: 28, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -3099,47 +3229,10 @@ Return a JSON array with exactly ONE student object.`;
     </div>
   );
 
+  // Instructor accounts: sign in / create account / forgot password, plus the
+  // shared-password and trial-password fallbacks. See src/auth/AuthGate.jsx.
   if (step === "login") return (
-    <div style={{ ...styles.root, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-      <div style={{ width: "100%", maxWidth: 400 }}>
-        <div style={styles.header}>
-          <span style={styles.badge}>DM3A Grader™</span>
-          <h1 style={styles.h1}>Mastery-Based AI Grading</h1>
-          <p style={styles.sub}>Dr. Ralph Minaya, Ed.D.</p>
-        </div>
-        <div style={styles.card}>
-          <form onSubmit={handleLogin}>
-            <label style={styles.label}>Access Password</label>
-            <div style={{ position: "relative", marginBottom: 16 }}>
-              <input
-                style={{ ...styles.input, paddingRight: 44 }}
-                type={showPassword ? "text" : "password"}
-                placeholder="Enter password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                autoFocus
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(p => !p)}
-                style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#5A5A55", fontSize: 13, padding: "4px 6px" }}>
-                {showPassword ? "Hide" : "Show"}
-              </button>
-            </div>
-            {loginError && <p style={{ color: "#A32D2D", fontSize: 13, marginBottom: 12 }}>{loginError}</p>}
-            <button style={{ ...styles.btn, width: "100%" }} type="submit">Enter DM3A Grader™ →</button>
-          </form>
-        </div>
-        <p style={{ textAlign: "center", fontSize: 12, color: "#888" }}>Contact support@dm3agrader.com for access</p>
-        <p style={{ textAlign: "center", fontSize: 12, color: "#888", marginTop: 16 }}>
-          <button
-            style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
-            onClick={() => setStep("role-select")}>
-            ← Back
-          </button>
-        </p>
-      </div>
-    </div>
+    <AuthGate initialView={authInitialView} onAuthed={handleAuthed} onBack={() => setStep("role-select")} />
   );
 
   // ── STUDENT UPLOAD SCREEN ─────────────────────────────────────────────────
@@ -3427,6 +3520,20 @@ Return a JSON array with exactly ONE student object.`;
             </button>
           </div>
         </div>
+        {/* Account bar (instructor accounts) */}
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 10, fontSize: 12, color: "#5A5A55" }}>
+          {authUser ? (
+            <>
+              <span>Signed in as <b>{authUser.name || authUser.email}</b></span>
+              <button onClick={handleSignOut} style={{ ...styles.btnOutline, padding: "4px 10px", fontSize: 12 }}>Sign out</button>
+            </>
+          ) : authLegacy ? (
+            <>
+              <span>Signed in with the shared password — courses stay on this device.</span>
+              <button onClick={handleSignOut} style={{ ...styles.btnOutline, padding: "4px 10px", fontSize: 12 }}>Sign out</button>
+            </>
+          ) : null}
+        </div>
       </div>
 
       {/* Subject Selection */}
@@ -3550,6 +3657,26 @@ Return a JSON array with exactly ONE student object.`;
               <input style={{ ...styles.input, flex: 2, minWidth: 140 }} type="email" placeholder="Professor email" value={addProfessorEmail} onChange={e => setAddProfessorEmail(e.target.value)} />
               <button type="button" style={styles.btn} onClick={addCourse} disabled={!addCourseCode.trim()}>Add Course</button>
             </div>
+
+            {/* One-time import of this browser's saved courses into the account.
+                Idempotent — codes already on the account are skipped — so it is
+                safe to run again, and once per machine that holds courses. */}
+            {authUser && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+                <button type="button" style={{ ...styles.btnOutline, padding: "6px 12px", fontSize: 12 }}
+                  disabled={importBusy} onClick={importLocalCourses}>
+                  {importBusy ? "Importing…" : "Import courses from this browser"}
+                </button>
+                <span style={{ fontSize: 12, color: "#888" }}>
+                  Brings courses saved on this device into your account. Safe to click twice.
+                </span>
+              </div>
+            )}
+            {courseSyncNote && (
+              <div style={{ fontSize: 12, color: "#5A5A55", background: "#FEF9EC", border: "1px solid #F5C842", borderRadius: 6, padding: "8px 10px", marginBottom: 12 }}>
+                {courseSyncNote}
+              </div>
+            )}
 
             {/* Course list */}
             {courses.length === 0 && <div style={{ fontSize: 13, color: "#888" }}>No courses yet.</div>}

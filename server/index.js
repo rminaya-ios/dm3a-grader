@@ -44,6 +44,11 @@ const { redactImageServer } = require('./lib/serverRedact.js');
 const coursesRoutes = require('./routes/courses.js');
 const { piiGuard } = require('./middleware/piiGuard.js');
 
+// ── Instructor accounts (email + password logins, session cookie) ─────────────
+const cookieParser = require('cookie-parser');
+const authRoutes = require('./routes/auth.js');
+const myCoursesRoutes = require('./routes/myCourses.js');
+
 // ── Blind Grading (Part C-final): BLANKET PII guard — zero exemptions ──────────
 // piiGuard is now on every grading/recording route: /grade, /detect-work,
 //   /api/courses/*, /api/risk/record, and /api/submissions/save. No route accepts
@@ -66,7 +71,11 @@ const corsOptions = {
   // (roster-vault worked because it only sends Content-Type).
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key'],
-  credentials: false
+  // Instructor accounts: the session cookie only rides along on cross-origin
+  // requests when this is true AND the origin is an explicit allow-list (never a
+  // wildcard — the browser rejects `*` with credentials). The list above is
+  // explicit, so this is safe.
+  credentials: true
 };
 app.use(cors(corsOptions));
 
@@ -74,6 +83,7 @@ app.use(cors(corsOptions));
 // allowed methods/headers (no permissive-default divergence).
 app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
+app.use(cookieParser()); // reads the dm3a_session cookie (instructor accounts)
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -659,7 +669,14 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Lazy for the same reason as services/alertDispatcher.js: Resend throws from its
+// constructor without a key, which made the server unbootable locally. Unchanged
+// on Railway, where RESEND_API_KEY is set.
+let _resend = null;
+function resendClient() {
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY);
+  return _resend;
+}
 
 // ── STUDENT ACCESS CODES (instructor-linked unlimited Student Mode) ────────────
 // A code maps ONLY to a course (course code + instructor email) — never to a
@@ -848,7 +865,7 @@ app.post('/request-trial', async (req, res) => {
 
     await redis.set(`trial:${password}`, JSON.stringify({ email, expiry, signupDate }), { ex: 7 * 24 * 60 * 60 });
 
-    await resend.emails.send({
+    await resendClient().emails.send({
       from: 'DM3A Grader <support@dm3agrader.com>',
       to: email,
       bcc: 'ralph.minaya@drminaya.com',
@@ -912,6 +929,14 @@ app.use('/api/admin', adminStatsRoutes);
 // ── BLIND GRADING (roster vault + PII guard, Phase 1) ──────────
 app.use('/api/courses', coursesRoutes);
 // ── END BLIND GRADING ──────────────────────────────────────────
+
+// ── INSTRUCTOR ACCOUNTS ────────────────────────────────────────
+// Replaces the shared app password with per-instructor logins. /api/auth also
+// serves the shared-password fallback (ALLOW_LEGACY_LOGIN) so nothing breaks
+// mid-migration; /api/my/courses is strictly account-scoped.
+app.use('/api/auth', authRoutes);
+app.use('/api/my/courses', myCoursesRoutes);
+// ── END INSTRUCTOR ACCOUNTS ────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`DM3A Server running on port ${PORT}`);

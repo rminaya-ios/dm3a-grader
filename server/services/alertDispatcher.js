@@ -6,7 +6,16 @@
 const { Resend } = require('resend');
 const axios = require('axios');
 
-const resend    = new Resend(process.env.RESEND_API_KEY);
+// Built lazily: Resend THROWS from its constructor when RESEND_API_KEY is unset,
+// and this module is required (via riskEvaluator -> submissionService) at server
+// startup — so an eager `new Resend(...)` made the whole backend unbootable on any
+// machine without the key, i.e. every local dev environment. Behavior on Railway,
+// where the key IS set, is unchanged.
+let _resend = null;
+function resendClient() {
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY);
+  return _resend;
+}
 const FROM_EMAIL = 'support@dm3agrader.com';
 const BOT_TOKEN  = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID    = process.env.TELEGRAM_CHAT_ID; // your drm3a_bot chat ID
@@ -75,7 +84,7 @@ const sendProfessorAlert = async (flag) => {
   // Blind courses: identity is the alias; the instructor re-identifies locally.
   const who           = flag.studentName || flag.alias || 'Student';
 
-  await resend.emails.send({
+  await resendClient().emails.send({
     from:    FROM_EMAIL,
     to:      flag.professorEmail,
     subject: `${stateLabel} — ${who} · ${flag.courseCode}`,
@@ -172,7 +181,7 @@ const sendStudentAlert = async (flag) => {
       </div>
     `;
 
-  await resend.emails.send({
+  await resendClient().emails.send({
     from:    FROM_EMAIL,
     to:      flag.studentEmail,
     subject,

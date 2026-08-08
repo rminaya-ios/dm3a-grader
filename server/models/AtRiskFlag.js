@@ -7,6 +7,16 @@ const mongoose = require('mongoose');
 
 const atRiskFlagSchema = new mongoose.Schema(
   {
+    // ── Ownership (instructor accounts) ──────────────────────────────────
+    // Backfilled from professorEmail by scripts/migrateToAccounts.js. See the
+    // matching note in models/Submission.js — additive, nothing queries it yet.
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+
     // ── Identity ─────────────────────────────────────────────────────────
     // Blind Grading (Part C-1): identity may be alias-only. Optional now; a flag
     // must carry `alias` OR `studentEmail` (pre-validate hook below).
