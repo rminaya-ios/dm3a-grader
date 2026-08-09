@@ -29,6 +29,20 @@ const submissionSchema = new mongoose.Schema(
       index: true,
     },
 
+    // ── Provenance (At-Risk Bridge, Phase 2) ─────────────────────────────
+    // Which app produced this record:
+    //   'grader'     -> graded here (default; also what un-backfilled legacy
+    //                   records mean by having no value at all)
+    //   'checkpoint' -> an instructor-confirmed level bridged from DM3A
+    //                   CheckPoint via POST /api/risk/bridge
+    // Plain String, not an enum, so a third source needs no migration — the
+    // same choice GradingEvent.recordedVia makes.
+    source: {
+      type: String,
+      default: 'grader',
+      index: true,
+    },
+
     // ── Identity ─────────────────────────────────────────────────────────
     // Blind Grading (Part C-1): identity may be alias-only. studentEmail/
     // studentName are now OPTIONAL; a record must carry `alias` OR `studentEmail`

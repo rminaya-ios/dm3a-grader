@@ -35,6 +35,8 @@ const adminStatsRoutes = require('./routes/adminStats.js');
 
 // ── Student access codes (instructor-linked unlimited Student Mode) ─
 const { requireAdminKey } = require('./lib/adminAuth.js');
+// At-Risk Bridge (Phase 2): server-to-server auth for POST /api/risk/bridge.
+const { requireBridgeKey } = require('./lib/bridgeAuth.js');
 const { sendTelegramMessage } = require('./services/alertDispatcher.js');
 
 // ── Server-side name-zone redaction (authoritative pass — reliable on every device) ─
@@ -70,7 +72,10 @@ const corsOptions = {
   // preflight disallowed the header, so the browser blocked the real request
   // (roster-vault worked because it only sends Content-Type).
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key'],
+  // x-risk-bridge-key: the At-Risk Bridge is server-to-server (no browser, no
+  // preflight) but listing it keeps the allow-list honest about what the API
+  // accepts, and costs nothing.
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key', 'x-risk-bridge-key'],
   // Instructor accounts: the session cookie only rides along on cross-origin
   // requests when this is true AND the origin is an explicit allow-list (never a
   // wildcard — the browser rejects `*` with credentials). The list above is
@@ -197,10 +202,22 @@ async function recordOneSubmission(ctx, student) {
       rubricBreakdown,
       feedbackSummary:  (student.feedback || '').slice(0, 500),
       semesterTag:      ctx.semesterTag,
+      source:           ctx.source || 'grader',
     });
     return { status: 'recorded', flagged: Boolean(flagResult) };
   }
 
+  // ── UNREACHABLE AS OF 2026-08-09 — candidate for deletion ────────────────
+  // The legacy name→roster→email path below cannot be reached over HTTP. Both
+  // entry points (/grade and /api/risk/record) are behind piiGuard with zero
+  // exemptions, and its inputs — student.studentName and ctx.roster[].
+  // studentName / studentEmail — are all on the guard's denylist, so such a
+  // request is rejected with 400 before this function is ever called.
+  //
+  // Kept deliberately (decision 2026-08-09): removing it is a separate, cleanly
+  // reviewable change, and leaving it costs nothing while the alias pipeline
+  // beds in. Do NOT "fix" it by exempting the guard — that would reopen the PII
+  // surface Blind Grading Part C-final deliberately closed.
   const wanted = String(student.studentName || '').trim().toLowerCase();
   const match = roster.find(
     (r) => String(r.studentName || '').trim().toLowerCase() === wanted
@@ -541,6 +558,96 @@ app.post('/api/risk/record', piiGuard, async (req, res) => {
   } catch (err) {
     console.error('[AT-RISK] /api/risk/record error:', err.message);
     res.status(500).json({ success: false, error: err.message, recorded: 0, skipped: 0, alertsFired: 0 });
+  }
+});
+
+// ── AT-RISK BRIDGE: single alias-keyed record from DM3A CheckPoint ─────────
+// Phase 2, Option A. CheckPoint posts ONE instructor-confirmed level here so a
+// student sliding across both apps trips one rule set and one alert stream.
+//
+// Distinct from /api/risk/record on purpose: that one is a grading-shaped BATCH
+// ({ riskContext, results[] }) and is left completely untouched. This one takes
+// a single flat record, and skips the roster-membership check because the
+// caller is authenticated — CheckPoint already validated the alias against its
+// own course before sending.
+//
+// Auth: X-Risk-Bridge-Key (fail closed). piiGuard still applies, so a name field
+// is rejected here exactly as everywhere else — the bridge is alias-only by
+// construction AND by enforcement.
+//
+// body: { alias, courseCode, professorEmail, assignmentName, pScore,
+//         assignmentWeight?, source?, semesterTag?, sessionDate?, submittedAt? }
+//   -> { success, recorded, flagged }
+
+// Weights the rule engine treats as high-stakes (mirrors HIGH_WEIGHT_TYPES in
+// services/riskEvaluator.js). A bridged record must never look like one: R4
+// ("P1 on a high-weight assignment") is meaningless for a formative in-class
+// check, so the weight is forced to 'practice' if a caller claims otherwise.
+// Enforcing the invariant here, rather than trusting the sender, is what makes
+// "CheckPoint never fires R4" a property of the system instead of a convention.
+const BRIDGE_FORBIDDEN_WEIGHTS = ['quiz', 'midterm', 'exam'];
+const BRIDGE_DEFAULT_WEIGHT = 'practice';
+
+app.post('/api/risk/bridge', requireBridgeKey, piiGuard, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const alias = String(b.alias || '').trim();
+    const courseCode = String(b.courseCode || '').trim();
+    const professorEmail = String(b.professorEmail || '').trim();
+    const assignmentName = String(b.assignmentName || '').trim();
+    const pScore = Number(b.pScore);
+
+    if (!alias) return res.status(400).json({ error: 'alias required (bridge records are alias-only)' });
+    if (!courseCode) return res.status(400).json({ error: 'courseCode required' });
+    if (!professorEmail) return res.status(400).json({ error: 'professorEmail required' });
+    if (!assignmentName) return res.status(400).json({ error: 'assignmentName required' });
+    if (!Number.isInteger(pScore) || pScore < 1 || pScore > 4) {
+      // CheckPoint's P0 ("did not attempt") has no equivalent here and is
+      // filtered on its side; reject it explicitly rather than coercing.
+      return res.status(400).json({ error: 'pScore must be an integer 1-4' });
+    }
+
+    let assignmentWeight = String(b.assignmentWeight || BRIDGE_DEFAULT_WEIGHT).trim();
+    if (BRIDGE_FORBIDDEN_WEIGHTS.includes(assignmentWeight)) {
+      console.warn(
+        `[RISK BRIDGE] refusing high-weight "${assignmentWeight}" on a bridged record — ` +
+          `forcing "${BRIDGE_DEFAULT_WEIGHT}" (course=${courseCode})`
+      );
+      assignmentWeight = BRIDGE_DEFAULT_WEIGHT;
+    }
+
+    const ctx = {
+      professorEmail,
+      courseCode,
+      assignmentName,
+      assignmentWeight,
+      // assignmentIndex deliberately absent: R6 ("P1 on the FIRST assignment")
+      // must not fire on a formative checkpoint.
+      semesterTag: b.semesterTag || null,
+      source: String(b.source || 'checkpoint').trim() || 'checkpoint',
+      roster: [], // empty => recordOneSubmission skips the roster-match gate
+    };
+
+    // Reuse the existing alias path verbatim. Building the same shape /grade
+    // produces means one save/evaluate/alert code path, not a parallel one that
+    // can drift.
+    const student = { alias, overallTier: `P${pScore}` };
+    const result = await recordOneSubmission(ctx, student);
+
+    if (result?.status !== 'recorded') {
+      console.warn(`[RISK BRIDGE] not recorded (${result?.reason || 'unknown'}) alias=${alias}`);
+      return res.status(422).json({ success: false, recorded: 0, reason: result?.reason || 'not-recorded' });
+    }
+
+    console.log(
+      `[RISK BRIDGE] recorded ${alias} | ${courseCode} | ${assignmentName} | P${pScore}` +
+        (result.flagged ? ' | FLAGGED' : '')
+    );
+    return res.json({ success: true, recorded: 1, flagged: Boolean(result.flagged) });
+  } catch (err) {
+    console.error('[RISK BRIDGE] error:', err.message);
+    // 5xx so the sender queues and retries rather than dropping the record.
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

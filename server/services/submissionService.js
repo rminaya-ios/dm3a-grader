@@ -28,6 +28,7 @@ const saveSubmission = async (data) => {
     rubricBreakdown,
     feedbackSummary,
     semesterTag,
+    source, // 'grader' (default) | 'checkpoint' — At-Risk Bridge provenance
   } = data;
 
   // ── Derive pLabel from pScore ──────────────────────────────────────────
@@ -52,6 +53,7 @@ const saveSubmission = async (data) => {
     rubricBreakdown,
     feedbackSummary: feedbackSummary || null,
     semesterTag: semesterTag || null,
+    source: source || 'grader',
   });
 
   console.log(

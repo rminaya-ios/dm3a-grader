@@ -83,6 +83,10 @@ const sendProfessorAlert = async (flag) => {
   const dashboardUrl  = `${process.env.FRONTEND_URL}/dashboard`;
   // Blind courses: identity is the alias; the instructor re-identifies locally.
   const who           = flag.studentName || flag.alias || 'Student';
+  // Alias-keyed flag => neither this server nor this email can name the student.
+  // Say so, and say what to do about it, rather than leaving the reader staring
+  // at a code. (At-Risk Bridge, Phase 2.)
+  const isAliasOnly   = !flag.studentName && Boolean(flag.alias);
 
   await resendClient().emails.send({
     from:    FROM_EMAIL,
@@ -107,6 +111,14 @@ const sendProfessorAlert = async (flag) => {
               : 'This student may be disengaging. A personal outreach message sent within 24–48 hours is recommended.'
           }
         </p>
+        ${
+          isAliasOnly
+            ? `<p style="background:#eef2ff;border-left:3px solid #1d4ed8;padding:10px 12px;color:#1e3a8a;font-size:14px;margin:16px 0;">
+                 <strong>${who}</strong> is a course alias, not a name — this system cannot identify the student.
+                 <br/>Unlock the roster in your dashboard to resolve this alias.
+               </p>`
+            : ''
+        }
         <a href="${dashboardUrl}" style="
           display: inline-block;
           background: #1d4ed8;
@@ -201,12 +213,15 @@ const sendTelegramAlert = async (flag) => {
 
   const emoji     = flag.flagState === 'ACT_NOW' ? '🚨' : '⚠️';
   const typeLabel = flag.flagType === 'academic' ? 'Academic' : 'Behavioral';
+  const isAliasOnly = !flag.studentName && Boolean(flag.alias);
   const message   = [
     `${emoji} *DM3A At-Risk Alert*`,
     `👤 Student: ${flag.studentName || flag.alias || 'Student'}`,
     `📚 Course: ${flag.courseCode}`,
     `🔖 Rule: ${flag.triggerRule} (${typeLabel})`,
     `📋 ${flag.triggerDescription}`,
+    // Alias-keyed: the alert names a code because that is all this system has.
+    ...(isAliasOnly ? ['🔒 Unlock the roster in your dashboard to resolve this alias.'] : []),
     `→ [Open Dashboard](${process.env.FRONTEND_URL}/dashboard)`,
   ].join('\n');
 

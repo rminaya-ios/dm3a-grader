@@ -187,6 +187,26 @@ const runRules = (history, current) => {
     };
   }
 
+  // ── TODO / KNOWN BROKEN (found 2026-08-09, out of scope then) ────────────
+  // R5 and R1 do not work. Documented here rather than quietly fixed, because
+  // repairing them changes which students get flagged and deserves its own
+  // scoped change with real verification.
+  //
+  // R5 (feedback ignored): NOT IMPLEMENTED AT ALL. The comment below refers to
+  //   services/riskScheduler.js — that file has never existed in this repo. No
+  //   code anywhere evaluates R5, so the rule can never fire.
+  //
+  // R1 (inactivity >= 7 days): DEAD ON ARRIVAL on this path. runRules() is only
+  //   called from evaluateRisk() immediately after a submission is saved, and
+  //   history[0] IS that submission — so daysSinceLast is always ~0 and the
+  //   threshold is unreachable. Detecting inactivity requires a scheduled sweep
+  //   over students who have NOT submitted; nothing does that today.
+  //
+  // Consequence: of R1–R6, only R2, R3, R4 and R6 can actually fire. Both gaps
+  // trace to the same missing scheduler. Also recorded in CHANGES.md and in
+  // CheckPoint's RUNBOOK §I (they gate whether CheckPoint's P0 "did not attempt"
+  // signal can ever be bridged).
+
   // R5: Feedback ignored — submitted but no follow-up within window
   // (This rule is evaluated separately by a scheduled job; see riskScheduler.js)
 
