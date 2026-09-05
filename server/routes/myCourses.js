@@ -36,6 +36,14 @@ function sanitize(body) {
   if (body.vaulted !== undefined) out.vaulted = !!body.vaulted;
   if (body.vaultUpdatedAt !== undefined) out.vaultUpdatedAt = body.vaultUpdatedAt ? new Date(body.vaultUpdatedAt) : null;
   if (body.redactNames !== undefined) out.redactNames = body.redactNames !== false;
+  if (body.studentDims && typeof body.studentDims === 'object') {
+    out.studentDims = {
+      conceptualUnderstanding: body.studentDims.conceptualUnderstanding !== false,
+      problemSolving:          body.studentDims.problemSolving !== false,
+      workShown:               body.studentDims.workShown !== false,
+      accuracy:                body.studentDims.accuracy !== false,
+    };
+  }
   return out;
 }
 

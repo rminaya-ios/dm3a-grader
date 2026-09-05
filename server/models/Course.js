@@ -54,6 +54,17 @@ const courseSchema = new mongoose.Schema(
     // Per-course opt-out for name-zone redaction. Default true = redaction ON,
     // matching the fail-closed default in App.jsx (`c.redactNames !== false`).
     redactNames: { type: Boolean, default: true },
+
+    // Which DM3A dimensions a STUDENT's self-check is scored on for this course.
+    // The instructor owns this; /code-check hands it to the student flow so a
+    // student checking a true/false quiz is not scored on Work Shown they were
+    // never asked to produce. All true = the behaviour that existed before.
+    studentDims: {
+      conceptualUnderstanding: { type: Boolean, default: true },
+      problemSolving:          { type: Boolean, default: true },
+      workShown:               { type: Boolean, default: true },
+      accuracy:                { type: Boolean, default: true },
+    },
   },
   {
     timestamps: true,
@@ -72,6 +83,12 @@ courseSchema.methods.toPublic = function toPublic() {
     vaulted: !!this.vaulted,
     vaultUpdatedAt: this.vaultUpdatedAt,
     redactNames: this.redactNames !== false,
+    studentDims: {
+      conceptualUnderstanding: this.studentDims?.conceptualUnderstanding !== false,
+      problemSolving:          this.studentDims?.problemSolving !== false,
+      workShown:               this.studentDims?.workShown !== false,
+      accuracy:                this.studentDims?.accuracy !== false,
+    },
   };
 };
 

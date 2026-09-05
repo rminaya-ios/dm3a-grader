@@ -468,6 +468,10 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
       response = await anthropic.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 64000,
+        // Grading is a judgement task, not a creative one: the same paper must score
+        // the same way on every run or an instructor cannot defend a grade on appeal.
+        // The API default of 1.0 was measurably costing reproducibility.
+        temperature: 0,
         system: systemPrompt,
         messages: [{ role: 'user', content: finalBlocks }],
       });
@@ -803,6 +807,18 @@ const CODE_KEY_TTL          = 129600; // ~36h — daily counters/alert flags aut
 function etDayKey(d = new Date()) {
   return d.toLocaleDateString('en-CA', { timeZone: CODE_TZ });
 }
+// Student self-check dimension scope carried on an access code. Anything absent
+// defaults to true, so a code minted before this existed behaves exactly as before.
+function normalizeDims(d) {
+  const o = d && typeof d === 'object' ? d : {};
+  return {
+    conceptualUnderstanding: o.conceptualUnderstanding !== false,
+    problemSolving:          o.problemSolving !== false,
+    workShown:               o.workShown !== false,
+    accuracy:                o.accuracy !== false,
+  };
+}
+
 function normalizeCode(raw) {
   return String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
 }
@@ -864,7 +880,7 @@ app.post('/instructor/access-code/generate', requireAdminKey, async (req, res) =
       const candidate = makeCode();
       const ok = await redis.set(
         `accesscode:${candidate}`,
-        JSON.stringify({ course, professorEmail, createdAt: new Date().toISOString() }),
+        JSON.stringify({ course, professorEmail, dims: normalizeDims(req.body?.dims), createdAt: new Date().toISOString() }),
         { nx: true }
       );
       if (ok) { code = candidate; break; }
@@ -874,6 +890,25 @@ app.post('/instructor/access-code/generate', requireAdminKey, async (req, res) =
     res.json({ code, course });
   } catch (err) {
     console.error('[ACCESS CODE] generate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update the student self-check dimension scope for an EXISTING code, without
+// rotating the code. ADMIN-ONLY. body: { code, dims } -> { ok, dims }
+app.post('/instructor/access-code/dims', requireAdminKey, async (req, res) => {
+  try {
+    const code = normalizeCode(req.body?.code);
+    if (!code) return res.status(400).json({ error: 'code is required' });
+    const raw = await redis.get(`accesscode:${code}`);
+    if (!raw) return res.status(404).json({ error: 'Unknown or expired code' });
+    const meta = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    meta.dims = normalizeDims(req.body?.dims);
+    await redis.set(`accesscode:${code}`, JSON.stringify(meta));
+    console.log(`[ACCESS CODE] dims updated for ${code}: ${Object.entries(meta.dims).filter(([, v]) => v).map(([k]) => k).join(',')}`);
+    res.json({ ok: true, dims: meta.dims });
+  } catch (err) {
+    console.error('[ACCESS CODE] dims error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -906,7 +941,7 @@ app.post('/code-check', async (req, res) => {
     const meta = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const countRaw = await redis.get(`codecount:${code}:${etDayKey()}`);
     const used = countRaw ? parseInt(countRaw, 10) : 0;
-    res.json({ valid: true, allowed: used < CODE_DAILY_MAX, course: meta.course || '', usedToday: used, max: CODE_DAILY_MAX });
+    res.json({ valid: true, allowed: used < CODE_DAILY_MAX, course: meta.course || '', dims: normalizeDims(meta.dims), usedToday: used, max: CODE_DAILY_MAX });
   } catch (err) {
     console.error('[ACCESS CODE] check error:', err.message);
     // Fail SAFE for students: on our error, don't grant unlimited — fall to free tier.

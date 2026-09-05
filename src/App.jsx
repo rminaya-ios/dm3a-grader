@@ -268,7 +268,54 @@ const TIER_META = {
 
 // ─── SYSTEM PROMPT BUILDER ────────────────────────────────────────────────────
 
-function buildSystemPrompt(courseConfig) {
+// ── DM3A scoring dimensions ──────────────────────────────────────────────────
+// The instructor chooses which dimensions an assignment actually evidences. A
+// true/false quiz evidences Accuracy and nothing else; asking the model to score
+// Work Shown from a page with no work produces an invented number that differs
+// from run to run. Scoring only what is evidenced is what makes runs reproducible.
+const DIM_META = [
+  ["conceptualUnderstanding", "Conceptual Understanding", "does the student show they know the relevant concept or definition?"],
+  ["problemSolving",          "Problem Solving",          "did they choose and apply an appropriate method or strategy?"],
+  ["workShown",               "Work Shown",               "is their reasoning and process documented clearly enough to follow?"],
+  ["accuracy",                "Accuracy",                 "are their computations and final answers correct?"],
+];
+const ALL_DIMS = { conceptualUnderstanding: true, problemSolving: true, workShown: true, accuracy: true };
+const DIM_PREF_KEY = "dm3a.activeDims";
+const dimsOn  = (dims) => DIM_META.filter(([k]) => (dims || ALL_DIMS)[k]);
+const dimsOff = (dims) => DIM_META.filter(([k]) => !(dims || ALL_DIMS)[k]);
+const dimListPrompt = (dims) => dimsOn(dims).map(([, label, q], i) => `${i + 1}. ${label} — ${q}`).join("\n");
+const dimJson = (dims, scale, indent) => dimsOn(dims).map(([k]) => `${indent}"${k}": "${scale}"`).join(",\n");
+const DIM_FB_NOTE = {
+  conceptualUnderstanding: "1–3 sentences: what concept knowledge was demonstrated or missing",
+  problemSolving: "1–3 sentences: what the approach showed; what strategy to revisit",
+  workShown: "1–3 sentences: how clearly the process is documented",
+  accuracy: "1–3 sentences: where errors appear; ONE hint if wrong — never the answer",
+};
+const dimFeedbackJson = (dims) => dimsOn(dims).map(([k]) => `    "${k}": "${DIM_FB_NOTE[k]}"`).join(",\n");
+// Dimensions switched off must not be invented, and must not appear in the JSON.
+const dimScopeRule = (dims) => {
+  const off = dimsOff(dims);
+  if (!off.length) return "";
+  return `
+## DIMENSION SCOPE — the instructor has limited what this assignment measures
+Score ONLY these dimensions: ${dimsOn(dims).map(([, l]) => l).join(", ")}.
+Do NOT score, infer, mention or return: ${off.map(([, l]) => l).join(", ")}. This assignment provides no evidence for them, and a guess is worse than an omission.
+The "dimensions" object must contain the listed keys ONLY.
+`;
+};
+// Strip anything the model returned for a dimension the instructor switched off.
+const applyDimScope = (list, dims) => (Array.isArray(list) ? list : [list]).map((r) => {
+  if (!r || !r.dimensions) return r;
+  const d = {}, fb = {};
+  for (const [k] of DIM_META) {
+    if (!(dims || ALL_DIMS)[k]) continue;
+    if (r.dimensions[k] != null) d[k] = r.dimensions[k];
+    if (r.dimensionFeedback && r.dimensionFeedback[k] != null) fb[k] = r.dimensionFeedback[k];
+  }
+  return { ...r, dimensions: d, ...(r.dimensionFeedback ? { dimensionFeedback: fb } : {}) };
+});
+
+function buildSystemPrompt(courseConfig, dims = ALL_DIMS) {
   return `CRITICAL: You must ALWAYS respond with valid JSON only. Never respond with narrative text, analysis, or markdown. Your entire response must be a single JSON array starting with [ and ending with ]. If you cannot grade, still return the JSON structure with P1 scores and explanation in the feedback field.
 
 You are an expert mathematics grader using the DM3A mastery-based assessment framework developed by Dr. Ralph Minaya, Ed.D.
@@ -285,19 +332,21 @@ PROCESS IS MORE IMPORTANT THAN THE FINAL ANSWER. A student who demonstrates corr
 
 ## CRITICAL RULES FOR TRUE/FALSE AND PROOF-BASED PROBLEMS
 - For any True/False problem, you MUST verify your own mathematical reasoning before assigning a score. Do not rely on surface-level pattern matching. Work through the logic step by step before deciding if the statement is true or false.
-- If a student's answer on a True/False problem is correct but their explanation is incomplete or missing, assign P3 — not P4. A correct answer without a valid justification does not demonstrate mastery.
+${(dims || ALL_DIMS).workShown ? "- If a student's answer on a True/False problem is correct but their explanation is incomplete or missing, assign P3 — not P4. A correct answer without a valid justification does not demonstrate mastery." : "- Written explanations are NOT expected on this assignment. Judge each True/False problem solely on whether the answer is correct. A correct answer earns P4; never withhold P4 for a missing justification."}
 - If a student's answer is incorrect, verify that YOUR explanation of why it is incorrect is mathematically sound before including it in feedback. If you are not certain, flag the problem with: "Instructor review recommended — proof-based problem."
 - For proof-based problems, a correct example does NOT constitute a proof. A student who provides only an example where a general argument is required should receive P2 at most.
 - When in doubt on any True/False or proof-based problem, append this note to the problem feedback: "Note: This problem requires instructor verification before finalizing the score."
 
-## CRITICAL RULES FOR EXPLANATION DEPTH VS. CORRECT ANSWER
+${(dims || ALL_DIMS).workShown ? `## CRITICAL RULES FOR EXPLANATION DEPTH VS. CORRECT ANSWER
 - A correct final answer alone does NOT earn P4. The student must demonstrate clear, complete mathematical reasoning to earn P4.
 - Distinguish explicitly between these two cases:
   1. Correct answer WITH complete argument or generalization → P4
   2. Correct answer WITH only a specific example, incomplete steps, or missing justification → P3 at most
 - In Linear Algebra and higher-level courses: a student who verifies a property using a specific numerical example when a general proof is required earns P2, not P3 or P4. Generalization is a required skill at this level.
 - When assigning P4, you must be able to identify specific evidence in the student's work that demonstrates complete reasoning — not just a correct answer.
-- In your feedback, always name the specific reasoning element that was present (earning P4) or missing (limiting the score to P3 or below). Never say only "correct" or "incorrect" — explain what the student did or did not demonstrate.
+- In your feedback, always name the specific reasoning element that was present (earning P4) or missing (limiting the score to P3 or below). Never say only "correct" or "incorrect" — explain what the student did or did not demonstrate.` : `## SCORING THIS ASSIGNMENT
+- Written explanations are NOT expected. Judge each problem solely on whether the student's answer is correct.
+- A correct answer earns P4. Never reduce a score for a missing, brief, or absent justification.`}
 
 ## CRITICAL RULES FOR READING HANDWRITTEN STUDENT WORK
 - Before penalizing any student calculation, re-examine the handwriting carefully. Handwritten numbers and symbols can be ambiguous — what looks like an error may be a legibility issue, not a mathematical mistake.
@@ -322,7 +371,7 @@ ${courseConfig.partialCreditRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
 4. When handwriting is ambiguous, assume the most mathematically charitable interpretation.
 5. NEVER penalize a student for not reducing further than the problem asked.
 6. Flag any problem where you have LOW CONFIDENCE in your grading with "flagged: true".
-
+${dimScopeRule(dims)}
 ## OUTPUT FORMAT
 Return ONLY a valid JSON array. No preamble, no markdown fences, no explanation outside the JSON.
 
@@ -331,10 +380,7 @@ Each student object:
   "studentName": "string",
   "overallTier": "P1|P2|P3|P4",
   "dimensions": {
-    "conceptualUnderstanding": "P1|P2|P3|P4",
-    "problemSolving": "P1|P2|P3|P4",
-    "workShown": "P1|P2|P3|P4",
-    "accuracy": "P1|P2|P3|P4"
+${dimJson(dims, "P1|P2|P3|P4", "    ")}
   },
   "problems": [
     {
@@ -402,7 +448,7 @@ Student work may appear as handwritten answers written directly onto a printed a
 // results screen renders without modification; "dimensionFeedback" and
 // "whatToWorkOnNext" are additive fields for a future student-specific screen.
 
-function buildStudentSystemPrompt(courseConfig) {
+function buildStudentSystemPrompt(courseConfig, dims = ALL_DIMS) {
   const hasCfg = courseConfig && courseConfig.label;
   const subject = hasCfg ? courseConfig.label : "Mathematics";
   const p4 = hasCfg ? courseConfig.p4Descriptor : "Complete, correct, well-documented work";
@@ -428,11 +474,8 @@ You are a mastery coach reviewing a student's self-submitted mathematics work to
 - P1 = Beginning: ${p1}
 - P0 = No evidence of proficiency: no work visible for this dimension
 
-## FOUR SCORING DIMENSIONS — score each independently
-1. Conceptual Understanding — does the student show they know the relevant concept or definition?
-2. Problem Solving — did they choose and apply an appropriate method or strategy?
-3. Work Shown — is their reasoning and process documented clearly enough to follow?
-4. Accuracy — are their computations and final answers correct?
+## SCORING DIMENSIONS — score each independently
+${dimListPrompt(dims)}${dimScopeRule(dims)}
 ${partialCreditRules ? `\n## PARTIAL CREDIT RULES (apply these before scoring)\n${partialCreditRules}` : ""}
 
 ## STRICT FEEDBACK RULES — follow all of them
@@ -454,16 +497,10 @@ ${partialCreditRules ? `\n## PARTIAL CREDIT RULES (apply these before scoring)\n
   "overallTier": "P1|P2|P3|P4",
   "unofficial": true,
   "dimensions": {
-    "conceptualUnderstanding": "P0|P1|P2|P3|P4",
-    "problemSolving": "P0|P1|P2|P3|P4",
-    "workShown": "P0|P1|P2|P3|P4",
-    "accuracy": "P0|P1|P2|P3|P4"
+${dimJson(dims, "P0|P1|P2|P3|P4", "    ")}
   },
   "dimensionFeedback": {
-    "conceptualUnderstanding": "1–3 sentences: what concept knowledge was demonstrated or missing",
-    "problemSolving": "1–3 sentences: what the approach showed; what strategy to revisit",
-    "workShown": "1–3 sentences: how clearly the process is documented",
-    "accuracy": "1–3 sentences: where errors appear; ONE hint if wrong — never the answer"
+${dimFeedbackJson(dims)}
   },
   "problems": [
     {
@@ -507,6 +544,18 @@ export default function DM3AGraderV5() {
   const [subject, setSubject] = useState("");
   const [assignment, setAssignment] = useState("");
   const [rubric, setRubric] = useState("");
+  // Which DM3A dimensions this assignment is scored on. Remembered as the default
+  // for next time; a T/F quiz and a project in the same section need different sets.
+  const [activeDims, setActiveDims] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(DIM_PREF_KEY) || "null");
+      if (saved && typeof saved === "object") return { ...ALL_DIMS, ...saved };
+    } catch { /* ignore */ }
+    return { ...ALL_DIMS };
+  });
+  useEffect(() => {
+    try { localStorage.setItem(DIM_PREF_KEY, JSON.stringify(activeDims)); } catch { /* ignore */ }
+  }, [activeDims]);
   const [assignmentFile, setAssignmentFile] = useState(null);
   const [answerKeyFile, setAnswerKeyFile] = useState(null);
   const [studentFiles, setStudentFiles] = useState([]);
@@ -873,6 +922,31 @@ export default function DM3AGraderV5() {
 
   // Generate (or regenerate) a Student Access Code for a course. Requires the admin
   // key (server enforces it too). Regenerating passes the old code so the server
+  // Set which dimensions a STUDENT's self-check scores for this course. Saved on
+  // the course, and pushed to the live access code so it reaches students without
+  // rotating the code. A missing admin key is not an error — the course still
+  // remembers the choice and the next code mint carries it.
+  async function setCourseStudentDims(course, key, checked) {
+    const next = { ...ALL_DIMS, ...(course.studentDims || {}), [key]: checked };
+    if (!Object.values(next).some(Boolean)) return; // never allow zero dimensions
+    persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, studentDims: next } : c));
+    const code = course.studentAccessCode || "";
+    const adminKey = (accessKeyInput || "").trim() || sessionStorage.getItem("dm3a_admin_key") || "";
+    if (!code || !adminKey) return;
+    try {
+      const res = await fetch(`${SERVER_URL}/instructor/access-code/dims`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-key": adminKey },
+        body: JSON.stringify({ code, dims: next }),
+      });
+      setAccessNote(res.ok
+        ? `Student self-check scope updated for ${course.courseCode}.`
+        : "Saved for this course, but the live access code could not be updated — enter your admin key and toggle again.");
+    } catch {
+      setAccessNote("Saved for this course, but the server could not be reached to update the live code.");
+    }
+  }
+
   // invalidates it immediately. The returned code is stored with the course.
   async function generateAccessCode(course, { regenerate = false } = {}) {
     const key = (accessKeyInput || "").trim();
@@ -888,6 +962,7 @@ export default function DM3AGraderV5() {
           course: course.courseCode,
           professorEmail: course.professorEmail || "",
           previousCode: regenerate ? (course.studentAccessCode || "") : "",
+          dims: course.studentDims || ALL_DIMS,
         }),
       });
       if (res.status === 401) { setAccessNote("Admin key not accepted — check the key and try again."); return; }
@@ -1414,6 +1489,9 @@ export default function DM3AGraderV5() {
           body: JSON.stringify({ code }),
         });
         const data = await res.json();
+        // A valid code carries the instructor's scoring scope for that course, so a
+        // student self-checking a true/false quiz is not scored on Work Shown.
+        if (data.valid && data.dims) setActiveDims({ ...ALL_DIMS, ...data.dims });
         if (data.valid && data.allowed) { setCodeStatus("valid"); setCodeCourse(data.course || ""); }
         else if (data.valid && !data.allowed) { setCodeStatus("capped"); setCodeCourse(data.course || ""); }
         else { setCodeStatus("invalid"); setCodeCourse(""); }
@@ -2059,7 +2137,7 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     setStep("grading");
     const courseConfig = COURSE_CONFIGS[subject];
     const heicFailed = [];
-    const systemPrompt = buildSystemPrompt(courseConfig);
+    const systemPrompt = buildSystemPrompt(courseConfig, activeDims);
     const allResults = [];
 
     // ── BATCH PDF MODE ──────────────────────────────────────────────────────
@@ -2515,7 +2593,7 @@ Return a JSON array with one object per student found in the submission.`;
 
     padImages(null); // #23: reconcile any tail so pageImages aligns 1:1 with results
     setSubmissionImages(pageImages.map(e => e ? { image: e.image, redacted: !!e.redacted, scanned: !!e.scanned } : null));
-    setResults(allResults);
+    setResults(applyDimScope(allResults, activeDims));
     setOverrides({});
     setActiveStudent(0);
     if (heicFailed.length > 0) setHeicFailedFiles(heicFailed);
@@ -2614,7 +2692,7 @@ Return a JSON array with one object per student found in the submission.`;
     setStep("grading");
 
     const courseConfig = COURSE_CONFIGS[subject];
-    const systemPrompt = buildStudentSystemPrompt(courseConfig); // student flow uses its own prompt
+    const systemPrompt = buildStudentSystemPrompt(courseConfig, activeDims); // student flow uses its own prompt
     const allImageBlocks = [];
     const heicFailed = [];
 
@@ -2716,7 +2794,7 @@ Return a JSON array with exactly ONE student object.`;
         : userPrompt;
       const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectivePrompt, codeContext });
       const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
-      setResults(Array.isArray(parsed) ? parsed : [parsed]);
+      setResults(applyDimScope(Array.isArray(parsed) ? parsed : [parsed], activeDims));
       gradeSucceeded = true;
     } catch (err) {
       setResults([{
@@ -2821,7 +2899,7 @@ Return a JSON array with exactly ONE student object.`;
       ${[["Conceptual", ov.conceptual || student.dimensions?.conceptualUnderstanding],
          ["Problem Solving", ov.problemSolving || student.dimensions?.problemSolving],
          ["Work Shown", ov.workShown || student.dimensions?.workShown],
-         ["Accuracy", ov.accuracy || student.dimensions?.accuracy]].map(([label, val]) =>
+         ["Accuracy", ov.accuracy || student.dimensions?.accuracy]].filter(([, val]) => val != null).map(([label, val]) =>
         `<div class="dim"><div class="dim-label">${label}</div><div style="font-weight:700;font-size:18px;color:${tierColors[val||"P1"]}">${val||"—"}</div></div>`
       ).join("")}
     </div>
@@ -3006,8 +3084,8 @@ Return a JSON array with exactly ONE student object.`;
       ["Problem Solving", ov.problemSolving || student.dimensions?.problemSolving],
       ["Work Shown", ov.workShown || student.dimensions?.workShown],
       ["Accuracy", ov.accuracy || student.dimensions?.accuracy],
-    ];
-    const colW = (W - M * 2) / 4;
+    ].filter(([, val]) => val != null);
+    const colW = (W - M * 2) / Math.max(1, dims.length);
     dims.forEach(([label, val], i) => {
       const x = M + i * colW + colW / 2;
       const dtc = tierColors[val] || [80, 80, 80];
@@ -3103,7 +3181,7 @@ Return a JSON array with exactly ONE student object.`;
   // ─── COLORS ───────────────────────────────────────────────────────────────
 
   // Top-level systemPrompt — used by BB batch preview screen (subject may not be set yet at render time)
-  const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"]);
+  const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"], activeDims);
 
   const tierColor = { P4: "#0F6E56", P3: "#185FA5", P2: "#854F0B", P1: "#A32D2D" };
   const tierBg = { P4: "#E1F5EE", P3: "#E6F1FB", P2: "#FAEEDA", P1: "#FCEBEB" };
@@ -3567,6 +3645,29 @@ Return a JSON array with exactly ONE student object.`;
         <input style={{ ...styles.input, marginBottom: 14 }} placeholder="e.g., Quiz 3 — Linear Systems" value={assignment} onChange={e => setAssignment(e.target.value)} />
         <label style={styles.label}>Additional Rubric Notes (optional)</label>
         <textarea style={{ ...styles.input, minHeight: 80, resize: "vertical", marginBottom: 14 }} placeholder="Any specific grading notes for this assignment..." value={rubric} onChange={e => setRubric(e.target.value)} />
+
+        <label style={styles.label}>Scoring Dimensions</label>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
+          {DIM_META.map(([key, label]) => (
+            <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={!!activeDims[key]}
+                onChange={e => setActiveDims(prev => {
+                  const next = { ...prev, [key]: e.target.checked };
+                  return Object.values(next).some(Boolean) ? next : prev; // never allow zero dimensions
+                })}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+        <p style={{ margin: "0 0 14px", fontSize: 12, color: "#5A5A55", lineHeight: 1.5 }}>
+          Uncheck any dimension this assignment does not evidence. A true/false or multiple-choice quiz
+          normally scores Accuracy only — scoring the others from a page with no work produces guesses
+          that change between runs. Unchecking Work Shown also tells the grader that written
+          justifications are not expected, so a correct answer is not capped at P3.
+        </p>
         <label style={styles.label}>Problems to grade (optional)</label>
         <input style={styles.input} placeholder="e.g. Problems 1, 2a, 2b, 3, 4a, 4b, 4c, 5a, 5b" value={problemScope} onChange={e => setProblemScope(e.target.value)} />
       </div>
@@ -3762,6 +3863,23 @@ Return a JSON array with exactly ONE student object.`;
                           <input type="checkbox" checked={c.redactNames !== false} onChange={e => persistCourses(courses.map(x => x.courseCode === c.courseCode ? { ...x, redactNames: e.target.checked } : x))} />
                           <span>Auto-redact handwritten names on page 1 before grading{c.redactNames !== false ? "" : " (off)"}</span>
                         </label>
+                        {/* Student self-check scope: what a STUDENT's own run is scored on for this course. */}
+                        <div style={{ marginTop: 8, color: "#5A5A55" }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Student self-check scores</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+                            {DIM_META.map(([key, label]) => (
+                              <label key={key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                                <input
+                                  type="checkbox"
+                                  checked={(c.studentDims || ALL_DIMS)[key] !== false}
+                                  onChange={e => setCourseStudentDims(c, key, e.target.checked)}
+                                />
+                                <span>{label}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <div style={{ fontSize: 11, marginTop: 3 }}>Applies to students who enter this course's access code. Your own grading scope is set per assignment on the setup form.</div>
+                        </div>
                         {/* #21: current roster/aliases, so an instructor can read the codes before updating or distributing. */}
                         {viewAliases === c.courseCode && unlockedRosters[c.courseCode] && (
                           <div style={{ marginTop: 8, maxHeight: 200, overflowY: "auto", border: "1px solid #E6E4DC", borderRadius: 6 }}>
@@ -4190,7 +4308,7 @@ Return a JSON array with exactly ONE student object.`;
             const doRedact = redactionOn(courseByCode(activeCourseCode));
             const bbStubFiles = []; // Blackboard .txt submission stubs excluded from grading
             const courseConf = COURSE_CONFIGS[subject] || {};
-            const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"]);
+            const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"], activeDims);
             function chunkArray(arr, size) {
               const chunks = [];
               for (let i = 0; i < arr.length; i += size) {
@@ -4403,7 +4521,7 @@ Return a JSON array with exactly ONE student object.`;
             const cleanResults = allResults.map(({ _pageImage, _pageRedacted, _pageScanned, _subId, ...rest }) => rest);
             setSubmissionImages(imgs);
             setBbStubNote(bbStubFiles.length); // #25
-            setResults(cleanResults);
+            setResults(applyDimScope(cleanResults, activeDims));
             setOverrides({});
             setActiveStudent(0);
             setLoading(false);
@@ -4844,7 +4962,7 @@ Return a JSON array with exactly ONE student object.`;
               ["Problem Solving", "problemSolving", "problemSolving"],
               ["Work Shown", "workShown", "workShown"],
               ["Accuracy", "accuracy", "accuracy"]
-            ].map(([label, key, ovKey]) => {
+            ].filter(([, key]) => !student.dimensions || student.dimensions[key] != null).map(([label, key, ovKey]) => {
               const val = ov[ovKey] || student.dimensions?.[key] || "P1";
               const feedbackNote = isStudentMode ? student.dimensionFeedback?.[key] : null;
               return (
