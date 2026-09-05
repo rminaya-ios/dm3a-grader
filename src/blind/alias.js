@@ -9,11 +9,47 @@
 
 export const ALIAS_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'; // 31 chars, no 0/O/1/I/L
 
-// Normalize an alias for matching. OCR of a handwritten ID often adds spaces
-// ("TEST 11 - UEGR"); the vault stores the clean form ("TEST11-UEGR"). Uppercase
-// + strip ALL whitespace so detected IDs key/match the vault reliably.
+// Normalize an alias for matching. OCR of a handwritten ID adds spaces and mangles
+// punctuation — "MATH 11 - JAMZ", "MATH11 - DB YP", and a hyphen read as an en-dash
+// all mean MATH11-JAMZ / MATH11-DBYP. Uppercase and drop EVERY non-alphanumeric
+// character, so only the letters and digits are compared. (Stripping whitespace
+// alone left a mangled separator in place and failed an otherwise perfect match.)
 export function normalizeAlias(s) {
-  return String(s || '').toUpperCase().replace(/\s+/g, '');
+  return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+// The alias alphabet already excludes 0/O/1/I/L because students handwrite these,
+// but OCR still confuses these pairs, all of which the alphabet contains:
+//   5/S   2/Z   8/B   6/G
+// Folding each pair to one representative lets a mis-read ID find its student.
+// Folding is LOSSY, so it is only ever used to propose a candidate — never to
+// decide one on its own (see matchAlias).
+const OCR_FOLD = { '5': 'S', '2': 'Z', '8': 'B', '6': 'G' };
+export function foldConfusables(s) {
+  return String(s || '').replace(/[5286]/g, (c) => OCR_FOLD[c]);
+}
+
+// The random suffix is what actually identifies a student; the course prefix is
+// shared by everyone and is the part OCR mangles most ("Mauh11", "mchn", "Mathill").
+export function aliasSuffix(s, len = 4) {
+  const n = normalizeAlias(s);
+  return n.length >= len ? n.slice(-len) : '';
+}
+
+// Match a detected ID against the course's aliases.
+//   exact      — normalized strings are identical; safe to assign silently.
+//   candidates — confusable-tolerant suffix matches; the caller must refuse to
+//                assign when there is more than one, and should ask the
+//                instructor to verify even when there is exactly one.
+export function matchAlias(detected, aliases, len = 4) {
+  const d = normalizeAlias(detected);
+  const list = aliases || [];
+  if (!d) return { exact: null, candidates: [] };
+  const exact = list.find((a) => normalizeAlias(a) === d) || null;
+  if (exact) return { exact, candidates: [exact] };
+  const ds = foldConfusables(aliasSuffix(detected, len));
+  if (!ds) return { exact: null, candidates: [] };
+  return { exact: null, candidates: list.filter((a) => foldConfusables(aliasSuffix(a, len)) === ds) };
 }
 
 // Default course prefix: course code uppercased, alnum-only, ≤6 chars.

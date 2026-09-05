@@ -4,7 +4,7 @@ const BBExport = lazy(() => import("./blind/BBExport.jsx"));
 // Blind Grading (Parts A/B). Only the tiny WebCrypto helpers are static-imported;
 // PapaParse and pdf-lib are dynamic-imported inside handlers so the grading
 // bundle stays lean.
-import { assignAliases, normalizeAlias } from "./blind/alias.js";
+import { assignAliases, normalizeAlias, matchAlias } from "./blind/alias.js";
 import { encryptMapping, decryptMapping, MIN_PASSPHRASE_LEN } from "./blind/vault.js";
 import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
 import { diffRoster } from "./blind/rosterDiff.js";
@@ -1370,9 +1370,14 @@ export default function DM3AGraderV5() {
     results.forEach((s, i) => {
       if (activeVaulted) {
         // Blind: the AI read the student's alias; map it to the roster alias.
-        // normalizeAlias absorbs OCR whitespace ("TEST 11 - UEGR" → "TEST11-UEGR").
-        const match = activeRoster.find((r) => normalizeAlias(r.alias) === normalizeAlias(s.studentName));
-        if (match) { mapping[i] = match.alias; return; }
+        // normalizeAlias absorbs OCR spacing and punctuation ("MATH 11 - JAMZ").
+        const { exact, candidates } = matchAlias(s.studentName, activeRoster.map((r) => r.alias));
+        if (exact) { mapping[i] = exact; return; }
+        // One confusable-tolerant candidate (5/S, 2/Z, 8/B, 6/G on the random
+        // suffix): pre-fill it but flag it for the instructor to verify. More than
+        // one candidate is ambiguous — assign nothing rather than risk the wrong
+        // student's grade.
+        if (candidates.length === 1) { mapping[i] = candidates[0]; auto[i] = true; return; }
         // #33: no alias on the sheet (a BB-download batch) — join the submission's
         // source-filename username against the vault's stored BB username. The username
         // is a key only; it is never displayed and never leaves the browser.
