@@ -25,6 +25,12 @@ const DM3A_COURSES_KEY = "dm3a-courses";
 // never the unlocked mapping or activeRoster (those hold real names).
 const DM3A_SESSION_KEY = "dm3a-session";
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // offer resume for 24h
+// The active course selection. Persisted because losing it degrades grading
+// SILENTLY: with no course selected, redactionOn(undefined) returns true and the
+// alias vault is unreachable, so a whole run comes back force-redacted and keyed
+// to "Unknown Student N" with nothing on screen saying why. Only the course CODE
+// is ever written here — never a roster.
+const DM3A_ACTIVE_COURSE_KEY = "dm3a-active-course";
 // Assignment weight options: visible label -> stored lowercase value.
 // The backend treats quiz/midterm/exam as high-weight (R4) — values must be exact.
 const ASSIGNMENT_WEIGHTS = [
@@ -728,6 +734,24 @@ export default function DM3AGraderV5() {
     }
   }, []);
 
+  // Restore the saved selection as soon as a course list exists — localStorage on
+  // mount, or the account sync a moment later. Runs at most once, and never over a
+  // selection already made this session. activeRoster/professorEmail follow from
+  // the mirror effect below, exactly as they do for a click in the picker.
+  const activeCourseRestored = useRef(false);
+  useEffect(() => {
+    if (activeCourseRestored.current || courses.length === 0) return;
+    activeCourseRestored.current = true;
+    if (activeCourseCode) return;
+    let saved = "";
+    try { saved = localStorage.getItem(DM3A_ACTIVE_COURSE_KEY) || ""; } catch { /* ignore */ }
+    if (!saved) return;
+    const profile = courses.find((c) => c.courseCode === saved);
+    if (!profile) { rememberActiveCourse(""); return; } // course was deleted/renamed elsewhere
+    setActiveCourseCode(profile.courseCode);
+    setProfessorEmail(profile.professorEmail || "");
+  }, [courses, activeCourseCode]);
+
   // Persist course metadata. The full roster is kept IN MEMORY (React state) so a
   // course can still be secured this session, but student names/emails are NEVER
   // written to localStorage (Blind Grading, Part C-final). Only stripped metadata
@@ -955,6 +979,7 @@ export default function DM3AGraderV5() {
     if (authUser) authApi.deleteCourse(code).catch(() => {});
     if (activeCourseCode === code) {
       setActiveCourseCode("");
+      rememberActiveCourse("");
       setProfessorEmail("");
       setActiveRoster([]);
     }
@@ -1057,15 +1082,26 @@ export default function DM3AGraderV5() {
     // Keep active selection in sync if the edited course is the active one.
     if (activeCourseCode === originalCode) {
       setActiveCourseCode(newCode);
+      rememberActiveCourse(newCode);
       setProfessorEmail(newEmail);
       setActiveRoster(newRoster);
     }
     setEditingCourseCode(null);
   }
 
+  // Remember the selection across reloads (see DM3A_ACTIVE_COURSE_KEY). Every
+  // path that changes the active course funnels through here or calls this.
+  function rememberActiveCourse(code) {
+    try {
+      if (code) localStorage.setItem(DM3A_ACTIVE_COURSE_KEY, code);
+      else localStorage.removeItem(DM3A_ACTIVE_COURSE_KEY);
+    } catch { /* storage unavailable — the in-memory selection still applies */ }
+  }
+
   // Active course selection: auto-fill professor email + load roster.
   function selectActiveCourse(code) {
     setActiveCourseCode(code);
+    rememberActiveCourse(code);
     const profile = courses.find((c) => c.courseCode === code);
     setProfessorEmail(profile ? profile.professorEmail || "" : "");
     // Prefer the in-memory decrypted roster (secured courses); fall back to the
@@ -1365,6 +1401,98 @@ export default function DM3AGraderV5() {
     if (activeCourseCode === course.courseCode) setActiveRoster(live);
     persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, vaultUpdatedAt: new Date().toISOString() } : c));
     setVaultNote(`Roster updated for ${course.courseCode}: ${added.length} added, ${dropped.length} dropped (flagged, not deleted).`);
+  }
+
+  // #19 recovery: re-securing a course mints a NEW random alias set, which orphans
+  // every alias card already printed and every piece of labeled work in flight —
+  // until now with no way back. This takes a CSV of the ORIGINAL alias,studentName
+  // pairs and writes those EXACT aliases into the vault: secureCourse's
+  // encrypt -> store -> read-back-verify path with assignAliases skipped, so
+  // nothing is generated. Requires the course to be unlocked this session (that is
+  // where the passphrase comes from), same gate as updateRosterFromCsv.
+  async function restoreAliasesFromCsv(course, file) {
+    const passphrase = sessionPass[course.courseCode];
+    const existing = unlockedRosters[course.courseCode];
+    if (!passphrase || !existing) {
+      openUnlock(course.courseCode, "Enter your course passphrase to restore aliases from a CSV.", () => {});
+      return;
+    }
+    const Papa = (await import("papaparse")).default;
+    const parseCsv = (opts) => new Promise((resolve, reject) => {
+      Papa.parse(file, { skipEmptyLines: true, ...opts, complete: (res) => resolve(res.data || []), error: reject });
+    });
+    const norm = (s) => String(s || "").replace(/^\uFEFF/, "").trim().toLowerCase().replace(/["']/g, "");
+    const rows = await parseCsv({ header: true });
+    const fields = rows.length ? Object.keys(rows[0]) : [];
+    const pick = (cands) => { const m = new Map(fields.map((f) => [norm(f), f])); for (const c of cands) { const h = m.get(norm(c)); if (h) return h; } return null; };
+    const hAlias = pick(["alias", "Alias ID", "Code", "Student Code"]);
+    const hName = pick(["studentName", "Student Name", "Student", "Name", "Full Name"]);
+    let pairs;
+    if (hAlias && hName) {
+      pairs = rows.map((r) => ({ alias: String(r[hAlias] || "").trim(), studentName: String(r[hName] || "").trim() }));
+    } else {
+      // Headerless two-column file (alias,studentName) — the shape a hand-kept list
+      // of printed cards usually takes. Re-parse without a header so the first pair
+      // isn't consumed as column names.
+      const raw = await parseCsv({ header: false });
+      pairs = raw.map((r) => ({ alias: String(r[0] || "").trim(), studentName: String(r[1] || "").trim() }));
+    }
+    pairs = pairs.filter((p) => p.alias && p.studentName);
+    if (pairs.length === 0) {
+      throw new Error('No alias,studentName pairs found in that CSV — expected an "alias" and a "studentName" column, or two bare columns with no header.');
+    }
+    // An alias that identifies two students is worse than a missing one: it would
+    // silently attach one student's work to another. Refuse the whole file.
+    const seen = new Set();
+    const dupes = [];
+    for (const p of pairs) {
+      const k = normalizeAlias(p.alias);
+      if (seen.has(k)) dupes.push(p.alias); else seen.add(k);
+    }
+    if (dupes.length) {
+      throw new Error(`Duplicate alias in that CSV: ${dupes.slice(0, 3).join(", ")}${dupes.length > 3 ? "…" : ""}. Each alias must belong to exactly one student.`);
+    }
+
+    // The CSV restores the ALIAS only. Everything else about a student (email, BB
+    // username, student ID, drop flag) is carried across from the current mapping
+    // by exact name match, so a restore never quietly loses export-matching data.
+    const byName = new Map(existing.map((s) => [norm(s.studentName), s]));
+    const students = pairs.map((p) => ({ ...(byName.get(norm(p.studentName)) || {}), studentName: p.studentName, alias: p.alias }));
+    const unmatched = pairs.filter((p) => !byName.has(norm(p.studentName)));
+    const removed = existing.filter((s) => !pairs.some((p) => norm(p.studentName) === norm(s.studentName)));
+
+    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    const lines = [
+      `⚠ Replace ALL aliases for ${course.courseCode}?`,
+      ``,
+      `The vault currently holds ${plural(existing.length, "student", "students")}. This writes the ${plural(pairs.length, "alias", "aliases")} in your CSV in verbatim, REPLACING the current alias set — today's aliases stop working, and anything already labeled with them stops matching.`,
+    ];
+    if (unmatched.length) {
+      lines.push(``, `${plural(unmatched.length, "name", "names")} in the CSV ${unmatched.length === 1 ? "does" : "do"} not match anyone in the current vault (${unmatched.slice(0, 5).map((p) => p.studentName).join(", ")}${unmatched.length > 5 ? "…" : ""}) — ${unmatched.length === 1 ? "it is" : "they are"} stored with the alias and name only, no email or BB username.`);
+    }
+    if (removed.length) {
+      lines.push(``, `${plural(removed.length, "student", "students")} in the vault ${removed.length === 1 ? "is" : "are"} NOT in the CSV and will be REMOVED: ${removed.slice(0, 5).map((s) => s.studentName).join(", ")}${removed.length > 5 ? "…" : ""}`);
+    }
+    lines.push(``, `A fresh backup key file downloads when this finishes. Replace the alias set?`);
+    if (!window.confirm(lines.join("\n"))) throw new Error("Alias restore cancelled — the vault is unchanged.");
+
+    const mapping = { courseId: course.courseCode, version: 1, createdAt: new Date().toISOString(), students };
+    const blob = await encryptMapping(mapping, passphrase);
+    await putVault(course.courseCode, blob);
+    // Same read-back verify as secureCourse — never report a restore we cannot re-read.
+    const check = await getVault(course.courseCode);
+    const rt = check && (await decryptMapping(check.blob, passphrase));
+    if (!rt || (rt.students || []).length !== students.length) {
+      throw new Error("Vault read-back verification failed — the aliases may not have been restored. Please retry.");
+    }
+    downloadKeyBackup(course.courseCode, blob);
+    const live = students.filter((s) => !s.dropped);
+    setUnlockedRosters((m) => ({ ...m, [course.courseCode]: live }));
+    if (activeCourseCode === course.courseCode) setActiveRoster(live);
+    // vaultCreatedAt is when THESE aliases were originally minted, and restoring
+    // them does not change that — only the vault's write time moves.
+    persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, vaulted: true, vaultUpdatedAt: check.updatedAt || new Date().toISOString() } : c));
+    setVaultNote(`Restored ${plural(students.length, "alias", "aliases")} for ${course.courseCode} from CSV — printed cards with these codes work again. Backup key downloaded.`);
   }
 
   // #21: print alias cards for an UNLOCKED course (read the codes to distribute).
@@ -2172,12 +2300,30 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     return `The instructor has specified these problems must be graded: ${scope}.\n\nEach image you receive is a separate page of THIS SAME STUDENT'S submission — work for different problems may appear on different pages/images. Before concluding that ANY problem is missing, you MUST examine EVERY image independently, page by page, looking for that problem's label or matching content. Do not stop searching after the first image.\n\nStudents may label problems using words ("Problem One", "Problem Two") or numerals ("Problem 1", "Problem 2", "#1", "Q1") — treat these as completely equivalent (e.g., "Problem One" = "Problem 1" = "1"). Match work to problems by context and content, not just by exact label text.\n\nGrade every problem in the list — if, after examining ALL images individually, you genuinely cannot find any work for a problem, only then mark it as not submitted.\n\n`;
   }
 
+  // A vaulted course on file but nothing selected is the silent-degradation case:
+  // no course means no alias vault and forced redaction, so the run comes back
+  // labeled "Unknown Student N" with no way to map it to students afterwards.
+  // Make that a decision instead of a surprise. Returns false = don't grade.
+  function confirmCourseSelected() {
+    if (activeCourseCode) return true;
+    const vaulted = courses.filter(isVaulted);
+    if (vaulted.length === 0) return true;
+    return window.confirm(
+      `\u26a0 No course is selected.\n\n` +
+      `You have ${vaulted.length} secured course${vaulted.length === 1 ? "" : "s"} (${vaulted.map((c) => c.courseCode).join(", ")}), ` +
+      `but this run is not attached to any of them. Names will stay redacted and every submission will be labeled ` +
+      `"Unknown Student N" \u2014 aliases cannot be matched back to students once the run finishes.\n\n` +
+      `Grade anyway?`
+    );
+  }
+
   async function handleGrade() {
     console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.length);
     if (!subject || !studentFiles.length) {
       setError("Please select a subject and upload at least one student file.");
       return;
     }
+    if (!confirmCourseSelected()) return;
     setError("");
     setHeicFailedFiles([]);
     setProblemInventory({});
@@ -3932,6 +4078,12 @@ Return a JSON array with exactly ONE student object.`;
                             Update roster (CSV)
                             <input type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) runVault(() => updateRosterFromCsv(c, f)); }} />
                           </label>
+                          {/* #19 recovery: write a saved alias,studentName list back into the vault
+                              verbatim, for when a re-secure minted new codes and orphaned printed cards. */}
+                          <label title="Write a saved alias,studentName CSV back into the vault verbatim. REPLACES the current alias set." style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, cursor: "pointer", margin: 0 }}>
+                            Restore aliases (CSV)
+                            <input type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) runVault(() => restoreAliasesFromCsv(c, f)); }} />
+                          </label>
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} disabled={vaultBusy} onClick={() => runVault(async () => { const v = await getVault(c.courseCode); if (v) downloadKeyBackup(c.courseCode, v.blob); else setVaultNote("No vault found to back up."); })}>Re-download backup</button>
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, color: "#9f1239", borderColor: "#9f1239" }} disabled={vaultBusy} onClick={() => { if (window.confirm(`Purge the secured roster for ${c.courseCode}? Grade history stays; the encrypted name mapping is removed from the server and this session.`)) runVault(() => purgeCourseVault(c)); }}>Purge vault</button>
                         </div>
@@ -4374,6 +4526,7 @@ Return a JSON array with exactly ONE student object.`;
           onClick={async () => {
             // Grade each BB group sequentially using individual files mode
             console.log('[BB GROUPS START] preview-screen Grade All button clicked');
+            if (!confirmCourseSelected()) return;
             console.log('[BB GROUPS]', JSON.stringify(bbGroups.map(g => ({ id: g.studentId, n: g.files.length }))));
             setStep("grading");
             setLoading(true);
