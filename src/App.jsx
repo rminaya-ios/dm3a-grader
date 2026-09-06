@@ -280,6 +280,47 @@ const DIM_META = [
   ["accuracy",                "Accuracy",                 "are their computations and final answers correct?"],
 ];
 const ALL_DIMS = { conceptualUnderstanding: true, problemSolving: true, workShown: true, accuracy: true };
+
+// ── Overall mastery: computed, not asked for ────────────────────────────────
+// The DM3A bands are published to students, so the overall level must follow them
+// arithmetically. It did not: on a 10-item quiz a student with 7 of 10 at mastery
+// (70%) was returned as P3 in two consecutive runs, where the scale puts 70% in P2.
+// A stable wrong level is worse than an unstable one — it looks trustworthy. The
+// model still judges each PROBLEM; the roll-up is arithmetic from here on.
+const DM3A_BAND = (pct) => (pct >= 90 ? "P4" : pct >= 80 ? "P3" : pct >= 60 ? "P2" : "P1");
+function computeOverallTier(student) {
+  const graded = (student?.problems || []).filter((p) => p && p.tier && p.tier !== "N/A" && p.tier !== "P0");
+  if (!graded.length) return null;
+  const mastery = graded.filter((p) => p.tier === "P3" || p.tier === "P4").length;
+  return DM3A_BAND(Math.round((mastery / graded.length) * 100));
+}
+// Keeps the model's own value as `modelTier` so a disagreement stays inspectable.
+const applyComputedTier = (list) => (Array.isArray(list) ? list : [list]).map((r) => {
+  if (!r || ["HEIC", "DOCX"].includes(r.overallTier)) return r;
+  const tier = computeOverallTier(r);
+  return tier ? { ...r, overallTier: tier, modelTier: r.overallTier } : r;
+});
+
+// ── Bounded-concurrency runner ──────────────────────────────────────────────
+// Grading 19 students one at a time took ~7 minutes of almost entirely idle
+// waiting. Results are written by index, so order is identical to sequential.
+const GRADE_CONCURRENCY = 3;
+const waitMs = (ms) => new Promise((r) => setTimeout(r, ms));
+async function runPool(items, worker, concurrency = GRADE_CONCURRENCY, onProgress) {
+  const out = new Array(items.length);
+  let next = 0, finished = 0;
+  const lane = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await worker(items[i], i);
+      finished += 1;
+      if (onProgress) onProgress(finished, items.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, lane));
+  return out;
+}
 const DIM_PREF_KEY = "dm3a.activeDims";
 const dimsOn  = (dims) => DIM_META.filter(([k]) => (dims || ALL_DIMS)[k]);
 const dimsOff = (dims) => DIM_META.filter(([k]) => !(dims || ALL_DIMS)[k]);
@@ -1951,14 +1992,31 @@ export default function DM3AGraderV5() {
     return pages.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
   }
 
-  async function fetchGradeResult(body) {
-    const response = await fetch(`${SERVER_URL}/grade`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
+  // Several grading calls now run at once, so rate limits and transient 5xx are
+  // likely where the old one-at-a-time loop spaced them out naturally. This matters
+  // more than it looks: every caller's catch records a failed request as a P1 row,
+  // so without retry a network hiccup would quietly become a student's failing
+  // grade. Only 429/5xx and network errors are retried; a real 4xx still throws.
+  async function fetchGradeResult(body, attempt = 1) {
+    const MAX_ATTEMPTS = 4;
+    let response;
+    try {
+      response = await fetch(`${SERVER_URL}/grade`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (netErr) {
+      if (attempt < MAX_ATTEMPTS) { await waitMs(800 * 2 ** (attempt - 1)); return fetchGradeResult(body, attempt + 1); }
+      throw netErr;
+    }
     const rawText = await response.text();
     if (!response.ok) {
+      if ((response.status === 429 || response.status >= 500) && attempt < MAX_ATTEMPTS) {
+        const retryAfter = Number(response.headers.get("retry-after"));
+        await waitMs(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 800 * 2 ** (attempt - 1));
+        return fetchGradeResult(body, attempt + 1);
+      }
       let errMsg = `HTTP ${response.status}`;
       try { errMsg = JSON.parse(rawText).error || errMsg; } catch { errMsg = rawText || errMsg; }
       throw new Error(errMsg);
@@ -2189,12 +2247,16 @@ work_present must be true ONLY when classification is HAS_WORK.`;
           for (let i = 0; i < batchPageImages.length; i += pagesPerStudent) {
             chunks.push(batchPageImages.slice(i, i + pagesPerStudent));
           }
-          for (let c = 0; c < chunks.length; c++) {
+          setLoadingMsg(`Grading ${chunks.length} students (${GRADE_CONCURRENCY} at a time)...`);
+          const gradeOneChunk = async (chunkPages, c) => {
             const studentNum = c + 1;
-            setLoadingMsg(`Grading student ${studentNum} of ${chunks.length}...`);
             let subRed = false, subScan = false;
-            if (doRedact) { const rr = await redactPageImages(chunks[c], { all: true }); chunks[c] = rr.pages; subRed = rr.redacted > 0; subScan = rr.maxWords >= MIN_SCAN_WORDS; }
-            const chunkBlocks = chunks[c].flatMap((b64, i) => [
+            let pages = chunkPages;
+            // Redaction stays inside the worker but OUTSIDE the try below, so a
+            // fail-closed redaction error still aborts the whole run rather than
+            // being recorded as one student's failed grade.
+            if (doRedact) { const rr = await redactPageImages(pages, { all: true }); pages = rr.pages; subRed = rr.redacted > 0; subScan = rr.maxWords >= MIN_SCAN_WORDS; }
+            const chunkBlocks = pages.flatMap((b64, i) => [
               { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
               { type: "text", text: `Page ${c * pagesPerStudent + i + 1}` }
             ]);
@@ -2218,13 +2280,14 @@ GRADING INSTRUCTIONS:
 3. Weight process and reasoning heavily.
 
 Return a JSON array with exactly ONE student object.`;
+            let rows;
             try {
               const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt });
               const cleaned = raw.replace(/```json|```/g, "").trim();
               const parsed = JSON.parse(cleaned);
-              allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+              rows = Array.isArray(parsed) ? parsed : [parsed];
             } catch (err) {
-              allResults.push({
+              rows = [{
                 studentName: `Student ${studentNum}`,
                 overallTier: "P1",
                 error: err.message,
@@ -2234,9 +2297,18 @@ Return a JSON array with exactly ONE student object.`;
                 strengths: [],
                 growthAreas: [],
                 instructorNote: `Failed on pages ${c * pagesPerStudent + 1}–${Math.min((c + 1) * pagesPerStudent, batchPageImages.length)}.`
-              });
+              }];
             }
-            padImages({ image: chunks[c][0], redacted: subRed, scanned: subScan, subId: `fixed${c}` }); // #23/#26
+            return { rows, image: pages[0], redacted: subRed, scanned: subScan, subId: `fixed${c}` };
+          };
+          // Results are collected BY INDEX and appended in order, so the list is
+          // identical to what the sequential loop produced — only the wall clock
+          // changes. padImages must stay in step with allResults, hence the order.
+          const settled = await runPool(chunks, gradeOneChunk, GRADE_CONCURRENCY,
+            (done, total) => setLoadingMsg(`Graded ${done} of ${total} students...`));
+          for (const r of settled) {
+            allResults.push(...r.rows);
+            padImages({ image: r.image, redacted: r.redacted, scanned: r.scanned, subId: r.subId }); // #23/#26
           }
         } else {
           // Auto-detect: TWO-PASS — boundary detection first, then grade each student individually.
@@ -2598,7 +2670,7 @@ Return a JSON array with one object per student found in the submission.`;
 
     padImages(null); // #23: reconcile any tail so pageImages aligns 1:1 with results
     setSubmissionImages(pageImages.map(e => e ? { image: e.image, redacted: !!e.redacted, scanned: !!e.scanned } : null));
-    setResults(applyDimScope(allResults, activeDims));
+    setResults(applyComputedTier(applyDimScope(allResults, activeDims)));
     setOverrides({});
     setActiveStudent(0);
     if (heicFailed.length > 0) setHeicFailedFiles(heicFailed);
@@ -2799,7 +2871,7 @@ Return a JSON array with exactly ONE student object.`;
         : userPrompt;
       const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: effectivePrompt, codeContext });
       const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
-      setResults(applyDimScope(Array.isArray(parsed) ? parsed : [parsed], activeDims));
+      setResults(applyComputedTier(applyDimScope(Array.isArray(parsed) ? parsed : [parsed], activeDims)));
       gradeSucceeded = true;
     } catch (err) {
       setResults([{
@@ -4526,7 +4598,7 @@ Return a JSON array with exactly ONE student object.`;
             const cleanResults = allResults.map(({ _pageImage, _pageRedacted, _pageScanned, _subId, ...rest }) => rest);
             setSubmissionImages(imgs);
             setBbStubNote(bbStubFiles.length); // #25
-            setResults(applyDimScope(cleanResults, activeDims));
+            setResults(applyComputedTier(applyDimScope(cleanResults, activeDims)));
             setOverrides({});
             setActiveStudent(0);
             setLoading(false);
