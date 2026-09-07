@@ -463,6 +463,26 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
       ? [...finalImageBlocks, ...(allImagesDropped ? [fallbackBlock] : []), { type: 'text', text: userPrompt }]
       : [{ type: 'text', text: userPrompt || 'No content provided' }];
 
+    // ── Prompt caching (#37) ─────────────────────────────────────────────
+    // Every submission in a run — and the problem-scan call that precedes each one —
+    // sends this identical ~2,000-token DM3A rubric. Uncached, a 19-student run pays
+    // full input price for it 38 times. One breakpoint here makes the first call write
+    // it and every later call read it at a tenth of the price, on a 5-minute TTL that
+    // a run fits inside comfortably.
+    //
+    // This is deliberately the ONLY breakpoint. The answer key is the bigger prize,
+    // but every grading path sends it AFTER the student's pages, and a cache hit
+    // requires an identical PREFIX — so making it cacheable means moving it in front
+    // of the student work, which changes what the model reads first. That is a grading
+    // change, not a billing one, and it belongs in its own measured experiment.
+    //
+    // Below the minimum cacheable length the API ignores the breakpoint silently, so
+    // the guard exists to keep the log below honest rather than to prevent an error.
+    const CACHEABLE_MIN_CHARS = 4096; // ~1,024 tokens — Sonnet's minimum cacheable prefix
+    const systemParam = systemPrompt.length >= CACHEABLE_MIN_CHARS
+      ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
+      : systemPrompt;
+
     let response;
     try {
       response = await anthropic.messages.create({
@@ -472,7 +492,7 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
         // the same way on every run or an instructor cannot defend a grade on appeal.
         // The API default of 1.0 was measurably costing reproducibility.
         temperature: 0,
-        system: systemPrompt,
+        system: systemParam, // #37: cached when long enough; identical text either way
         messages: [{ role: 'user', content: finalBlocks }],
       });
     } catch (apiErr) {
@@ -487,6 +507,11 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
 
     // Cost tracking: capture usage from the main grading call (best-effort).
     const usage = extractUsage(response);
+    // #37: one line per call, so caching can be confirmed from the Railway logs
+    // without enabling anything in the Console. On a 19-student run expect a small
+    // number of `write` lines (one per lane that starts before the cache exists)
+    // and `read` on all the rest. read=0 across a whole run means it is not working.
+    console.log(`[cache] write=${usage.cacheCreationTokens} read=${usage.cacheReadTokens} uncached_in=${usage.inputTokens} out=${usage.outputTokens}`);
     const usedModel = response.model || 'claude-sonnet-4-6';
 
     // Validate that the AI returned parseable JSON before sending to client
