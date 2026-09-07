@@ -300,11 +300,28 @@ function computeOverallTier(student) {
   const mastery = graded.filter((p) => p.tier === "P3" || p.tier === "P4").length;
   return DM3A_BAND(Math.round((mastery / graded.length) * 100));
 }
-// Keeps the model's own value as `modelTier` so a disagreement stays inspectable.
+// Accuracy is derived the same way, for the same reason. It is BY DEFINITION the
+// share of problems the student got right, so a model judgement of it can — and did
+// — contradict the arithmetic on its own card: 7 of 10 at mastery showed Overall P2
+// next to an ACCURACY tile reading P3, two different colours for one number. The
+// other three dimensions are NOT pure correctness (a student can be accurate with no
+// work shown, or right by a method that doesn't generalise), so those stay with the
+// model. Whether accuracy is enabled is read off `dimensions.accuracy` being present:
+// this runs AFTER applyDimScope, which drops every switched-off key, and presence is
+// the same test each render surface uses to decide whether to draw the tile.
+//
+// Keeps the model's own values as `modelTier` / `dimensionsModel` so a disagreement
+// stays inspectable.
 const applyComputedTier = (list) => (Array.isArray(list) ? list : [list]).map((r) => {
   if (!r || ["HEIC", "DOCX"].includes(r.overallTier)) return r;
   const tier = computeOverallTier(r);
-  return tier ? { ...r, overallTier: tier, modelTier: r.overallTier } : r;
+  if (!tier) return r; // nothing gradeable — no arithmetic to prefer over the model
+  const out = { ...r, overallTier: tier, modelTier: r.overallTier };
+  if (r.dimensions && r.dimensions.accuracy != null) {
+    out.dimensions = { ...r.dimensions, accuracy: tier };
+    out.dimensionsModel = { ...(r.dimensionsModel || {}), accuracy: r.dimensions.accuracy };
+  }
+  return out;
 });
 
 // ── Bounded-concurrency runner ──────────────────────────────────────────────
