@@ -512,14 +512,19 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
       });
     } catch (parseErr) {
       console.error('[parse] AI returned non-JSON response. Full text:', text.slice(0, 500));
+      // Same rule as the client's failed-request rows: a submission that was not
+      // graded gets the "ERROR" sentinel, never a P-level. tierToScore() already
+      // returns null for it, so recordOneSubmission skips it as 'no-score' instead
+      // of filing an at-risk record built from a parse failure.
       const fallback = JSON.stringify([{
         studentName: 'Unknown',
-        overallTier: 'P1',
-        dimensions: { conceptualUnderstanding: 'P1', problemSolving: 'P1', workShown: 'P1', accuracy: 'P1' },
+        overallTier: 'ERROR',
+        error: 'The grader returned an unexpected response. Please re-run this submission.',
+        dimensions: {},
         problems: [],
         strengths: [],
         growthAreas: [],
-        feedback: 'Grading error: AI returned an unexpected response. Please resubmit this student.',
+        feedback: '',
         instructorNote: 'Server could not parse AI response as JSON. Raw preview: ' + text.slice(0, 200)
       }]);
       res.json({ result: fallback });

@@ -300,6 +300,67 @@ function computeOverallTier(student) {
   const mastery = graded.filter((p) => p.tier === "P3" || p.tier === "P4").length;
   return DM3A_BAND(Math.round((mastery / graded.length) * 100));
 }
+// ── Ungraded rows: a sentinel where a mastery level would go ────────────────
+// A submission that was never graded must not carry a P-level. "HEIC"/"DOCX" mean
+// the file could not be read; "ERROR" means the grading request itself failed — an
+// API error, a dropped connection, an unparseable reply. A failed request rendered
+// as P1 is a fabricated grade, and it is indistinguishable from a real one: a
+// student who hit an API usage limit on page 19 of 19 was shown a P1 mastery level
+// with the raw error JSON as their "personalized feedback". A visible gap is always
+// better than an invented score, so every counting, averaging, exporting and
+// rendering surface tests through these two helpers.
+const UNGRADED_TIERS = ["HEIC", "DOCX", "ERROR"];
+const isUngraded = (r) => !!r && UNGRADED_TIERS.includes(r.overallTier);
+// Why a row has no grade, in one instructor-facing line.
+const ungradedReason = (r) => (r && r.error) ||
+  (r && r.overallTier === "HEIC" ? "HEIC file — this browser could not convert it. Ask the student to resubmit as JPG or PDF."
+   : r && r.overallTier === "DOCX" ? "Word document — not supported. Ask the student to resubmit as JPG or PDF."
+   : "The grading request failed.");
+
+// Reduce whatever the grading endpoint threw to one readable sentence. The API's
+// own message ("You have reached your specified API usage limits") is the useful
+// part for an instructor; a raw JSON envelope pasted into a feedback box is not.
+function describeGradeError(err) {
+  // A thrown value is not always an Error: some paths throw a string, and a rejected
+  // fetch can surface a bare object. `String(err)` on those gives "Error" or
+  // "[object Object]", which tells an instructor nothing — serialise instead, so the
+  // JSON branch below can still find the sentence inside.
+  let raw = "";
+  if (typeof err === "string") raw = err;
+  else if (err && typeof err.message === "string") raw = err.message;
+  else if (err != null) { try { raw = JSON.stringify(err); } catch { raw = ""; } }
+  let msg = raw;
+  const t = String(raw).trim();
+  if (t.startsWith("{") || t.startsWith("[")) {
+    try {
+      const j = JSON.parse(t);
+      const e = j.error ?? j;
+      msg = (typeof e === "string" ? e : e && e.message) || raw;
+    } catch { /* not JSON after all — keep the raw text */ }
+  }
+  msg = String(msg).replace(/\s+/g, " ").trim();
+  if (!msg) return "The grading request failed with no message.";
+  return msg.length > 300 ? msg.slice(0, 299) + "…" : msg; // hard cap at 300 chars
+}
+
+// ONE shape for every failed-request row, so no grading path can reintroduce a
+// P-level by hand. The reason is instructor-facing (`error`) and deliberately does
+// NOT become `feedback` — feedback is the student-facing artifact and an API error
+// message is not feedback on anyone's work.
+function errorResult(studentName, err, instructorNote) {
+  return {
+    studentName,
+    overallTier: "ERROR",
+    error: describeGradeError(err),
+    dimensions: {},
+    problems: [],
+    feedback: "",
+    strengths: [],
+    growthAreas: [],
+    ...(instructorNote ? { instructorNote } : {}),
+  };
+}
+
 // Accuracy is derived the same way, for the same reason. It is BY DEFINITION the
 // share of problems the student got right, so a model judgement of it can — and did
 // — contradict the arithmetic on its own card: 7 of 10 at mastery showed Overall P2
@@ -313,7 +374,7 @@ function computeOverallTier(student) {
 // Keeps the model's own values as `modelTier` / `dimensionsModel` so a disagreement
 // stays inspectable.
 const applyComputedTier = (list) => (Array.isArray(list) ? list : [list]).map((r) => {
-  if (!r || ["HEIC", "DOCX"].includes(r.overallTier)) return r;
+  if (!r || isUngraded(r)) return r;
   const tier = computeOverallTier(r);
   if (!tier) return r; // nothing gradeable — no arithmetic to prefer over the model
   const out = { ...r, overallTier: tier, modelTier: r.overallTier };
@@ -1757,11 +1818,14 @@ export default function DM3AGraderV5() {
     // Build the recording roster + payload. Blind (vaulted) courses send
     // ALIAS-ONLY records — no studentName/studentEmail ever leaves the browser.
     // Legacy courses send name + email exactly as before.
+    // An ungraded row has no mastery level to track. Recording one would either be
+    // dropped server-side as 'no-score' or, before the ERROR sentinel existed, filed
+    // as a genuine P1 — an at-risk flag manufactured from an API outage.
     let roster, payloadResults;
     if (activeVaulted) {
       const chosen = results
         .map((s, i) => ({ s, alias: studentMapping[i] || "" }))
-        .filter((e) => e.alias);
+        .filter((e) => e.alias && !isUngraded(e.s));
       roster = chosen.map((e) => ({ alias: e.alias }));
       payloadResults = chosen.map(({ s, alias }) => ({
         alias,
@@ -1771,9 +1835,10 @@ export default function DM3AGraderV5() {
       }));
     } else {
       roster = results
-        .map((s, i) => ({ studentName: s.studentName, studentEmail: studentMapping[i] || "" }))
-        .filter((e) => e.studentEmail);
-      payloadResults = results;
+        .map((s, i) => ({ studentName: s.studentName, studentEmail: studentMapping[i] || "", ungraded: isUngraded(s) }))
+        .filter((e) => e.studentEmail && !e.ungraded)
+        .map(({ studentName, studentEmail }) => ({ studentName, studentEmail }));
+      payloadResults = results.filter((s) => !isUngraded(s));
     }
     setConfirmedRoster(roster);
     setRosterConfirmed(true);
@@ -2163,7 +2228,13 @@ export default function DM3AGraderV5() {
         return fetchGradeResult(body, attempt + 1);
       }
       let errMsg = `HTTP ${response.status}`;
-      try { errMsg = JSON.parse(rawText).error || errMsg; } catch { errMsg = rawText || errMsg; }
+      // The endpoint may answer with { error: "..." } or { error: { message: "..." } }
+      // (the upstream API's shape). Pull out the sentence either way — an instructor
+      // needs to read "You have reached your specified API usage limits", not a blob.
+      try {
+        const j = JSON.parse(rawText);
+        errMsg = (typeof j.error === "string" ? j.error : j.error && j.error.message) || j.message || errMsg;
+      } catch { errMsg = rawText || errMsg; }
       throw new Error(errMsg);
     }
     let resultText;
@@ -2450,17 +2521,11 @@ Return a JSON array with exactly ONE student object.`;
               const parsed = JSON.parse(cleaned);
               rows = Array.isArray(parsed) ? parsed : [parsed];
             } catch (err) {
-              rows = [{
-                studentName: `Student ${studentNum}`,
-                overallTier: "P1",
-                error: err.message,
-                dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
-                problems: [],
-                feedback: err.message || `Error grading student ${studentNum}.`,
-                strengths: [],
-                growthAreas: [],
-                instructorNote: `Failed on pages ${c * pagesPerStudent + 1}–${Math.min((c + 1) * pagesPerStudent, batchPageImages.length)}.`
-              }];
+              rows = [errorResult(
+                `Student ${studentNum}`,
+                err,
+                `Failed on pages ${c * pagesPerStudent + 1}–${Math.min((c + 1) * pagesPerStudent, batchPageImages.length)}.`
+              )];
             }
             return { rows, image: pages[0], redacted: subRed, scanned: subScan, subId: `fixed${c}` };
           };
@@ -2535,7 +2600,7 @@ Return a JSON array with exactly ONE student object.`;
               const parsed = JSON.parse(cleaned);
               allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
             } catch (err) {
-              allResults.push({ studentName, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message, strengths: [], growthAreas: [], instructorNote: `Failed on pages ${startPage + 1}-${endPage + 1}.` });
+              allResults.push(errorResult(studentName, err, `Failed on pages ${startPage + 1}-${endPage + 1}.`));
             }
             // #26: attribute the up-front bulk redaction to THIS student's page range.
             let subRed = false, subScan = false;
@@ -2550,7 +2615,7 @@ Return a JSON array with exactly ONE student object.`;
         }
         } catch (err) {
           if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
-          allResults.push({ studentName: "Submission", overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: "Error processing batch PDF.", strengths: [], growthAreas: [], instructorNote: "Batch setup failed (PDF conversion or network error). Try uploading individual files per student." });
+          allResults.push(errorResult("Submission", err, "Batch setup failed (PDF conversion or network error). Try uploading individual files per student."));
         }
     } else if (combineImages && studentFiles.length > 1 && studentFiles.every(f => f.type.startsWith("image/"))) {
       // ── COMBINED IMAGES MODE — chunk 2 images per API call, merge results ─
@@ -2665,16 +2730,7 @@ Return a JSON array with exactly ONE student object covering only the problems o
 
       } catch (err) {
         if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
-        allResults.push({
-          studentName: studentLabel,
-          overallTier: "P1",
-          error: err.message,
-          dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
-          problems: [],
-          feedback: `Error processing combined images: ${err.message}`,
-          strengths: [],
-          growthAreas: []
-        });
+        allResults.push(errorResult(studentLabel, err, "Failed while grading the combined images for this student."));
       }
       padImages({ image: compressedPages[0], redacted: combinedRedacted, scanned: combinedScanned, subId: "combined" }); // #23/#26
 
@@ -2803,16 +2859,7 @@ Return a JSON array with one object per student found in the submission.`;
           allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
         } catch (err) {
           if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
-          allResults.push({
-            studentName: `Submission ${i + 1}`,
-            overallTier: "P1",
-            error: err.message,
-            dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
-            problems: [],
-            feedback: err.message || "Error processing this file.",
-            strengths: [],
-            growthAreas: []
-          });
+          allResults.push(errorResult(`Submission ${i + 1}`, err, `Failed on file ${i + 1} of ${studentFiles.length}.`));
         }
         padImages({ image: subImg, redacted: subRed, scanned: subScan, subId: `file${i}` }); // #23/#26
       }
@@ -2844,7 +2891,7 @@ Return a JSON array with one object per student found in the submission.`;
       // #25/#26 invariant: banner redacted count MUST equal distinct redacted-badge
       // submissions (same source ⇒ equal), and gradable work ⇒ something was checked.
       const badgeSubs = new Set(pageImages.filter(e => e && e.redacted && e.image).map(e => e.subId)).size;
-      const anyGradable = allResults.some(r => !["HEIC", "DOCX"].includes(r.overallTier));
+      const anyGradable = allResults.some(r => !isUngraded(r));
       if (stats.redacted !== badgeSubs || (anyGradable && stats.checked === 0)) {
         console.error(`[REDACT INVARIANT] banner redacted=${stats.redacted} vs badge submissions=${badgeSubs}, checked=${stats.checked}`);
         setRedactWarning(true);
@@ -3037,16 +3084,7 @@ Return a JSON array with exactly ONE student object.`;
       setResults(applyComputedTier(applyDimScope(Array.isArray(parsed) ? parsed : [parsed], activeDims)));
       gradeSucceeded = true;
     } catch (err) {
-      setResults([{
-        studentName: "Student Submission",
-        overallTier: "P1",
-        error: err.message,
-        dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" },
-        problems: [],
-        feedback: err.message || "Error processing submission.",
-        strengths: [],
-        growthAreas: []
-      }]);
+      setResults([errorResult("Student Submission", err)]);
     }
 
     // ── RECORD SUBMISSION (free tier only — coded sessions are counted server-side
@@ -3090,6 +3128,7 @@ Return a JSON array with exactly ONE student object.`;
     const ov = overrides[student.studentName] || {};
     const displayName = ov.renamedName || student.studentName;
     const overall = ov.overall || student.overallTier;
+    const ungraded = isUngraded(student); // never print a level for an ungraded row
     const tierLabels = { P4: "Mastery", P3: "Approaching Mastery", P2: "Developing", P1: "Beginning" };
     const tierColors = { P4: "#0F6E56", P3: "#185FA5", P2: "#854F0B", P1: "#A32D2D" };
 
@@ -3130,16 +3169,16 @@ Return a JSON array with exactly ONE student object.`;
         <p style="margin:4px 0 0;color:#888;font-size:12px;">${new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" })}</p>
       </div>
       <div style="text-align:right;">
-        <div style="font-size:11px;color:#888;margin-bottom:4px;">OVERALL MASTERY</div>
-        <div class="overall">${overall}</div>
-        <div style="color:${tierColors[overall]};font-size:13px;">${tierLabels[overall]}</div>
+        <div style="font-size:11px;color:#888;margin-bottom:4px;">${ungraded ? "NOT GRADED" : "OVERALL MASTERY"}</div>
+        <div class="overall">${ungraded ? "&mdash;" : overall}</div>
+        <div style="color:${ungraded ? "#888" : tierColors[overall]};font-size:13px;">${ungraded ? "This submission could not be graded." : tierLabels[overall]}</div>
       </div>
     </div>
     <div class="dim-grid">
-      ${[["Conceptual", ov.conceptual || student.dimensions?.conceptualUnderstanding],
+      ${(ungraded ? [] : [["Conceptual", ov.conceptual || student.dimensions?.conceptualUnderstanding],
          ["Problem Solving", ov.problemSolving || student.dimensions?.problemSolving],
          ["Work Shown", ov.workShown || student.dimensions?.workShown],
-         ["Accuracy", ov.accuracy || student.dimensions?.accuracy]].filter(([, val]) => val != null).map(([label, val]) =>
+         ["Accuracy", ov.accuracy || student.dimensions?.accuracy]]).filter(([, val]) => val != null).map(([label, val]) =>
         `<div class="dim"><div class="dim-label">${label}</div><div style="font-weight:700;font-size:18px;color:${tierColors[val||"P1"]}">${val||"—"}</div></div>`
       ).join("")}
     </div>
@@ -3176,6 +3215,13 @@ Return a JSON array with exactly ONE student object.`;
     const rows = [["Student", "Overall", "Conceptual", "Problem Solving", "Work Shown", "Accuracy", "Feedback"]];
     results.forEach(s => {
       const ov = overrides[s.studentName] || {};
+      // A row that was never graded exports with EVERY grade cell empty and the
+      // reason in the last column. An empty cell reads as "no grade yet"; a P1
+      // would read as a real one, and would be imported into a gradebook as such.
+      if (isUngraded(s)) {
+        rows.push([s.studentName, "", "", "", "", "", `NOT GRADED — ${ungradedReason(s)}`]);
+        return;
+      }
       rows.push([
         s.studentName,
         ov.overall || s.overallTier,
@@ -3269,6 +3315,7 @@ Return a JSON array with exactly ONE student object.`;
     const idobj = reportIdentity(student, index);
     const displayName = (includeNameOnReport && idobj.resolved) ? idobj.realName : idobj.safeLabel;
     const tier = ov.overall || student.overallTier;
+    const ungraded = isUngraded(student); // never print a level for an ungraded row
     const NAVY = [10, 22, 40];
     const GOLD = [201, 168, 76];
     const WHITE = [255, 255, 255];
@@ -3296,12 +3343,19 @@ Return a JSON array with exactly ONE student object.`;
     let y = 40;
     doc.setFontSize(18); doc.setFont("helvetica", "bold");
     doc.text(displayName, M, y);
-    doc.setFillColor(...tc);
-    doc.roundedRect(W - M - 22, y - 9, 22, 10, 2, 2, "F");
-    doc.setTextColor(...WHITE);
-    doc.setFontSize(11); doc.setFont("helvetica", "bold");
-    doc.text(tier, W - M - 11, y - 3, { align: "center" });
-    doc.setTextColor(0, 0, 0);
+    if (ungraded) {
+      // No badge at all — an empty slot cannot be mistaken for a mastery level.
+      doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(136, 136, 136);
+      doc.text("NOT GRADED", W - M, y - 3, { align: "right" });
+      doc.setTextColor(0, 0, 0);
+    } else {
+      doc.setFillColor(...tc);
+      doc.roundedRect(W - M - 22, y - 9, 22, 10, 2, 2, "F");
+      doc.setTextColor(...WHITE);
+      doc.setFontSize(11); doc.setFont("helvetica", "bold");
+      doc.text(tier, W - M - 11, y - 3, { align: "center" });
+      doc.setTextColor(0, 0, 0);
+    }
 
     // P3/P4 rate
     const probs = student.problems || [];
@@ -3319,12 +3373,12 @@ Return a JSON array with exactly ONE student object.`;
     doc.rect(M, y, W - M * 2, 24, "F");
     doc.setFontSize(7); doc.setFont("helvetica", "bold"); doc.setTextColor(90, 90, 85);
     doc.text("DIMENSIONS", M + 3, y + 5);
-    const dims = [
+    const dims = (ungraded ? [] : [
       ["Conceptual", ov.conceptual || student.dimensions?.conceptualUnderstanding],
       ["Problem Solving", ov.problemSolving || student.dimensions?.problemSolving],
       ["Work Shown", ov.workShown || student.dimensions?.workShown],
       ["Accuracy", ov.accuracy || student.dimensions?.accuracy],
-    ].filter(([, val]) => val != null);
+    ]).filter(([, val]) => val != null);
     const colW = (W - M * 2) / Math.max(1, dims.length);
     dims.forEach(([label, val], i) => {
       const x = M + i * colW + colW / 2;
@@ -3334,6 +3388,10 @@ Return a JSON array with exactly ONE student object.`;
       doc.setFontSize(7); doc.setFont("helvetica", "normal"); doc.setTextColor(90, 90, 85);
       doc.text(label, x, y + 22, { align: "center" });
     });
+    if (ungraded) {
+      doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(90, 90, 85);
+      doc.text("This submission could not be graded. Please ask your instructor to re-run it.", M + 3, y + 15);
+    }
     doc.setTextColor(0, 0, 0);
 
     // Problem breakdown
@@ -3395,7 +3453,7 @@ Return a JSON array with exactly ONE student object.`;
 
   async function downloadAllReports() {
     const { default: JSZip } = await import("jszip");
-    if (!results.some(s => !["HEIC", "DOCX"].includes(s.overallTier))) return;
+    if (!results.some(s => !isUngraded(s))) return;
     setGeneratingReports(true);
     try {
       const zip = new JSZip();
@@ -3403,7 +3461,7 @@ Return a JSON array with exactly ONE student object.`;
       // confirmed studentMapping[i] — both download paths now share one identity resolver.
       for (let i = 0; i < results.length; i++) {
         const student = results[i];
-        if (["HEIC", "DOCX"].includes(student.overallTier)) continue;
+        if (isUngraded(student)) continue; // no report for a submission that was never graded
         const doc = await generateStudentPDF(student, i);
         const pdfBytes = doc.output("arraybuffer");
         zip.file(buildReportFilename(student, i), pdfBytes);
@@ -4735,7 +4793,7 @@ Return a JSON array with exactly ONE student object.`;
                 return tagImg(normalized);
               } catch (err) {
                 if (err && err.isRedaction) throw err; // fail-closed: abort the whole run, don't fake a row
-                return tagImg([{ studentName: studentLabel, overallTier: "P1", error: err.message, dimensions: { conceptualUnderstanding: "P1", problemSolving: "P1", workShown: "P1", accuracy: "P1" }, problems: [], feedback: err.message || "Error processing this student.", strengths: [], growthAreas: [] }]);
+                return tagImg([errorResult(studentLabel, err, "Failed while grading this Blackboard submission.")]);
               }
             });
 
@@ -4757,7 +4815,7 @@ Return a JSON array with exactly ONE student object.`;
               // distinct submissions showing a redacted badge — same source, so equal by
               // construction; a mismatch (or gradable work with nothing checked) is a bug.
               const badgeSubs = new Set(allResults.filter(r => r._pageRedacted && r._pageImage).map(r => r._subId)).size;
-              const anyGradable = allResults.some(r => !["HEIC", "DOCX"].includes(r.overallTier));
+              const anyGradable = allResults.some(r => !isUngraded(r));
               if (stats.redacted !== badgeSubs || (anyGradable && stats.checked === 0)) {
                 console.error(`[REDACT INVARIANT] BB batch: banner redacted=${stats.redacted} vs badge submissions=${badgeSubs}, checked=${stats.checked}`);
                 setRedactWarning(true);
@@ -5065,6 +5123,30 @@ Return a JSON array with exactly ONE student object.`;
           </div>
         )}
 
+        {/* Failed-request banner (#34). A run that silently drops a student is the
+            worst outcome: the instructor sees 19 cards and no reason to doubt any
+            of them. Count the failures at the top and name each one. */}
+        {results.some(s => s.overallTier === "ERROR") && (() => {
+          const failed = results.map((s, i) => ({ s, i })).filter(({ s }) => s.overallTier === "ERROR");
+          // #33: on a vaulted course the raw studentName carries the username —
+          // show the same safe label the rest of the results screen uses.
+          const safeLabel = (s, i) => activeVaulted ? reportIdentity(s, i).display : showName(s.studentName);
+          return (
+            <div style={{ background: "#FCEBEB", border: "2px solid #E39A9A", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#7A1F1F" }}>
+              <strong>⚠ {failed.length} of {results.length} submission{results.length === 1 ? "" : "s"} could not be graded.</strong>{" "}
+              {failed.length === 1 ? "It has" : "They have"} no mastery level — nothing was scored, so nothing is counted in the class summary or written to an export. Re-run {failed.length === 1 ? "it" : "them"} once the cause below is resolved.
+              <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+                {failed.map(({ s, i }) => (
+                  <li key={i} style={{ marginBottom: 2 }}>
+                    <button type="button" onClick={() => setActiveStudent(i)} style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "#7A1F1F", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>{safeLabel(s, i)}</button>
+                    {" — "}{ungradedReason(s)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })()}
+
         {/* HEIC/DOCX Conversion Warning */}
         {(heicFailedFiles.length > 0 || results.some(s => s.overallTier === "DOCX")) && (
           <div style={{ background: "#FFF3CD", border: "2px solid #FFCA2C", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#856404" }}>
@@ -5107,7 +5189,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {activeVaulted ? reportIdentity(s, i).display : (overrides[s.studentName]?.renamedName || showName(s.studentName))} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
+                {activeVaulted ? reportIdentity(s, i).display : (overrides[s.studentName]?.renamedName || showName(s.studentName))} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t === "ERROR" ? "not graded ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
               </button>
             );
           })}
@@ -5174,6 +5256,24 @@ Return a JSON array with exactly ONE student object.`;
               {(() => {
                 const tier = ov.overall || student.overallTier;
                 const isUnprocessable = tier === "HEIC" || tier === "DOCX";
+                // A failed request gets no chip at all. Anything chip-shaped in this
+                // slot reads as a grade, whatever the letters inside it say.
+                if (tier === "ERROR") {
+                  return (
+                    <div style={{ maxWidth: 300, textAlign: "right" }}>
+                      <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>NOT GRADED</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#A32D2D" }}>Not graded — request failed</div>
+                      <div style={{ fontSize: 12, color: "#5A5A55", marginTop: 4, lineHeight: 1.5 }}>
+                        {isStudentMode
+                          ? "Your work was not scored. Please try submitting again."
+                          : ungradedReason(student)}
+                      </div>
+                      {!isStudentMode && (
+                        <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Re-run this submission — there is no score to override.</div>
+                      )}
+                    </div>
+                  );
+                }
                 return (<>
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{isUnprocessable ? "UNPROCESSABLE" : "OVERALL MASTERY"}</div>
                   <span style={{ ...(isUnprocessable ? { background: "#F5F5F0", color: "#888", border: "1px solid #DDD", borderRadius: 4, fontWeight: 700, display: "inline-block" } : styles.mastery(tier)), fontSize: 20, padding: "4px 16px" }}>{isUnprocessable ? `${tier} ⚠` : tier}</span>
@@ -5191,14 +5291,16 @@ Return a JSON array with exactly ONE student object.`;
                   </div>
                 ) : null;
               })()}
-              <div style={{ marginTop: 6 }}>
-                <select style={{ fontSize: 12, padding: "3px 8px", border: "1px solid #C8C6BE", borderRadius: 4, background: "#FAFAF7" }}
-                  value={ov.overall || student.overallTier}
-                  onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], overall: e.target.value } }))}>
-                  {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-                <span style={{ fontSize: 11, color: "#888", marginLeft: 6 }}>Override</span>
-              </div>
+              {!isUngraded(student) && (
+                <div style={{ marginTop: 6 }}>
+                  <select style={{ fontSize: 12, padding: "3px 8px", border: "1px solid #C8C6BE", borderRadius: 4, background: "#FAFAF7" }}
+                    value={ov.overall || student.overallTier}
+                    onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], overall: e.target.value } }))}>
+                    {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <span style={{ fontSize: 11, color: "#888", marginLeft: 6 }}>Override</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -5307,13 +5409,17 @@ Return a JSON array with exactly ONE student object.`;
             </div>
           )}
 
-          {/* Feedback */}
+          {/* Feedback — suppressed for an ungraded row. This box is the student-facing
+              artifact, and an API error message is not feedback on anyone's work; it
+              is exactly where the raw error JSON surfaced in the live incident. */}
+          {!isUngraded(student) && (
           <div style={{ background: "#F5F4EF", borderRadius: 6, padding: "14px 16px", marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "#5A5A55", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Personalized Feedback</div>
             <p style={{ margin: "0 0 8px", fontSize: 14, lineHeight: 1.6 }}>{student.feedback}</p>
             {student.strengths?.length > 0 && <div style={{ fontSize: 12, color: "#0F6E56" }}>✓ Strengths: {student.strengths.join(", ")}</div>}
             {student.growthAreas?.length > 0 && <div style={{ fontSize: 12, color: "#185FA5", marginTop: 4 }}>→ Growth areas: {student.growthAreas.join(", ")}</div>}
           </div>
+          )}
 
           {/* Instructor Note */}
           {student.instructorNote && (
@@ -5326,20 +5432,33 @@ Return a JSON array with exactly ONE student object.`;
         {/* Class Summary */}
         <div style={styles.card}>
           <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#5A5A55" }}>Class Summary</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
-            {["P4", "P3", "P2", "P1"].map(t => {
-              const count = results.filter(s => (overrides[s.studentName]?.overall || s.overallTier) === t).length;
-              return (
-                <div key={t} style={{ background: tierBg[t], border: `1px solid ${tierBorder[t]}`, borderRadius: 6, padding: "12px", textAlign: "center" }}>
-                  <div style={{ color: tierColor[t], fontWeight: 700, fontSize: 22 }}>{count}</div>
-                  <div style={{ color: tierColor[t], fontWeight: 700, fontSize: 13 }}>{t}</div>
-                  <div style={{ color: "#888", fontSize: 11 }}>{results.length ? Math.round(count / results.length * 100) : 0}%</div>
-                </div>
-              );
-            })}
-          </div>
           {(() => {
-            const rates = results.map(s => {
+            // Only rows that actually carry a mastery level are the class. An
+            // ungraded row in the denominator silently deflates every percentage.
+            const graded = results.filter(s => !isUngraded(s));
+            const skipped = results.length - graded.length;
+            return (<>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+                {["P4", "P3", "P2", "P1"].map(t => {
+                  const count = graded.filter(s => (overrides[s.studentName]?.overall || s.overallTier) === t).length;
+                  return (
+                    <div key={t} style={{ background: tierBg[t], border: `1px solid ${tierBorder[t]}`, borderRadius: 6, padding: "12px", textAlign: "center" }}>
+                      <div style={{ color: tierColor[t], fontWeight: 700, fontSize: 22 }}>{count}</div>
+                      <div style={{ color: tierColor[t], fontWeight: 700, fontSize: 13 }}>{t}</div>
+                      <div style={{ color: "#888", fontSize: 11 }}>{graded.length ? Math.round(count / graded.length * 100) : 0}%</div>
+                    </div>
+                  );
+                })}
+              </div>
+              {skipped > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#7A1F1F", textAlign: "center" }}>
+                  Based on {graded.length} graded submission{graded.length === 1 ? "" : "s"} — {skipped} not graded and excluded.
+                </div>
+              )}
+            </>);
+          })()}
+          {(() => {
+            const rates = results.filter(s => !isUngraded(s)).map(s => {
               const probs = (s.problems || []).filter(p => p.tier && p.tier !== "N/A");
               const total = probs.length;
               const mastery = probs.filter(p => p.tier === "P3" || p.tier === "P4").length;
