@@ -343,6 +343,24 @@ function describeGradeError(err) {
   return msg.length > 300 ? msg.slice(0, 299) + "…" : msg; // hard cap at 300 chars
 }
 
+// ── Run-fatal errors (#35) ──────────────────────────────────────────────────
+// Some failures are about the ACCOUNT, not the submission: an exhausted quota, an
+// expired key, a billing block. They fail identically for every remaining student,
+// so continuing costs one image upload and one server-side conversion per student
+// and returns the same sentence nineteen times. A live run did exactly that — a 400
+// on submission 1 produced 19 identical errors over ~7 minutes. Classified once
+// here; the grading paths stop dispatching on the first one.
+const RUN_FATAL_STATUSES = new Set([401, 403]);
+const RUN_FATAL_TEXT = /usage limit|quota|credit balance|billing|insufficient[_\s-]*(funds|quota|credit)|payment required|invalid[_\s-]*api[_\s-]*key|authentication[_\s-]*error|permission[_\s-]*error/i;
+function isRunFatalError(status, text) {
+  if (RUN_FATAL_STATUSES.has(status)) return true;
+  // A 400 is normally about THIS request — an unreadable image, too many tokens —
+  // and must stay per-submission. The exception is the account-level refusal the
+  // API also returns as a 400 invalid_request_error, matched on wording not status.
+  if (status === 400) return RUN_FATAL_TEXT.test(String(text || ""));
+  return false;
+}
+
 // ONE shape for every failed-request row, so no grading path can reintroduce a
 // P-level by hand. The reason is instructor-facing (`error`) and deliberately does
 // NOT become `feedback` — feedback is the student-facing artifact and an API error
@@ -357,8 +375,19 @@ function errorResult(studentName, err, instructorNote) {
     feedback: "",
     strengths: [],
     growthAreas: [],
+    ...(err && err.isRunFatal ? { runFatal: true } : {}),
     ...(instructorNote ? { instructorNote } : {}),
   };
+}
+
+// A submission the run never attempted, because an earlier one failed for a reason
+// that applies to all of them. Carries the SAME reason as the failure that stopped
+// the run, so the instructor reads one cause instead of nineteen copies of it.
+function skippedResult(studentName, reason) {
+  const row = errorResult(studentName, reason, "Not attempted — the run stopped after an account-level failure.");
+  row.runSkipped = true;
+  delete row.runFatal; // the cause is the row that actually failed, not this one
+  return row;
 }
 
 // Accuracy is derived the same way, for the same reason. It is BY DEFINITION the
@@ -390,11 +419,16 @@ const applyComputedTier = (list) => (Array.isArray(list) ? list : [list]).map((r
 // waiting. Results are written by index, so order is identical to sequential.
 const GRADE_CONCURRENCY = 3;
 const waitMs = (ms) => new Promise((r) => setTimeout(r, ms));
-async function runPool(items, worker, concurrency = GRADE_CONCURRENCY, onProgress) {
+async function runPool(items, worker, concurrency = GRADE_CONCURRENCY, onProgress, shouldStop) {
   const out = new Array(items.length);
   let next = 0, finished = 0;
   const lane = async () => {
     for (;;) {
+      // Stop DISPATCHING new work. Lanes already in flight are still awaited by the
+      // Promise.all below, so an aborted run settles cleanly rather than leaving
+      // orphaned requests. Slots never dispatched stay `undefined` — the caller
+      // marks those, since only it knows what to call them.
+      if (shouldStop && shouldStop()) return;
       const i = next++;
       if (i >= items.length) return;
       out[i] = await worker(items[i], i);
@@ -2235,7 +2269,9 @@ export default function DM3AGraderV5() {
         const j = JSON.parse(rawText);
         errMsg = (typeof j.error === "string" ? j.error : j.error && j.error.message) || j.message || errMsg;
       } catch { errMsg = rawText || errMsg; }
-      throw new Error(errMsg);
+      const err = new Error(errMsg);
+      if (isRunFatalError(response.status, `${errMsg} ${rawText}`)) err.isRunFatal = true;
+      throw err;
     }
     let resultText;
     try {
@@ -2405,28 +2441,387 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     );
   }
 
-  async function handleGrade() {
-    console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.length);
+  // Splice re-graded rows back into the existing results, in place (#36). The old
+  // order is kept: each retried submission's row(s) land where they already sat, and
+  // every row that was NOT retried keeps its result, its thumbnail and its overrides
+  // untouched. A retried submission that somehow produced no row keeps its old one
+  // rather than vanishing from the class.
+  function mergeRetriedRows(oldRows, oldImages, newRows, newImages, retrySubIds) {
+    const bySub = new Map();
+    (newRows || []).forEach((r, i) => {
+      const id = r && r._subId;
+      if (!id) return;
+      if (!bySub.has(id)) bySub.set(id, { rows: [], images: [] });
+      bySub.get(id).rows.push(r);
+      bySub.get(id).images.push((newImages || [])[i] || null);
+    });
+    const rows = [], images = [], consumed = new Set();
+    (oldRows || []).forEach((r, i) => {
+      const id = r && r._subId;
+      if (id && retrySubIds.has(id) && bySub.has(id)) {
+        if (consumed.has(id)) return; // this submission's rows were already replaced
+        consumed.add(id);
+        const rep = bySub.get(id);
+        rows.push(...rep.rows);
+        images.push(...rep.images);
+        return;
+      }
+      rows.push(r);
+      images.push((oldImages || [])[i] || null);
+    });
+    return { rows, images };
+  }
+
+  // #36: re-grade only the submissions that came back ungraded, in place. A transient
+  // failure — a quota block, a dropped connection — should cost the re-run of those
+  // rows, not of the whole class, and it must not disturb the results already in hand.
+  // Rows carry the _subId of the submission that produced them; that is the join.
+  async function rerunFailedSubmissions() {
+    const failed = results.filter((r) => isUngraded(r));
+    const ids = new Set(failed.map((r) => r._subId).filter(Boolean));
+    const orphans = failed.length - failed.filter((r) => r._subId).length;
+    if (ids.size === 0) {
+      setError(orphans
+        ? "These rows can't be re-run on their own — the failure happened before the submissions were split up. Start the grading run again."
+        : "Nothing to re-run.");
+      return;
+    }
+    if (orphans > 0) {
+      console.warn(`[RETRY] ${orphans} failed row(s) have no submission id and cannot be re-run individually`);
+    }
+    if (studentFiles.length === 0 && bbGroups.length === 0) {
+      setError("The original submissions aren't loaded any more (this happens after a reload). Upload them again to re-grade the failed ones.");
+      return;
+    }
+    setError("");
+    // Route to whichever pipeline produced these rows. A BB batch keeps its groups in
+    // state, so the retry re-enters the same function the Grade All button uses.
+    if (isBBBatch && [...ids].some((id) => id.startsWith("bb"))) await gradeBBGroups({ retrySubIds: ids });
+    else await handleGrade({ retrySubIds: ids });
+  }
+
+  // ── BB BATCH GRADING ──────────────────────────────────────────────────────
+  // Lifted out of the preview button's onClick so the same run can be re-entered
+  // for a retry (#36). Behaviour is unchanged; `opts.retrySubIds`, when given, is
+  // the set of _subIds to re-grade — every other group is left exactly as it is.
+  async function gradeBBGroups(opts) {
+    const retrySubIds = (opts && opts.retrySubIds instanceof Set) ? opts.retrySubIds : null;
+    // Grade each BB group sequentially using individual files mode
+    console.log('[BB GROUPS START] preview-screen Grade All button clicked');
+    if (!retrySubIds && !confirmCourseSelected()) return;
+    console.log('[BB GROUPS]', JSON.stringify(bbGroups.map(g => ({ id: g.studentId, n: g.files.length }))));
+    setStep("grading");
+    setLoading(true);
+    // A retry keeps the first run's thumbnails and redaction banner for every group
+    // it is not re-grading (#36) — same guard as handleGrade.
+    if (!retrySubIds) { setRedactStats(null); setSubmissionImages([]); setRedactWarning(false); setBbStubNote(0); } // #25
+    const allResults = [];
+    const heicFailed = [];
+    // #25/§3.3/#23: this BB-batch path was previously uninstrumented — wire in
+    // the same name-zone redaction + thumbnail capture + counts as handleGrade.
+    const doRedact = redactionOn(courseByCode(activeCourseCode));
+    const bbStubFiles = []; // Blackboard .txt submission stubs excluded from grading
+    // #35: every group's promise starts immediately here, so the run-fatal check
+    // sits just before each grade dispatch rather than at a pool boundary — the
+    // local file conversions still run, but no further requests are sent.
+    let runFatal = null;
+    const noteFatal = (err) => {
+      if (err && err.isRunFatal && !runFatal) {
+        runFatal = err;
+        console.warn("[RUN FATAL] BB batch stopping —", err.message);
+        setLoadingMsg(`Run stopped — ${describeGradeError(err)}`);
+      }
+      return err;
+    };
+    const courseConf = COURSE_CONFIGS[subject] || {};
+    const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"], activeDims);
+    function chunkArray(arr, size) {
+      const chunks = [];
+      for (let i = 0; i < arr.length; i += size) {
+        chunks.push(arr.slice(i, i + size));
+      }
+      return chunks;
+    }
+
+    setLoadingMsg(`Preparing all ${bbGroups.length} students for parallel grading...`);
+
+    // Build all grading promises simultaneously
+    const gradingPromises = bbGroups.map(async (group, gi) => {
+      // #36: on a retry every group outside the set is left completely alone — no file
+      // conversion, no redaction call, no grade request.
+      if (retrySubIds && !retrySubIds.has(`bb${gi}`)) return [];
+      // Reverse so later-uploaded files (notebook pages) come before cover sheet.
+      // If instructor checked "skip cover sheet", drop the last file (earliest upload).
+      let groupFiles = group.files.map(item => item.file).reverse();
+      // #25: Blackboard exports a per-submission .txt metadata stub alongside the
+      // real attachments — never gradable. Exclude and count for an honest note.
+      groupFiles = groupFiles.filter(f => {
+        if (/\.txt$/i.test(f.name)) { bbStubFiles.push(f.name); return false; }
+        return true;
+      });
+      if (skipCoverSheet.has(group.studentId) && groupFiles.length > 1) {
+        console.log(`[${group.studentId}] Skipping cover sheet: [submission]`);
+        groupFiles = groupFiles.slice(0, -1);
+      }
+      const studentLabel = `Student_${group.studentId}`;
+      // #25: a group with only a stub (no gradable attachment) — skip, don't grade blank.
+      if (groupFiles.length === 0) return [];
+      try {
+        const sharedBlocks = [];
+        if (assignmentFile) {
+          const blocks = await fileToImageBlocks(assignmentFile, 15, notePages);
+          sharedBlocks.push(...blocks);
+          sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
+        }
+        if (answerKeyFile) {
+          const akBlock = await answerKeyToDocumentBlock(answerKeyFile);
+          sharedBlocks.push(akBlock);
+          sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
+        }
+        // Fingerprint Zone 1 to skip student files that are the same document
+        const assignFingerprint = assignmentFile
+          ? (await fileToBase64(assignmentFile)).slice(0, 200)
+          : null;
+        const pageBlocks = [];
+        const seenOriginalNames = new Set();
+        const heicFailedForStudent = [];
+        const docxFailedForStudent = [];
+        for (let fi = 0; fi < groupFiles.length; fi++) {
+          const f = groupFiles[fi];
+          try {
+            // Deduplicate by original filename from BB pattern to skip double-exports
+            const parsed = parseBBFilename(f.name);
+            const origName = parsed ? parsed.originalName : f.name;
+            if (seenOriginalNames.has(origName)) {
+              console.log(`Skipping duplicate file: [submission] (original: [submission])`);
+              continue;
+            }
+            seenOriginalNames.add(origName);
+            if (assignFingerprint) {
+              const fp = (await fileToBase64(f)).slice(0, 200);
+              if (fp === assignFingerprint) {
+                console.log(`Skipping [submission] — matches Zone 1 assignment prompt`);
+                continue;
+              }
+            }
+            const isPDFFile = f.type === "application/pdf";
+            const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
+            const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
+            const isDocxFile = /\.docx$/i.test(f.name) || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            if (isPDFFile) {
+              console.log(`[pdfToImages call] BB batch student: "[submission]" type="${f?.type}"`);
+            const imgs = await pdfToImages(f, 8, 2400, 0.92);
+              imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+            } else if (isDocxFile) {
+              setLoadingMsg(`Converting ${f.name} (Word doc) via server...`);
+              const converted = await convertOnServer(f, 'convert-docx');
+              if (converted) {
+                const imgs = await pdfToImages(converted, 8, 2400, 0.92);
+                imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+              } else {
+                console.warn(`[BB batch] DOCX conversion failed, marking as badge: [submission]`);
+                docxFailedForStudent.push(f.name);
+              }
+            } else if (isHEICFile) {
+              setLoadingMsg(`Converting ${f.name} (HEIC) via server...`);
+              const converted = await convertOnServer(f, 'convert-heic');
+              if (converted) {
+                const b64 = await fileToBase64(converted);
+                pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+              } else {
+                console.warn(`[BB batch] HEIC conversion failed, marking as badge: [submission]`);
+                heicFailed.push(f.name);
+                heicFailedForStudent.push(f.name);
+              }
+            } else if (isImgFile) {
+              const b64 = await convertToJpegViaCanvas(f, 0.92, 2400);
+              if (b64 === null) {
+                heicFailed.push(f.name);
+              } else {
+                pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
+              }
+            } else {
+              console.warn(`Skipping unrecognised file type: [submission] (${f.type})`);
+            }
+          } catch (err) { console.error("Error processing file", "[submission]", err); }
+        }
+        // §3.3/#25: redact name zones across ALL of this student's pages — BB
+        // reverses files so the name-bearing cover sheet can land anywhere, so
+        // page-1-only isn't safe here. Then capture page 1 as graded (#23).
+        let groupRedacted = false, groupScanned = false;
+        if (doRedact && pageBlocks.length) {
+          const b64s = pageBlocks.map(b => b.source.data);
+          const rr = await redactPageImages(b64s, { all: true });
+          rr.pages.forEach((p, i) => { pageBlocks[i].source.data = p; });
+          groupRedacted = rr.redacted > 0;
+          groupScanned = rr.maxWords >= MIN_SCAN_WORDS;
+        }
+        const groupImg = pageBlocks.length ? pageBlocks[0].source.data : null;
+        // #26: tag every result for this submission with the SAME redaction fields
+        // that drive the banner — one truth. _subId dedupes multi-result groups.
+        const tagImg = (arr) => arr.map(s => ({ ...s, _pageImage: groupImg, _pageRedacted: groupRedacted, _pageScanned: groupScanned, _subId: `bb${gi}` }));
+        // If all files failed as HEIC, return a special unprocessable result instead of grading
+        if (pageBlocks.length === 0 && docxFailedForStudent.length > 0) {
+          console.warn(`[BB batch] ${studentLabel}: all files are DOCX — returning DOCX badge`);
+          return tagImg([{ studentName: studentLabel, overallTier: "DOCX", dimensions: { conceptualUnderstanding: "DOCX", problemSolving: "DOCX", workShown: "DOCX", accuracy: "DOCX" }, problems: [], feedback: "Submission could not be processed — Word documents are not supported. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `DOCX files: ${docxFailedForStudent.join(", ")}` }]);
+        }
+        if (pageBlocks.length === 0 && heicFailedForStudent.length > 0) {
+          console.warn(`[BB batch] ${studentLabel}: all files are unprocessable HEIC — returning HEIC badge`);
+          return tagImg([{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }]);
+        }
+        if (runFatal) { // #35: the same account-level failure would come back here
+          return tagImg([skippedResult(studentLabel, runFatal)]);
+        }
+        const userPrompt = `Subject: ${subject}
+Assignment: ${assignment || "Student Submission"}
+${rubric ? "Instructor Rubric Notes: " + rubric : ""}
+${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}Student ID: ${group.studentId}
+${problemScope.trim() ? `The student was assigned the following problems: ${problemScope.trim()}. Grade ALL of these problems across ALL submitted images. Do not stop until every assigned problem has been graded or confirmed missing.\n` : ""}INSTRUCTIONS:
+1. Identify ALL problems and sub-parts visible. List them ALL before grading.
+2. Grade EVERY identified problem/sub-part. Do not skip any.
+3. Use the answer key if provided. If not, use your subject expertise.
+4. Apply DM3A P1-P4 mastery scoring — never binary correct/wrong.
+5. Weight process and reasoning heavily.
+6. Use "${studentLabel}" as the studentName in your response.
+Return a JSON array with exactly ONE student object.`;
+        const contentBlocks = [
+          { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
+          ...pageBlocks,
+          { type: "text", text: "=== END OF STUDENT WORK ===" },
+          ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
+        ];
+        const imageBlocks = contentBlocks.filter(b => b.type === "image");
+        console.log(`[BB SEND] Student ${group.studentId}: ${contentBlocks.length} total blocks, ${imageBlocks.length} image blocks`);
+        // Use scope directly if provided, else scan for problem inventory
+        let bbInventory = null;
+        let bbUserPrompt = userPrompt;
+        if (problemScope.trim()) {
+          bbUserPrompt = buildScopeDirectPrefix(problemScope.trim()) + userPrompt;
+        } else {
+          bbInventory = await scanProblems(pageBlocks, systemPrompt);
+          if (bbInventory && bbInventory.length > 0) {
+            bbUserPrompt = buildInventoryPrefix(bbInventory) + userPrompt;
+          }
+        }
+        const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: bbUserPrompt });
+        const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
+        const jsonMatch = cleaned.match(/(\[\s*\{[\s\S]*\}\s*\])/);
+        const jsonStr = jsonMatch ? jsonMatch[1] : cleaned;
+        const parsed = JSON.parse(jsonStr);
+        const students = Array.isArray(parsed) ? parsed : [parsed];
+        // Ensure studentName is always the BB label — never "Unknown" or empty
+        const UNKNOWN_NAMES = new Set(["unknown", "unknown student", "", "n/a"]);
+        const normalized = students.map(s => ({
+          ...s,
+          studentName: (!s.studentName || UNKNOWN_NAMES.has(s.studentName.toLowerCase())) ? studentLabel : s.studentName,
+          _inventory: bbInventory || null
+        }));
+        if (bbInventory) setProblemInventory(prev => ({ ...prev, [studentLabel]: bbInventory }));
+        return tagImg(normalized);
+      } catch (err) {
+        if (err && err.isRedaction) throw err; // fail-closed: abort the whole run, don't fake a row
+        noteFatal(err);
+        return tagImg([errorResult(studentLabel, err, "Failed while grading this Blackboard submission.")]);
+      }
+    });
+
+    try {
+    const CHUNK_SIZE = 5;
+    const chunks = chunkArray(gradingPromises, CHUNK_SIZE);
+    for (let ci = 0; ci < chunks.length; ci++) {
+      setLoadingMsg(`Grading students ${ci * CHUNK_SIZE + 1}–${Math.min((ci + 1) * CHUNK_SIZE, bbGroups.length)} of ${bbGroups.length}...`);
+      const chunkResults = await Promise.all(chunks[ci]);
+      chunkResults.forEach(arr => allResults.push(...arr));
+    }
+    // #23/#26: derive the banner from the SAME per-submission fields as the
+    // badges (one truth), THEN lift thumbnails and strip transient fields so
+    // they never reach persisted results / the server.
+    if (doRedact && !retrySubIds) { // partial counts must not replace whole-class ones
+      const stats = deriveRedactStats(allResults.map(r => ({ subId: r._subId, redacted: r._pageRedacted, scanned: r._pageScanned, present: r._pageImage != null })));
+      if (stats.checked > 0) setRedactStats(stats);
+      // #25/#26 invariant: the banner's redacted count MUST equal the number of
+      // distinct submissions showing a redacted badge — same source, so equal by
+      // construction; a mismatch (or gradable work with nothing checked) is a bug.
+      const badgeSubs = new Set(allResults.filter(r => r._pageRedacted && r._pageImage).map(r => r._subId)).size;
+      const anyGradable = allResults.some(r => !isUngraded(r));
+      if (stats.redacted !== badgeSubs || (anyGradable && stats.checked === 0)) {
+        console.error(`[REDACT INVARIANT] BB batch: banner redacted=${stats.redacted} vs badge submissions=${badgeSubs}, checked=${stats.checked}`);
+        setRedactWarning(true);
+      }
+      try { terminateRedactor(); } catch { /* ignore */ }
+    }
+    const imgs = allResults.map(r => (r._pageImage ? { image: r._pageImage, redacted: !!r._pageRedacted, scanned: !!r._pageScanned } : null));
+    const cleanResults = allResults.map(({ _pageImage, _pageRedacted, _pageScanned, ...rest }) => rest); // _subId stays: a retry matches on it
+    const gradedRows = applyComputedTier(applyDimScope(cleanResults, activeDims));
+    if (retrySubIds) {
+      // #36: splice the re-graded groups in place; every other row keeps its result,
+      // its thumbnail and its overrides.
+      const { rows, images } = mergeRetriedRows(results, submissionImages, gradedRows, imgs, retrySubIds);
+      setSubmissionImages(images);
+      setResults(rows);
+      setActiveStudent((cur) => Math.min(cur, Math.max(0, rows.length - 1)));
+    } else {
+      setSubmissionImages(imgs);
+      setBbStubNote(bbStubFiles.length); // #25
+      setResults(gradedRows);
+      setOverrides({});
+      setActiveStudent(0);
+    }
+    setLoading(false);
+    setStep("results");
+    } catch (err) {
+      // Fail-closed abort (Change 3d): a redaction failure in ANY BB group stops
+      // the whole batch with a retry message — no unredacted image is graded.
+      if (err && err.isRedaction) {
+        console.warn("[REDACT] BB batch grading aborted — " + err.message);
+        setError("Couldn't verify the name-zone redaction on page 1 — grading was stopped to protect privacy. Please retry.");
+        try { terminateRedactor(); } catch { /* ignore */ }
+        setLoading(false);
+        setStep("setup");
+        return;
+      }
+      throw err; // unexpected error — let it surface
+    }
+  }
+  async function handleGrade(opts) {
+    // #36: a retry re-enters this same function with the set of _subIds to re-grade.
+    // Everything else is skipped before any conversion or request, and the results
+    // that already came back are merged, not replaced.
+    const retrySubIds = (opts && opts.retrySubIds instanceof Set) ? opts.retrySubIds : null;
+    console.log('[BB GROUPS START] handleGrade called — isBBBatch:', isBBBatch, 'files:', studentFiles.length, 'retry:', retrySubIds ? [...retrySubIds] : "no");
     if (!subject || !studentFiles.length) {
       setError("Please select a subject and upload at least one student file.");
       return;
     }
-    if (!confirmCourseSelected()) return;
+    if (!retrySubIds && !confirmCourseSelected()) return;
     setError("");
-    setHeicFailedFiles([]);
-    setProblemInventory({});
     setPageNotes([]); // #18: fresh page-usage notes per grade run
     setAnswerKeyPages(null); // #20
-    setRedactStats(null); // §3.3: fresh redaction count per grade run
-    setSubmissionImages([]); // #23: fresh per-run submission thumbnails
-    setRedactWarning(false); setBbStubNote(0); // #25
+    if (!retrySubIds) {
+      setRedactStats(null); // §3.3: fresh redaction count per grade run
+      setRedactWarning(false); setBbStubNote(0); // #25
+      // A retry keeps what the first run produced for every submission it is not
+      // re-grading — wiping these would discard good work to recover one row.
+      setHeicFailedFiles([]);
+      setProblemInventory({});
+      setSubmissionImages([]); // #23: fresh per-run submission thumbnails
+    }
     // §3.3: name-zone redaction gate — active vaulted course + per-course toggle.
     const doRedact = redactionOn(courseByCode(activeCourseCode));
     // #23/#26: per-result redaction ledger AND thumbnail source, parallel to allResults.
     // ONE artifact — the banner count and the badges both derive from this. padImages
     // fills every result added for the current submission with the same entry.
     const pageImages = [];
-    const padImages = (entry) => { while (pageImages.length < allResults.length) pageImages.push(entry || null); };
+    // #36: the same pass stamps each new row with its submission's _subId. That id is
+    // what a later retry matches on, so it must be recorded exactly where the row and
+    // its thumbnail are paired up.
+    const padImages = (entry) => {
+      while (pageImages.length < allResults.length) {
+        const row = allResults[pageImages.length];
+        if (row && entry && entry.subId && row._subId === undefined) row._subId = entry.subId;
+        pageImages.push(entry || null);
+      }
+    };
     if (answerKeyFile && /pdf/i.test(`${answerKeyFile.type} ${answerKeyFile.name}`)) {
       getPdfPageCount(answerKeyFile).then((pc) => { if (pc) setAnswerKeyPages(pc); });
     }
@@ -2436,6 +2831,18 @@ work_present must be true ONLY when classification is HAS_WORK.`;
     const heicFailed = [];
     const systemPrompt = buildSystemPrompt(courseConfig, activeDims);
     const allResults = [];
+    // #35: the first account-level failure stops the run. Latched here so every
+    // path below can check it; everything not yet dispatched is marked with this
+    // same error rather than re-attempted and failed identically.
+    let runFatal = null;
+    const noteFatal = (err) => {
+      if (err && err.isRunFatal && !runFatal) {
+        runFatal = err;
+        console.warn("[RUN FATAL] stopping the run —", err.message);
+        setLoadingMsg(`Run stopped — ${describeGradeError(err)}`);
+      }
+      return err;
+    };
 
     // ── BATCH PDF MODE ──────────────────────────────────────────────────────
     const file = studentFiles[0];
@@ -2521,6 +2928,7 @@ Return a JSON array with exactly ONE student object.`;
               const parsed = JSON.parse(cleaned);
               rows = Array.isArray(parsed) ? parsed : [parsed];
             } catch (err) {
+              noteFatal(err);
               rows = [errorResult(
                 `Student ${studentNum}`,
                 err,
@@ -2532,9 +2940,20 @@ Return a JSON array with exactly ONE student object.`;
           // Results are collected BY INDEX and appended in order, so the list is
           // identical to what the sequential loop produced — only the wall clock
           // changes. padImages must stay in step with allResults, hence the order.
-          const settled = await runPool(chunks, gradeOneChunk, GRADE_CONCURRENCY,
-            (done, total) => setLoadingMsg(`Graded ${done} of ${total} students...`));
-          for (const r of settled) {
+          // #36: on a retry only the requested chunks are dispatched; the pool returns
+          // `undefined` for the rest, and the merge leaves their existing rows alone.
+          const chunkWanted = (c) => !retrySubIds || retrySubIds.has(`fixed${c}`);
+          const settled = await runPool(chunks, (chunk, c) => chunkWanted(c) ? gradeOneChunk(chunk, c) : undefined, GRADE_CONCURRENCY,
+            (done, total) => setLoadingMsg(`Graded ${done} of ${total} students...`),
+            () => !!runFatal);
+          for (let ci = 0; ci < settled.length; ci++) {
+            const r = settled[ci];
+            if (!r && !chunkWanted(ci)) continue; // #36: not part of this retry — keep the existing row
+            if (!r) { // never dispatched — the run stopped before this chunk
+              allResults.push(skippedResult(`Student ${ci + 1}`, runFatal));
+              padImages({ image: null, redacted: false, scanned: false, subId: `fixed${ci}` });
+              continue;
+            }
             allResults.push(...r.rows);
             padImages({ image: r.image, redacted: r.redacted, scanned: r.scanned, subId: r.subId }); // #23/#26
           }
@@ -2579,6 +2998,12 @@ Return ONLY the JSON array of boundaries. Do not grade anything yet.`;
           for (let s = 0; s < boundaries.length; s++) {
             const { studentName, startPage, endPage } = boundaries[s];
             const studentNum = s + 1;
+            if (retrySubIds && !retrySubIds.has(`auto${startPage}-${endPage}`)) continue; // #36
+            if (runFatal) { // #35: same failure for every remaining student — don't pay for it
+              allResults.push(skippedResult(studentName, runFatal));
+              padImages({ image: null, redacted: false, scanned: false, subId: `auto${startPage}-${endPage}` });
+              continue;
+            }
             setLoadingMsg(`Pass 2 — grading ${studentName} (${studentNum} of ${boundaries.length})...`);
             const studentPages = batchPageImages.slice(startPage, endPage + 1);
             const studentContentBlocks = [
@@ -2600,6 +3025,7 @@ Return a JSON array with exactly ONE student object.`;
               const parsed = JSON.parse(cleaned);
               allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
             } catch (err) {
+              noteFatal(err);
               allResults.push(errorResult(studentName, err, `Failed on pages ${startPage + 1}-${endPage + 1}.`));
             }
             // #26: attribute the up-front bulk redaction to THIS student's page range.
@@ -2610,7 +3036,7 @@ Return a JSON array with exactly ONE student object.`;
                 if (pp) { if (pp.redacted) subRed = true; if ((pp.words || 0) >= MIN_SCAN_WORDS) subScan = true; }
               }
             }
-            padImages({ image: studentPages[0], redacted: subRed, scanned: subScan, subId: `auto${s}` }); // #23/#26
+            padImages({ image: studentPages[0], redacted: subRed, scanned: subScan, subId: `auto${startPage}-${endPage}` }); // #23/#26
           }
         }
         } catch (err) {
@@ -2620,6 +3046,7 @@ Return a JSON array with exactly ONE student object.`;
     } else if (combineImages && studentFiles.length > 1 && studentFiles.every(f => f.type.startsWith("image/"))) {
       // ── COMBINED IMAGES MODE — chunk 2 images per API call, merge results ─
       const studentLabel = combinedStudentName.trim() || "Unknown Student";
+      if (retrySubIds && !retrySubIds.has("combined")) { /* #36: nothing to retry here */ } else {
       try {
         // Pre-compress all images at aggressive settings
         const compressedPages = [];
@@ -2730,13 +3157,21 @@ Return a JSON array with exactly ONE student object covering only the problems o
 
       } catch (err) {
         if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
+        noteFatal(err);
         allResults.push(errorResult(studentLabel, err, "Failed while grading the combined images for this student."));
       }
       padImages({ image: compressedPages[0], redacted: combinedRedacted, scanned: combinedScanned, subId: "combined" }); // #23/#26
+      }
 
     } else {
       // ── INDIVIDUAL FILES MODE ─────────────────────────────────────────────
       for (let i = 0; i < studentFiles.length; i++) {
+        if (retrySubIds && !retrySubIds.has(`file${i}`)) continue; // #36: keep the existing row
+        if (runFatal) { // #35: don't convert, upload or grade what will fail the same way
+          allResults.push(skippedResult(`Submission ${i + 1}`, runFatal));
+          padImages({ image: null, redacted: false, scanned: false, subId: `file${i}` });
+          continue;
+        }
         setLoadingMsg(`Grading file ${i + 1} of ${studentFiles.length}...`);
         let subImg = null, subRed = false, subScan = false; // #23/#26: page-1 as graded for this file
 
@@ -2859,6 +3294,7 @@ Return a JSON array with one object per student found in the submission.`;
           allResults.push(...(Array.isArray(parsed) ? parsed : [parsed]));
         } catch (err) {
           if (err && err.isRedaction) throw err; // fail-closed: abort, don't fake a grade row
+          noteFatal(err);
           allResults.push(errorResult(`Submission ${i + 1}`, err, `Failed on file ${i + 1} of ${studentFiles.length}.`));
         }
         padImages({ image: subImg, redacted: subRed, scanned: subScan, subId: `file${i}` }); // #23/#26
@@ -2879,13 +3315,27 @@ Return a JSON array with one object per student found in the submission.`;
     }
 
     padImages(null); // #23: reconcile any tail so pageImages aligns 1:1 with results
-    setSubmissionImages(pageImages.map(e => e ? { image: e.image, redacted: !!e.redacted, scanned: !!e.scanned } : null));
-    setResults(applyComputedTier(applyDimScope(allResults, activeDims)));
-    setOverrides({});
-    setActiveStudent(0);
-    if (heicFailed.length > 0) setHeicFailedFiles(heicFailed);
+    const gradedRows = applyComputedTier(applyDimScope(allResults, activeDims));
+    const gradedImages = pageImages.map(e => e ? { image: e.image, redacted: !!e.redacted, scanned: !!e.scanned } : null);
+    if (retrySubIds) {
+      // #36: splice the re-graded rows into what is already on screen. Overrides and
+      // the selected student survive, because the rows around them never moved.
+      const { rows, images } = mergeRetriedRows(results, submissionImages, gradedRows, gradedImages, retrySubIds);
+      setSubmissionImages(images);
+      setResults(rows);
+      setActiveStudent((cur) => Math.min(cur, Math.max(0, rows.length - 1)));
+      if (heicFailed.length > 0) setHeicFailedFiles((prev) => [...new Set([...prev, ...heicFailed])]);
+    } else {
+      setSubmissionImages(gradedImages);
+      setResults(gradedRows);
+      setOverrides({});
+      setActiveStudent(0);
+      if (heicFailed.length > 0) setHeicFailedFiles(heicFailed);
+    }
     // §3.3/#26: derive the banner from the SAME per-submission ledger the badges use.
-    if (doRedact) {
+    // Skipped on a retry: these counts describe the submissions this pass touched, and
+    // publishing them would replace a whole-class figure with a one-submission one.
+    if (doRedact && !retrySubIds) {
       const stats = deriveRedactStats(pageImages.map(e => e ? { subId: e.subId, redacted: e.redacted, scanned: e.scanned, present: e.image != null } : null));
       if (stats.checked > 0) setRedactStats(stats);
       // #25/#26 invariant: banner redacted count MUST equal distinct redacted-badge
@@ -4598,253 +5048,7 @@ Return a JSON array with exactly ONE student object.`;
 
         <button
           style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15 }}
-          onClick={async () => {
-            // Grade each BB group sequentially using individual files mode
-            console.log('[BB GROUPS START] preview-screen Grade All button clicked');
-            if (!confirmCourseSelected()) return;
-            console.log('[BB GROUPS]', JSON.stringify(bbGroups.map(g => ({ id: g.studentId, n: g.files.length }))));
-            setStep("grading");
-            setLoading(true);
-            setRedactStats(null); setSubmissionImages([]); setRedactWarning(false); setBbStubNote(0); // #25
-            const allResults = [];
-            const heicFailed = [];
-            // #25/§3.3/#23: this BB-batch path was previously uninstrumented — wire in
-            // the same name-zone redaction + thumbnail capture + counts as handleGrade.
-            const doRedact = redactionOn(courseByCode(activeCourseCode));
-            const bbStubFiles = []; // Blackboard .txt submission stubs excluded from grading
-            const courseConf = COURSE_CONFIGS[subject] || {};
-            const systemPrompt = buildSystemPrompt(COURSE_CONFIGS[subject] || COURSE_CONFIGS["Intermediate Algebra"], activeDims);
-            function chunkArray(arr, size) {
-              const chunks = [];
-              for (let i = 0; i < arr.length; i += size) {
-                chunks.push(arr.slice(i, i + size));
-              }
-              return chunks;
-            }
-
-            setLoadingMsg(`Preparing all ${bbGroups.length} students for parallel grading...`);
-
-            // Build all grading promises simultaneously
-            const gradingPromises = bbGroups.map(async (group, gi) => {
-              // Reverse so later-uploaded files (notebook pages) come before cover sheet.
-              // If instructor checked "skip cover sheet", drop the last file (earliest upload).
-              let groupFiles = group.files.map(item => item.file).reverse();
-              // #25: Blackboard exports a per-submission .txt metadata stub alongside the
-              // real attachments — never gradable. Exclude and count for an honest note.
-              groupFiles = groupFiles.filter(f => {
-                if (/\.txt$/i.test(f.name)) { bbStubFiles.push(f.name); return false; }
-                return true;
-              });
-              if (skipCoverSheet.has(group.studentId) && groupFiles.length > 1) {
-                console.log(`[${group.studentId}] Skipping cover sheet: [submission]`);
-                groupFiles = groupFiles.slice(0, -1);
-              }
-              const studentLabel = `Student_${group.studentId}`;
-              // #25: a group with only a stub (no gradable attachment) — skip, don't grade blank.
-              if (groupFiles.length === 0) return [];
-              try {
-                const sharedBlocks = [];
-                if (assignmentFile) {
-                  const blocks = await fileToImageBlocks(assignmentFile, 15, notePages);
-                  sharedBlocks.push(...blocks);
-                  sharedBlocks.push({ type: "text", text: "The above is the ASSIGNMENT PROMPT." });
-                }
-                if (answerKeyFile) {
-                  const akBlock = await answerKeyToDocumentBlock(answerKeyFile);
-                  sharedBlocks.push(akBlock);
-                  sharedBlocks.push({ type: "text", text: "The above is the MODEL SOLUTION / ANSWER KEY." });
-                }
-                // Fingerprint Zone 1 to skip student files that are the same document
-                const assignFingerprint = assignmentFile
-                  ? (await fileToBase64(assignmentFile)).slice(0, 200)
-                  : null;
-                const pageBlocks = [];
-                const seenOriginalNames = new Set();
-                const heicFailedForStudent = [];
-                const docxFailedForStudent = [];
-                for (let fi = 0; fi < groupFiles.length; fi++) {
-                  const f = groupFiles[fi];
-                  try {
-                    // Deduplicate by original filename from BB pattern to skip double-exports
-                    const parsed = parseBBFilename(f.name);
-                    const origName = parsed ? parsed.originalName : f.name;
-                    if (seenOriginalNames.has(origName)) {
-                      console.log(`Skipping duplicate file: [submission] (original: [submission])`);
-                      continue;
-                    }
-                    seenOriginalNames.add(origName);
-                    if (assignFingerprint) {
-                      const fp = (await fileToBase64(f)).slice(0, 200);
-                      if (fp === assignFingerprint) {
-                        console.log(`Skipping [submission] — matches Zone 1 assignment prompt`);
-                        continue;
-                      }
-                    }
-                    const isPDFFile = f.type === "application/pdf";
-                    const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
-                    const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
-                    const isDocxFile = /\.docx$/i.test(f.name) || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-                    if (isPDFFile) {
-                      console.log(`[pdfToImages call] BB batch student: "[submission]" type="${f?.type}"`);
-                    const imgs = await pdfToImages(f, 8, 2400, 0.92);
-                      imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
-                    } else if (isDocxFile) {
-                      setLoadingMsg(`Converting ${f.name} (Word doc) via server...`);
-                      const converted = await convertOnServer(f, 'convert-docx');
-                      if (converted) {
-                        const imgs = await pdfToImages(converted, 8, 2400, 0.92);
-                        imgs.forEach(b64 => pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
-                      } else {
-                        console.warn(`[BB batch] DOCX conversion failed, marking as badge: [submission]`);
-                        docxFailedForStudent.push(f.name);
-                      }
-                    } else if (isHEICFile) {
-                      setLoadingMsg(`Converting ${f.name} (HEIC) via server...`);
-                      const converted = await convertOnServer(f, 'convert-heic');
-                      if (converted) {
-                        const b64 = await fileToBase64(converted);
-                        pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
-                      } else {
-                        console.warn(`[BB batch] HEIC conversion failed, marking as badge: [submission]`);
-                        heicFailed.push(f.name);
-                        heicFailedForStudent.push(f.name);
-                      }
-                    } else if (isImgFile) {
-                      const b64 = await convertToJpegViaCanvas(f, 0.92, 2400);
-                      if (b64 === null) {
-                        heicFailed.push(f.name);
-                      } else {
-                        pageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } });
-                      }
-                    } else {
-                      console.warn(`Skipping unrecognised file type: [submission] (${f.type})`);
-                    }
-                  } catch (err) { console.error("Error processing file", "[submission]", err); }
-                }
-                // §3.3/#25: redact name zones across ALL of this student's pages — BB
-                // reverses files so the name-bearing cover sheet can land anywhere, so
-                // page-1-only isn't safe here. Then capture page 1 as graded (#23).
-                let groupRedacted = false, groupScanned = false;
-                if (doRedact && pageBlocks.length) {
-                  const b64s = pageBlocks.map(b => b.source.data);
-                  const rr = await redactPageImages(b64s, { all: true });
-                  rr.pages.forEach((p, i) => { pageBlocks[i].source.data = p; });
-                  groupRedacted = rr.redacted > 0;
-                  groupScanned = rr.maxWords >= MIN_SCAN_WORDS;
-                }
-                const groupImg = pageBlocks.length ? pageBlocks[0].source.data : null;
-                // #26: tag every result for this submission with the SAME redaction fields
-                // that drive the banner — one truth. _subId dedupes multi-result groups.
-                const tagImg = (arr) => arr.map(s => ({ ...s, _pageImage: groupImg, _pageRedacted: groupRedacted, _pageScanned: groupScanned, _subId: `bb${gi}` }));
-                // If all files failed as HEIC, return a special unprocessable result instead of grading
-                if (pageBlocks.length === 0 && docxFailedForStudent.length > 0) {
-                  console.warn(`[BB batch] ${studentLabel}: all files are DOCX — returning DOCX badge`);
-                  return tagImg([{ studentName: studentLabel, overallTier: "DOCX", dimensions: { conceptualUnderstanding: "DOCX", problemSolving: "DOCX", workShown: "DOCX", accuracy: "DOCX" }, problems: [], feedback: "Submission could not be processed — Word documents are not supported. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `DOCX files: ${docxFailedForStudent.join(", ")}` }]);
-                }
-                if (pageBlocks.length === 0 && heicFailedForStudent.length > 0) {
-                  console.warn(`[BB batch] ${studentLabel}: all files are unprocessable HEIC — returning HEIC badge`);
-                  return tagImg([{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }]);
-                }
-                const userPrompt = `Subject: ${subject}
-Assignment: ${assignment || "Student Submission"}
-${rubric ? "Instructor Rubric Notes: " + rubric : ""}
-${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}Student ID: ${group.studentId}
-${problemScope.trim() ? `The student was assigned the following problems: ${problemScope.trim()}. Grade ALL of these problems across ALL submitted images. Do not stop until every assigned problem has been graded or confirmed missing.\n` : ""}INSTRUCTIONS:
-1. Identify ALL problems and sub-parts visible. List them ALL before grading.
-2. Grade EVERY identified problem/sub-part. Do not skip any.
-3. Use the answer key if provided. If not, use your subject expertise.
-4. Apply DM3A P1-P4 mastery scoring — never binary correct/wrong.
-5. Weight process and reasoning heavily.
-6. Use "${studentLabel}" as the studentName in your response.
-Return a JSON array with exactly ONE student object.`;
-                const contentBlocks = [
-                  { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
-                  ...pageBlocks,
-                  { type: "text", text: "=== END OF STUDENT WORK ===" },
-                  ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
-                ];
-                const imageBlocks = contentBlocks.filter(b => b.type === "image");
-                console.log(`[BB SEND] Student ${group.studentId}: ${contentBlocks.length} total blocks, ${imageBlocks.length} image blocks`);
-                // Use scope directly if provided, else scan for problem inventory
-                let bbInventory = null;
-                let bbUserPrompt = userPrompt;
-                if (problemScope.trim()) {
-                  bbUserPrompt = buildScopeDirectPrefix(problemScope.trim()) + userPrompt;
-                } else {
-                  bbInventory = await scanProblems(pageBlocks, systemPrompt);
-                  if (bbInventory && bbInventory.length > 0) {
-                    bbUserPrompt = buildInventoryPrefix(bbInventory) + userPrompt;
-                  }
-                }
-                const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: bbUserPrompt });
-                const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
-                const jsonMatch = cleaned.match(/(\[\s*\{[\s\S]*\}\s*\])/);
-                const jsonStr = jsonMatch ? jsonMatch[1] : cleaned;
-                const parsed = JSON.parse(jsonStr);
-                const students = Array.isArray(parsed) ? parsed : [parsed];
-                // Ensure studentName is always the BB label — never "Unknown" or empty
-                const UNKNOWN_NAMES = new Set(["unknown", "unknown student", "", "n/a"]);
-                const normalized = students.map(s => ({
-                  ...s,
-                  studentName: (!s.studentName || UNKNOWN_NAMES.has(s.studentName.toLowerCase())) ? studentLabel : s.studentName,
-                  _inventory: bbInventory || null
-                }));
-                if (bbInventory) setProblemInventory(prev => ({ ...prev, [studentLabel]: bbInventory }));
-                return tagImg(normalized);
-              } catch (err) {
-                if (err && err.isRedaction) throw err; // fail-closed: abort the whole run, don't fake a row
-                return tagImg([errorResult(studentLabel, err, "Failed while grading this Blackboard submission.")]);
-              }
-            });
-
-            try {
-            const CHUNK_SIZE = 5;
-            const chunks = chunkArray(gradingPromises, CHUNK_SIZE);
-            for (let ci = 0; ci < chunks.length; ci++) {
-              setLoadingMsg(`Grading students ${ci * CHUNK_SIZE + 1}–${Math.min((ci + 1) * CHUNK_SIZE, bbGroups.length)} of ${bbGroups.length}...`);
-              const chunkResults = await Promise.all(chunks[ci]);
-              chunkResults.forEach(arr => allResults.push(...arr));
-            }
-            // #23/#26: derive the banner from the SAME per-submission fields as the
-            // badges (one truth), THEN lift thumbnails and strip transient fields so
-            // they never reach persisted results / the server.
-            if (doRedact) {
-              const stats = deriveRedactStats(allResults.map(r => ({ subId: r._subId, redacted: r._pageRedacted, scanned: r._pageScanned, present: r._pageImage != null })));
-              if (stats.checked > 0) setRedactStats(stats);
-              // #25/#26 invariant: the banner's redacted count MUST equal the number of
-              // distinct submissions showing a redacted badge — same source, so equal by
-              // construction; a mismatch (or gradable work with nothing checked) is a bug.
-              const badgeSubs = new Set(allResults.filter(r => r._pageRedacted && r._pageImage).map(r => r._subId)).size;
-              const anyGradable = allResults.some(r => !isUngraded(r));
-              if (stats.redacted !== badgeSubs || (anyGradable && stats.checked === 0)) {
-                console.error(`[REDACT INVARIANT] BB batch: banner redacted=${stats.redacted} vs badge submissions=${badgeSubs}, checked=${stats.checked}`);
-                setRedactWarning(true);
-              }
-              try { terminateRedactor(); } catch { /* ignore */ }
-            }
-            const imgs = allResults.map(r => (r._pageImage ? { image: r._pageImage, redacted: !!r._pageRedacted, scanned: !!r._pageScanned } : null));
-            const cleanResults = allResults.map(({ _pageImage, _pageRedacted, _pageScanned, _subId, ...rest }) => rest);
-            setSubmissionImages(imgs);
-            setBbStubNote(bbStubFiles.length); // #25
-            setResults(applyComputedTier(applyDimScope(cleanResults, activeDims)));
-            setOverrides({});
-            setActiveStudent(0);
-            setLoading(false);
-            setStep("results");
-            } catch (err) {
-              // Fail-closed abort (Change 3d): a redaction failure in ANY BB group stops
-              // the whole batch with a retry message — no unredacted image is graded.
-              if (err && err.isRedaction) {
-                console.warn("[REDACT] BB batch grading aborted — " + err.message);
-                setError("Couldn't verify the name-zone redaction on page 1 — grading was stopped to protect privacy. Please retry.");
-                try { terminateRedactor(); } catch { /* ignore */ }
-                setLoading(false);
-                setStep("setup");
-                return;
-              }
-              throw err; // unexpected error — let it surface
-            }
-          }}>
+          onClick={() => gradeBBGroups()}>
           Grade All {bbGroups.length} Student(s) →
         </button>
       </div>
@@ -5128,21 +5332,37 @@ Return a JSON array with exactly ONE student object.`;
             of them. Count the failures at the top and name each one. */}
         {results.some(s => s.overallTier === "ERROR") && (() => {
           const failed = results.map((s, i) => ({ s, i })).filter(({ s }) => s.overallTier === "ERROR");
+          const skipped = failed.filter(({ s }) => s.runSkipped);
+          // #35: one account-level failure stopped the run. Say that once, with the
+          // count it got through — not the same sentence nineteen times.
+          const stopped = skipped.length > 0;
+          const attempted = results.length - skipped.length;
+          const cause = (failed.find(({ s }) => s.runFatal) || failed[0]).s;
+          const listed = stopped ? failed.filter(({ s }) => !s.runSkipped) : failed;
           // #33: on a vaulted course the raw studentName carries the username —
           // show the same safe label the rest of the results screen uses.
           const safeLabel = (s, i) => activeVaulted ? reportIdentity(s, i).display : showName(s.studentName);
           return (
             <div style={{ background: "#FCEBEB", border: "2px solid #E39A9A", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#7A1F1F" }}>
-              <strong>⚠ {failed.length} of {results.length} submission{results.length === 1 ? "" : "s"} could not be graded.</strong>{" "}
-              {failed.length === 1 ? "It has" : "They have"} no mastery level — nothing was scored, so nothing is counted in the class summary or written to an export. Re-run {failed.length === 1 ? "it" : "them"} once the cause below is resolved.
-              <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
-                {failed.map(({ s, i }) => (
-                  <li key={i} style={{ marginBottom: 2 }}>
-                    <button type="button" onClick={() => setActiveStudent(i)} style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "#7A1F1F", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>{safeLabel(s, i)}</button>
-                    {" — "}{ungradedReason(s)}
-                  </li>
-                ))}
-              </ul>
+              {stopped ? (<>
+                <strong>⚠ Run stopped after {attempted} of {results.length} — {ungradedReason(cause)}</strong>
+                <div style={{ marginTop: 6 }}>
+                  This failure applies to the whole run, not to one student, so the remaining {skipped.length} submission{skipped.length === 1 ? " was" : "s were"} not attempted — no images were uploaded and nothing was charged for {skipped.length === 1 ? "it" : "them"}. Fix the cause above, then re-run the failed submissions.
+                </div>
+              </>) : (<>
+                <strong>⚠ {failed.length} of {results.length} submission{results.length === 1 ? "" : "s"} could not be graded.</strong>{" "}
+                {failed.length === 1 ? "It has" : "They have"} no mastery level — nothing was scored, so nothing is counted in the class summary or written to an export.
+              </>)}
+              {listed.length > 0 && (
+                <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+                  {listed.map(({ s, i }) => (
+                    <li key={i} style={{ marginBottom: 2 }}>
+                      <button type="button" onClick={() => setActiveStudent(i)} style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "#7A1F1F", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>{safeLabel(s, i)}</button>
+                      {" — "}{ungradedReason(s)}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           );
         })()}
@@ -5168,6 +5388,28 @@ Return a JSON array with exactly ONE student object.`;
             })()}
           </div>
         )}
+
+        {/* #36: re-grade only what failed. Sits under both failure banners because it
+            covers every ungraded row — a request that errored and a file that would
+            not convert alike. */}
+        {!isStudentMode && results.some(s => isUngraded(s)) && (() => {
+          const ungradedRows = results.filter(s => isUngraded(s));
+          const ok = results.length - ungradedRows.length;
+          const retryable = ungradedRows.filter(s => s._subId).length;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+              <button type="button" disabled={loading || retryable === 0} onClick={rerunFailedSubmissions}
+                style={{ ...styles.btn, padding: "7px 16px", fontSize: 13, opacity: (loading || retryable === 0) ? 0.5 : 1, cursor: (loading || retryable === 0) ? "not-allowed" : "pointer" }}>
+                ↻ Re-run {ungradedRows.length} failed submission{ungradedRows.length === 1 ? "" : "s"}
+              </button>
+              <span style={{ fontSize: 12, color: "#5A5A55" }}>
+                {retryable === 0
+                  ? "These rows can't be re-run on their own — start the grading run again."
+                  : `Only ${ungradedRows.length === 1 ? "this one is" : "these are"} re-graded and re-charged; the ${ok} already graded ${ok === 1 ? "stays" : "stay"} exactly as ${ok === 1 ? "it is" : "they are"}.`}
+              </span>
+            </div>
+          );
+        })()}
 
         {/* Blackboard export (Blind Grading, Part D) — vaulted + unlocked only */}
         {!isStudentMode && activeVaulted && namesUnlocked && results.length >= 1 && (
