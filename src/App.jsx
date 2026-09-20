@@ -12,6 +12,11 @@ import { buildNameIndex } from "./blind/translate.js";
 import { findPlaintext } from "./blind/zeroPlaintext.js";
 import { redactNameZone, terminateRedactor } from "./blind/redact.js";
 import LandingPage from "./LandingPage";
+// Student-facing rendering of an already-graded result (the instructor report
+// in this file is untouched). Identity is resolved HERE by reportIdentity and
+// passed in — StudentReport.jsx never looks a name up.
+import { StudentReportModal } from "./StudentReport.jsx";
+import { generateStudentReportPDF } from "./studentReportPdf.js";
 // Instructor accounts. AuthGate replaces the old shared-password screen; authApi
 // also carries the account-scoped course endpoints used by persistCourses().
 import AuthGate from "./auth/AuthGate.jsx";
@@ -726,6 +731,10 @@ export default function DM3AGraderV5() {
   const [fileSizeWarnings, setFileSizeWarnings] = useState([]);
   const [heicFailedFiles, setHeicFailedFiles] = useState([]);
   const [generatingReports, setGeneratingReports] = useState(false);
+  const [generatingStudentReports, setGeneratingStudentReports] = useState(false);
+  const [studentReportIndex, setStudentReportIndex] = useState(null); // results index open in the Student Report modal
+  const [studentReportBusy, setStudentReportBusy] = useState(false);
+  const [gradedAt, setGradedAt] = useState(null); // ms; stamped once per run, restored on resume
   const [includeNameOnReport, setIncludeNameOnReport] = useState(false); // blind: opt-in real name in report body
   const [pageNotes, setPageNotes] = useState([]); // #18: reference-file page usage ("Using X of Y pages")
   const [answerKeyPages, setAnswerKeyPages] = useState(null); // #20: answer-key page count surfaced
@@ -1795,11 +1804,19 @@ export default function DM3AGraderV5() {
   }, [step, results.length]);
 
   // Restore a persisted session into the results view (alias-keyed; names require unlock).
+  // "Date graded" on the student report. Stamped when a run first produces rows
+  // and restored from the session snapshot on resume, so a report opened the next
+  // day still names the day the work was graded.
+  useEffect(() => {
+    if (results.length > 0 && gradedAt == null) setGradedAt(Date.now());
+  }, [results, gradedAt]);
+
   function resumeSession() {
     try {
       const snap = JSON.parse(localStorage.getItem(DM3A_SESSION_KEY) || "null");
       if (!snap || !Array.isArray(snap.results)) { setPendingResume(null); return; }
       setResults(snap.results);
+      setGradedAt(snap.savedAt || Date.now());
       setOverrides(snap.overrides || {});
       setStudentMapping(snap.studentMapping || {});
       setActiveStudent(snap.activeStudent || 0);
@@ -3739,20 +3756,22 @@ Return a JSON array with exactly ONE student object.`;
     return r.resolved ? r : null;
   }
 
-  function buildReportFilename(student, index) {
+  // `kind` swaps the suffix for the student-facing variant ("StudentReport") and
+  // defaults to the instructor one, so existing filenames are byte-identical.
+  function buildReportFilename(student, index, kind = "Report") {
     const ov = overrides[student.studentName] || {};
     const tier = ov.overall || student.overallTier;
     const id = reportIdentity(student, index);
     const san = (s) => String(s || "").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "") || "NA";
-    if (id.resolved) return `${san(id.lastName)}_${san(id.firstName)}_${san(id.alias)}_Report.pdf`;
+    if (id.resolved) return `${san(id.lastName)}_${san(id.firstName)}_${san(id.alias)}_${kind}.pdf`;
     // Vaulted-but-unresolved: alias or "Submission_N" — NEVER the BB filename. (#28/#30)
-    if (activeVaulted) return `${san(id.safeLabel)}_Report.pdf`;
+    if (activeVaulted) return `${san(id.safeLabel)}_${kind}.pdf`;
     const displayName = ov.renamedName || student.studentName;
     const namePart = displayName.includes(",")
       ? displayName.split(",").map(p => p.trim()).reverse().join("_")
       : displayName.replace(/\s+/g, "_");
     const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "").replace(/_+$/, "");
-    return `${namePart}_${assignPart}_${tier}.pdf`;
+    return kind === "Report" ? `${namePart}_${assignPart}_${tier}.pdf` : `${namePart}_${assignPart}_${tier}_${kind}.pdf`;
   }
 
   async function generateStudentPDF(student, index) {
@@ -3923,6 +3942,74 @@ Return a JSON array with exactly ONE student object.`;
       a.download = `DM3A_Reports_${assignPart}_${date}.zip`; a.click();
     } finally {
       setGeneratingReports(false);
+    }
+  }
+
+  // ─── STUDENT REPORT (student-facing twin of the report above) ─────────────
+  // Every value here is one the instructor has already reviewed and can override.
+  // Nothing new is computed, and NO name is looked up: reportIdentity() is the same
+  // single resolver the instructor report and both download paths use, with the same
+  // alias-only-unless-opted-in rule. Excluded by design: the instructor note, the
+  // ⚑ Review badges and flag sentences, the legibility inventory, the graded count.
+  function buildStudentReportData(student, index) {
+    const ov = overrides[student.studentName] || {};
+    const id = reportIdentity(student, index);
+    const name = (!activeVaulted || (includeNameOnReport && id.resolved)) ? id.realName : id.safeLabel;
+    const dims = [
+      ["Conceptual Understanding", "conceptualUnderstanding", "conceptual"],
+      ["Problem Solving", "problemSolving", "problemSolving"],
+      ["Work Shown", "workShown", "workShown"],
+      ["Accuracy", "accuracy", "accuracy"],
+    ].filter(([, key]) => !student.dimensions || student.dimensions[key] != null)
+     .map(([label, key, ovKey]) => ({ label, level: ov[ovKey] || student.dimensions?.[key] || "P1" }));
+    return {
+      name,
+      assignment: assignment || "Assignment",
+      courseCode: activeCourseCode || subject || "",
+      dateGraded: new Date(gradedAt || Date.now()).toLocaleDateString(),
+      overall: ov.overall || student.overallTier,
+      dimensions: dims,
+      // The FINAL level for each problem — an instructor override wins over the AI's.
+      problems: (student.problems || []).map(p => ({
+        id: p.id,
+        description: p.description || "",
+        level: getProblemTier(student.studentName, p.id, p.tier),
+        processAssessment: p.processAssessment || "",
+        reasoning: p.reasoning || "",
+      })),
+      feedback: student.feedback || "",
+      strengths: student.strengths || [],
+      growthAreas: student.growthAreas || [],
+      colors: { tierColor, tierBg, tierBorder },
+    };
+  }
+
+  async function downloadStudentVersionReport(student, index) {
+    const doc = await generateStudentReportPDF(buildStudentReportData(student, index));
+    doc.save(buildReportFilename(student, index, "StudentReport"));
+  }
+
+  async function downloadAllStudentReports() {
+    const { default: JSZip } = await import("jszip");
+    if (!results.some(s => !isUngraded(s))) return;
+    setGeneratingStudentReports(true);
+    try {
+      const zip = new JSZip();
+      // Same loop shape as downloadAllReports: iterate by TRUE results index so
+      // reportIdentity reads the confirmed studentMapping[i].
+      for (let i = 0; i < results.length; i++) {
+        const student = results[i];
+        if (isUngraded(student)) continue; // nothing to hand a student for a row that never graded
+        const doc = await generateStudentReportPDF(buildStudentReportData(student, i));
+        zip.file(buildReportFilename(student, i, "StudentReport"), doc.output("arraybuffer"));
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      const date = new Date().toISOString().slice(0, 10);
+      const assignPart = (assignment || "Assignment").slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "");
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+      a.download = `DM3A_StudentReports_${assignPart}_${date}.zip`; a.click();
+    } finally {
+      setGeneratingStudentReports(false);
     }
   }
 
@@ -5131,6 +5218,10 @@ Return a JSON array with exactly ONE student object.`;
               <button style={{ ...styles.btnOutline, opacity: generatingReports ? 0.6 : 1 }} onClick={downloadAllReports} disabled={generatingReports}>
                 {generatingReports ? "Generating reports…" : "⬇ Download All Reports"}
               </button>
+              <button style={{ ...styles.btnOutline, opacity: generatingStudentReports ? 0.6 : 1 }} onClick={downloadAllStudentReports} disabled={generatingStudentReports}
+                title="One student-facing PDF per student, same file naming — a whole class at once.">
+                {generatingStudentReports ? "Generating student reports…" : "👤 Student Reports (all)"}
+              </button>
               {activeVaulted && namesUnlocked && (
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#5A5A55" }}
                   title="Blind reports are alias-only by default. Enable to print the real name for in-person handback. Files are renamed LastName_FirstName_ALIAS_Report.pdf either way.">
@@ -5189,7 +5280,13 @@ Return a JSON array with exactly ONE student object.`;
                 }}
               />
               <button style={styles.btnOutline} onClick={() => downloadStudentReport(student, activeStudent)}>⬇ Download Report</button>
-              <button style={styles.btn} onClick={() => { try { localStorage.removeItem(DM3A_SESSION_KEY); } catch { /* ignore */ } setPendingResume(null); setStep("setup"); setResults([]); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
+              {!isUngraded(student) && (
+                <button style={styles.btnOutline} onClick={() => setStudentReportIndex(activeStudent)}
+                  title="The student-facing version of this report — screenshot it or save the PDF to attach in Blackboard.">
+                  👤 Student Report
+                </button>
+              )}
+              <button style={styles.btn} onClick={() => { try { localStorage.removeItem(DM3A_SESSION_KEY); } catch { /* ignore */ } setPendingResume(null); setStep("setup"); setResults([]); setGradedAt(null); setStudentFiles([]); setAssignmentFile(null); setAnswerKeyFile(null); setProblemOverrides({}); setIsBatchPDF(false); setBatchMode("auto"); setCombineImages(false); setCombinedStudentName(""); setFileSizeWarnings([]); setIsBBBatch(false); setBbGroups([]); }}>New Session</button>
             </div>
           </div>
         </div>
@@ -5716,7 +5813,22 @@ Return a JSON array with exactly ONE student object.`;
             );
           })()}
         </div>
-  
+
+        {/* Student Report — the student-facing rendering of the row above. Portalled
+            to <body> so its print stylesheet can drop the rest of the app. */}
+        {studentReportIndex !== null && results[studentReportIndex] && (
+          <StudentReportModal
+            data={buildStudentReportData(results[studentReportIndex], studentReportIndex)}
+            onClose={() => setStudentReportIndex(null)}
+            downloading={studentReportBusy}
+            onDownload={async () => {
+              setStudentReportBusy(true);
+              try { await downloadStudentVersionReport(results[studentReportIndex], studentReportIndex); }
+              finally { setStudentReportBusy(false); }
+            }}
+          />
+        )}
+
       </div>
     );
   }
