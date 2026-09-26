@@ -14,7 +14,7 @@ import { redactNameZone, terminateRedactor } from "./blind/redact.js";
 import {
   KIND_SCAN, KIND_DOCX, KIND_BB_TEXT, KIND_BB_STUB, KIND_UNKNOWN, KIND_LABELS,
   isDigitalKind, redactionPathFor, classifyByName, pdfKindFromProfile, parseBBFilename,
-  stripDocxXmlToText, parseBBSubmissionTxt,
+  stripDocxXmlToText, parseBBSubmissionTxt, identityLineValue,
   redactRosterNames, assertNoRosterNames, requireVault, requireExtractedText,
 } from "./blind/textRedact.js";
 import LandingPage from "./LandingPage";
@@ -755,6 +755,12 @@ export default function DM3AGraderV5() {
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
+  // #38: a run error ("Couldn't verify the name-zone redaction…") describes the run that
+  // produced it. Once the instructor changes the files or steps into Review Student
+  // Groups they are setting up a NEW run, and a banner about the old one is worse than
+  // no banner: it reads as a fresh failure and sent people round the retry loop on an
+  // upload that had not been graded yet. Every place that starts a new setup clears it.
+  const clearRunError = () => setError("");
   const [overrides, setOverrides] = useState({});
   const [problemOverrides, setProblemOverrides] = useState({});
   const [activeStudent, setActiveStudent] = useState(0);
@@ -2735,6 +2741,10 @@ work_present must be true ONLY when classification is HAS_WORK.`;
         const textParts = [];
         const unreadableForStudent = [];
         let textReplacements = 0;
+        // #38: one entry per file — what it was detected as, which redaction path it took,
+        // and how many replacements that path made. Printed as a block at dispatch so the
+        // whole submission can be read at once. Counts only; never the names removed.
+        const dispatch = [];
         // Identity for BB Batch Mode comes from the filename (<username>_attempt_…),
         // joined to the vault's stored bbUsername — the SAME join the Confirm Students
         // step uses, so the alias stamped into the text and the alias the instructor
@@ -2780,6 +2790,7 @@ work_present must be true ONLY when classification is HAS_WORK.`;
                 // (c.redactNames === false), logged so a deliberate skip is never silent.
                 console.log(`[REDACT TEXT] ${studentLabel} file ${fi + 1}: skipped — disabled by course setting`);
                 textParts.push({ kind, text: extracted });
+                dispatch.push({ file: f.name, kind, path: "text (opt-out — NOT redacted)", replacements: 0, size: `${extracted.length} chars` });
                 continue;
               }
               // FAIL CLOSED: no vault means no names to remove and no alias to put in.
@@ -2789,17 +2800,23 @@ work_present must be true ONLY when classification is HAS_WORK.`;
               console.log(`[REDACT TEXT] ${studentLabel} file ${fi + 1} (${kind}): ${replacements} name replacement(s) over ${safeText.length} chars`);
               textReplacements += replacements;
               textParts.push({ kind, text: safeText });
+              dispatch.push({ file: f.name, kind, path: "text", replacements, size: `${safeText.length} chars` });
               continue;
             }
             if (kind === KIND_BB_STUB) {
               bbStubFiles.push(f.name); // #25: Blackboard's metadata receipt, never gradable
+              dispatch.push({ file: f.name, kind, path: "none (receipt — not graded)", replacements: 0, size: "—" });
               continue;
             }
             if (kind === KIND_UNKNOWN) {
               console.warn(`[BB batch] ${studentLabel}: unsupported file type — skipping [submission] (${f.type})`);
               unreadableForStudent.push(f.name);
+              dispatch.push({ file: f.name, kind, path: "none (unsupported type)", replacements: 0, size: "—" });
               continue;
             }
+            // Everything from here is a scan: record which page range it contributes, so
+            // the group's name-zone result can be attributed back to this file below.
+            const pagesBefore = pageBlocks.length;
             const isPDFFile = f.type === "application/pdf";
             const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
             const isHEICFile = /\.(heic|heif)$/i.test(f.name) || f.type === "image/heic" || f.type === "image/heif";
@@ -2839,6 +2856,12 @@ work_present must be true ONLY when classification is HAS_WORK.`;
             } else {
               console.warn(`Skipping unrecognised file type: [submission] (${f.type})`);
             }
+            dispatch.push({
+              file: f.name, kind, path: doRedact ? "name-zone" : "name-zone (opt-out — NOT redacted)",
+              replacements: null, // filled in from the group's OCR pass below
+              size: `${pageBlocks.length - pagesBefore} page(s)`,
+              pageFrom: pagesBefore, pageTo: pageBlocks.length,
+            });
           } catch (err) {
             // #37: a redaction stop is fail-closed and must NOT be swallowed here —
             // it aborts the run the same way the image path's does.
@@ -2858,6 +2881,32 @@ work_present must be true ONLY when classification is HAS_WORK.`;
           rr.pages.forEach((p, i) => { pageBlocks[i].source.data = p; });
           groupRedacted = rr.redacted > 0;
           groupScanned = rr.maxWords >= MIN_SCAN_WORDS;
+          // #38: how many of THIS file's pages the name-zone pass actually covered.
+          for (const d of dispatch) {
+            if (d.pageTo === undefined) continue;
+            d.replacements = (rr.perPage || []).slice(d.pageFrom, d.pageTo).filter((pp) => pp && pp.redacted).length;
+          }
+        }
+        // #38: the per-file dispatch record. One line per file: what it was detected as,
+        // whether that counts as typed or a scan, which redaction path it actually took,
+        // and how many replacements that path made (text replacements for typed files,
+        // pages covered for scans). No names — only counts.
+        console.log(`[DISPATCH] ${studentLabel} — ${dispatch.length} file(s), ${textParts.length} typed part(s), ${pageBlocks.length} scanned page(s)`);
+        for (const d of dispatch) {
+          const typed = isDigitalKind(d.kind) ? "typed" : "scan";
+          console.log(`[DISPATCH]   "${d.file}" | type=${d.kind} (${typed}) | path=${d.path} | replacements=${d.replacements === null ? "n/a" : d.replacements} | ${d.size}`);
+          // The invariant this whole change rests on. A typed file must never be sent
+          // through the image name-zone check: that check verifies a name zone typed work
+          // does not have, which is what failed every run. If this ever fires, the
+          // classifier is wrong for that file — capture its name/MIME/shape as a test case.
+          if (typed === "typed" && d.path.startsWith("name-zone")) {
+            console.error(`[DISPATCH] CLASSIFIER BUG — a typed file took the image name-zone path: type=${d.kind} path=${d.path}. Please report this filename shape.`);
+          }
+          // The mirror invariant: a scan must never be "redacted" as text, which would
+          // leave the handwritten name untouched in the pixels.
+          if (typed === "scan" && d.path.startsWith("text")) {
+            console.error(`[DISPATCH] CLASSIFIER BUG — a scan took the text path: type=${d.kind}. The handwritten name would NOT have been covered.`);
+          }
         }
         const groupImg = pageBlocks.length ? pageBlocks[0].source.data : null;
         // #26: tag every result for this submission with the SAME redaction fields
@@ -2888,7 +2937,7 @@ work_present must be true ONLY when classification is HAS_WORK.`;
         const userPrompt = `Subject: ${subject}
 Assignment: ${assignment || "Student Submission"}
 ${rubric ? "Instructor Rubric Notes: " + rubric : ""}
-${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}Student ID: ${group.studentId}
+${courseContext.trim() ? `\nCOURSE CONTEXT: The instructor has provided the following information about what has been covered in this course so far: ${courseContext.trim()}.\n\nImportant: Do NOT penalize students for using terminology or methods that go beyond what has been covered — flag these cases instead with: 'Note: Student used concept not yet covered in course — instructor review recommended.' Do NOT reward students for using advanced terminology if their underlying reasoning is incomplete. Grade only based on what has been explicitly taught.\n` : ""}Student ID: ${identityLineValue(ownAlias)}
 ${problemScope.trim() ? `The student was assigned the following problems: ${problemScope.trim()}. Grade ALL of these problems across ALL submitted images. Do not stop until every assigned problem has been graded or confirmed missing.\n` : ""}INSTRUCTIONS:
 1. Identify ALL problems and sub-parts visible. List them ALL before grading.
 2. Grade EVERY identified problem/sub-part. Do not skip any.
@@ -5030,6 +5079,7 @@ Return a JSON array with exactly ONE student object.`;
             <input ref={studentRef} type="file" accept="application/pdf,image/jpeg,image/jpg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple style={{ display: "none" }}
               onChange={e => {
                 const files = Array.from(e.target.files);
+                clearRunError(); // #38: new files ⇒ a stale run error no longer applies
                 setStudentFiles(files);
                 // ── BB Batch Mode detection ──────────────────────────────
                 // Detect by presence of "_attempt_" — works for both numeric and username-based BB filenames
@@ -5123,7 +5173,7 @@ Return a JSON array with exactly ONE student object.`;
                       Grade anyway (may be slow)
                     </button>
                     <button
-                      onClick={() => { setStudentFiles([]); setFileSizeWarnings([]); setIsBatchPDF(false); setBatchMode("auto"); }}
+                      onClick={() => { clearRunError(); setStudentFiles([]); setFileSizeWarnings([]); setIsBatchPDF(false); setBatchMode("auto"); setIsBBBatch(false); setBbGroups([]); }}
                       style={{ ...styles.btnOutline, padding: "8px 18px", fontSize: 13 }}>
                       ← Choose a different file
                     </button>
@@ -5246,7 +5296,7 @@ Return a JSON array with exactly ONE student object.`;
         return (
           <button
             style={{ ...styles.btn, width: "100%", padding: 16, fontSize: 15, opacity: blocked ? 0.4 : 1, cursor: blocked ? "not-allowed" : "pointer" }}
-            onClick={blocked ? undefined : isBBBatch ? () => { console.log('[BB GROUPS START] setup button → preview (isBBBatch=true)'); setStep('preview'); } : (...args) => { console.log('[BB GROUPS START] setup button → handleGrade (isBBBatch=false)'); return handleGrade(...args); }}
+            onClick={blocked ? undefined : isBBBatch ? () => { console.log('[BB GROUPS START] setup button → preview (isBBBatch=true)'); clearRunError(); setStep('preview'); } : (...args) => { console.log('[BB GROUPS START] setup button → handleGrade (isBBBatch=false)'); return handleGrade(...args); }}
             disabled={blocked}>
             {blocked ? "⚠ Acknowledge the large file warning above to continue" : isBBBatch ? "Review Student Groups →" : "Grade with DM3A →"}
           </button>
@@ -5311,6 +5361,7 @@ Return a JSON array with exactly ONE student object.`;
                           const pdf = await convertDocxToPdf(item.file);
                           return { ...item, file: pdf };
                         }));
+                        clearRunError(); // #38: the group list changed ⇒ a new run
                         setBbGroups(prev => prev.map((g, idx) => idx !== gi ? g : { ...g, files: updated }));
                       } catch(err) {
                         alert('Conversion failed: ' + err.message + '\n\nMake sure the local converter is running:\ncd ~/dm3a-grader/local-converter && node server.js');
@@ -5347,6 +5398,7 @@ Return a JSON array with exactly ONE student object.`;
                           ...g,
                           files: g.files.filter((_, fIdx) => fIdx !== fi)
                         }).filter(g => g.files.length > 0);
+                        clearRunError(); // #38: the group list changed ⇒ a new run
                         setBbGroups(updated);
                       }}
                       style={{ background: "none", border: "none", color: "#A32D2D", cursor: "pointer", fontSize: 11, padding: "2px 6px" }}>

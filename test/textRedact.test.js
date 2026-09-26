@@ -6,7 +6,7 @@ import {
   KIND_SCAN, KIND_TEXT_PDF, KIND_DOCX, KIND_BB_TEXT, KIND_BB_STUB, KIND_UNKNOWN,
   isDigitalKind, classifyByName, pdfKindFromProfile,
   stripDocxXmlToText, htmlToText, parseBBSubmissionTxt,
-  findRosterNameHits, redactRosterNames, redactionPathFor, parseBBFilename,
+  findRosterNameHits, redactRosterNames, redactionPathFor, parseBBFilename, identityLineValue,
   requireVault, requireExtractedText, assertNoRosterNames,
 } from '../src/blind/textRedact.js';
 
@@ -276,4 +276,28 @@ test('end to end: the MATH1010 typed submission reaches grading redacted and ver
   assert.match(text, /MATH10-7F3K/, "the student's own alias replaces their name");
   assert.match(text, /completed the square/, 'the work itself is intact and gradable');
   assert.equal(assertNoRosterNames([text], ROSTER, 'Student_jdoe'), true, 'payload passes the pre-send gate');
+});
+
+// ── The identity line shown to the model (requirement 3) ───────────────────
+test('identity line: the alias replaces the Blackboard username', () => {
+  assert.equal(identityLineValue('MATH10-7F3K'), 'MATH10-7F3K');
+  assert.equal(identityLineValue('  MATH10-7F3K  '), 'MATH10-7F3K');
+});
+
+test('identity line: a missing alias degrades to anonymous, never to the username', () => {
+  // The failure mode that matters: no alias must NOT mean "fall back to jdoe".
+  for (const empty of ['', '   ', null, undefined]) {
+    const v = identityLineValue(empty);
+    assert.equal(v, 'UNASSIGNED');
+    assert.equal(/jdoe|doe|jane/i.test(v), false);
+  }
+});
+
+test('identity line: end to end, a BB filename yields an alias and not a username', () => {
+  const { studentId } = parseBBFilename('Quadratic Functions_jdoe_attempt_2026-09-26-14-31-05.txt');
+  assert.equal(studentId, 'jdoe', 'the username is still the join key, in the browser');
+  const alias = (ROSTER.find((r) => r.bbUsername === studentId) || {}).alias;
+  const shown = identityLineValue(alias);
+  assert.equal(shown, 'MATH10-7F3K');
+  assert.equal(shown.includes(studentId), false, 'the username does not reach the prompt');
 });

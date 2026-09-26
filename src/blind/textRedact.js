@@ -166,6 +166,17 @@ export function parseBBSubmissionTxt(raw) {
   return { nameHeader, submissionText: body, hasSubmission: body.length > 0 };
 }
 
+// ── The identity the model is shown (requirement 3) ────────────────────────
+// An alias where the Blackboard username used to be. A username like "jdoe" is
+// directory information that identifies a student, and nothing in grading needs it —
+// the model is told separately what to use as the studentName. When the vault has no
+// alias for this submission (an unparseable filename, or a student not on the roster)
+// the value degrades to a neutral placeholder rather than falling back to the username:
+// a missing alias must mean anonymous, not exposed.
+export function identityLineValue(alias) {
+  return String(alias || '').trim() || 'UNASSIGNED';
+}
+
 // ── Roster name matching ───────────────────────────────────────────────────
 const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
