@@ -11,6 +11,12 @@ import { diffRoster } from "./blind/rosterDiff.js";
 import { buildNameIndex } from "./blind/translate.js";
 import { findPlaintext } from "./blind/zeroPlaintext.js";
 import { redactNameZone, terminateRedactor } from "./blind/redact.js";
+import {
+  KIND_SCAN, KIND_DOCX, KIND_BB_TEXT, KIND_BB_STUB, KIND_UNKNOWN, KIND_LABELS,
+  isDigitalKind, redactionPathFor, classifyByName, pdfKindFromProfile, parseBBFilename,
+  stripDocxXmlToText, parseBBSubmissionTxt,
+  redactRosterNames, assertNoRosterNames, requireVault, requireExtractedText,
+} from "./blind/textRedact.js";
 import LandingPage from "./LandingPage";
 // Student-facing rendering of an already-graded result (the instructor report
 // in this file is untouched). Identity is resolved HERE by reportIdentity and
@@ -753,7 +759,10 @@ export default function DM3AGraderV5() {
   const [problemOverrides, setProblemOverrides] = useState({});
   const [activeStudent, setActiveStudent] = useState(0);
   const [rosterMap, setRosterMap] = useState({}); // studentId -> "Last, First"
-  const [skipCoverSheet, setSkipCoverSheet] = useState(new Set()); // studentIds to skip last file (cover sheet)
+  const [skipCoverSheet, setSkipCoverSheet] = useState(new Set());
+  // #37: "name|size" -> submission kind, for the Review Student Groups list and for the
+  // grading split. Resolved in an effect because a PDF has to be opened to know.
+  const [bbFileKinds, setBbFileKinds] = useState({}); // studentIds to skip last file (cover sheet)
   const [problemScope, setProblemScope] = useState(""); // e.g. "even problems 2–84"
   const [courseContext, setCourseContext] = useState(""); // e.g. "unit covers matrix operations only"
   const [showHelp, setShowHelp] = useState(false);
@@ -1367,6 +1376,17 @@ export default function DM3AGraderV5() {
   // #33: a BB-download batch labels each result "Student_<username>". Recover that
   // username (a JOIN KEY only — never displayed, never sent) so it can be matched
   // against the vault's stored BB usernames.
+  // #37: the alias for a BB submission, from the username in its filename. The vault is
+  // the only place that join can be made, and it happens in the browser — the username
+  // is used as a key and is never displayed.
+  const aliasForBBUsername = (username) => {
+    const u = String(username || "").trim().toLowerCase();
+    if (!u || u === "unrecognized") return "";
+    const hit = (unlockedRosters[activeCourseCode] || []).find(
+      (r) => String(r.bbUsername || "").trim().toLowerCase() === u
+    );
+    return hit ? hit.alias : "";
+  };
   const bbUsernameOf = (studentName) => {
     const m = /^student[_-](.+)$/i.exec(String(studentName || "").trim());
     return m ? m[1].trim() : "";
@@ -1947,14 +1967,28 @@ export default function DM3AGraderV5() {
 
   // ─── LOGIN ────────────────────────────────────────────────────────────────
 
-  // ─── BB FILENAME PARSER ───────────────────────────────────────────────────
-  function parseBBFilename(filename) {
-    // Pattern: anything_STUDENTID_attempt_YYYY-MM-DD-HH-MM-SS_originalname.ext
-    // studentId may be numeric (01560658) or alphanumeric username (mdecker)
-    const match = filename.match(/^(.+?)_([a-zA-Z0-9_]{2,20})_attempt_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_(.+)$/i);
-    if (!match) return null;
-    return { studentId: match[2], timestamp: match[3], originalName: match[4] };
-  }
+  // #37: resolve each BB file's submission kind. Runs when the groups change; a file
+  // already resolved is not re-opened. `cancelled` guards a fast re-drop of new files.
+  const fileKindKey = (f) => `${f?.name}|${f?.size}`;
+  useEffect(() => {
+    if (!bbGroups.length) return;
+    let cancelled = false;
+    (async () => {
+      const pending = [];
+      for (const g of bbGroups) for (const item of g.files) {
+        const key = fileKindKey(item.file);
+        if (!(key in bbFileKinds) && !pending.some((p) => p.key === key)) pending.push({ key, file: item.file });
+      }
+      if (!pending.length) return;
+      const resolved = {};
+      for (const { key, file } of pending) {
+        try { resolved[key] = await detectFileKind(file); }
+        catch { resolved[key] = KIND_SCAN; } // unknown ⇒ the stricter image path
+      }
+      if (!cancelled) setBbFileKinds((prev) => ({ ...prev, ...resolved }));
+    })();
+    return () => { cancelled = true; };
+  }, [bbGroups]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function isDocx(file) {
     return file.name.toLowerCase().endsWith('.docx') || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -2008,7 +2042,13 @@ export default function DM3AGraderV5() {
       f.type === "application/pdf" ||
       f.name.toLowerCase().endsWith(".pdf") ||
       f.name.toLowerCase().endsWith(".docx") ||
-      f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      // #37: Blackboard writes one .txt per submission. When the student typed into the
+      // editor instead of attaching a file, that .txt IS the submission — dropping it
+      // here is why typed submissions reached grading with nothing to grade. It is still
+      // treated as a stub at grading time when it holds only the metadata headers.
+      f.name.toLowerCase().endsWith(".txt") ||
+      f.type === "text/plain";
 
     const groups = {};
     files.filter(isGradable).forEach(f => {
@@ -2159,6 +2199,95 @@ export default function DM3AGraderV5() {
   function looksLikeImage(file) {
     return file?.type?.startsWith("image/") ||
       /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(file?.name || "");
+  }
+
+  // ── DIGITAL (TYPED) SUBMISSIONS — extraction adapters (#37) ───────────────
+  // A typed submission has no name zone to OCR, so it is redacted as text instead
+  // (src/blind/textRedact.js holds the logic and the tests). These three functions are
+  // the only browser-dependent part: get the characters out of the file.
+  const PDF_TEXT_MAX_PAGES = 8; // same page budget the BB image path uses
+
+  // Decode a text file, honouring a UTF-16 BOM — Blackboard writes some exports UTF-16.
+  async function readTextFile(file) {
+    const buf = await file.arrayBuffer();
+    const b = new Uint8Array(buf);
+    if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return new TextDecoder("utf-16le").decode(buf);
+    if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) return new TextDecoder("utf-16be").decode(buf);
+    return new TextDecoder("utf-8").decode(buf);
+  }
+
+  // Probe a PDF's text layer. `hasImages` is the important half: a phone scanner app
+  // adds an OCR text layer to a photograph of handwriting, and such a file must stay on
+  // the image path or the handwritten name leaks. A probe failure reports as an image
+  // page too, so the fallback is always the stricter path.
+  async function pdfTextProfile(file) {
+    try {
+      const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      const IMAGE_OPS = new Set([
+        pdfjsLib.OPS.paintImageXObject, pdfjsLib.OPS.paintJpegXObject,
+        pdfjsLib.OPS.paintInlineImageXObject, pdfjsLib.OPS.paintImageMaskXObject,
+      ]);
+      let chars = 0, hasImages = false;
+      const lines = [];
+      const pages = Math.min(pdf.numPages, PDF_TEXT_MAX_PAGES);
+      for (let pn = 1; pn <= pages; pn++) {
+        const page = await pdf.getPage(pn);
+        const content = await page.getTextContent();
+        const pageText = (content.items || []).map((it) => it.str || "").join(" ").replace(/[ \t]{2,}/g, " ").trim();
+        if (pageText) lines.push(pageText);
+        chars += pageText.replace(/\s/g, "").length;
+        if (!hasImages) {
+          const ops = await page.getOperatorList();
+          hasImages = (ops.fnArray || []).some((fn) => IMAGE_OPS.has(fn));
+        }
+      }
+      return { chars, pages, hasImages, text: lines.join("\n\n") };
+    } catch (e) {
+      console.warn("[SUBMISSION TYPE] PDF text probe failed — treating the file as a scan:", e && e.message);
+      return { chars: 0, pages: 0, hasImages: true, text: "" };
+    }
+  }
+
+  // word/document.xml out of the .docx zip. No server round trip, so nothing about the
+  // document leaves the browser (the old path uploaded it to /convert-docx to rasterise).
+  async function docxToText(file) {
+    try {
+      const { default: JSZip } = await import("jszip");
+      const zip = await JSZip.loadAsync(await file.arrayBuffer());
+      const entry = zip.file("word/document.xml");
+      if (!entry) return "";
+      return stripDocxXmlToText(await entry.async("string"));
+    } catch (e) {
+      console.warn("[SUBMISSION TYPE] .docx text extraction failed:", e && e.message);
+      return "";
+    }
+  }
+
+  // Which kind of submission is this file? Name/MIME decides everything except a PDF,
+  // which needs its contents read.
+  async function detectFileKind(file) {
+    const byName = classifyByName(file?.name, file?.type);
+    if (byName === KIND_BB_TEXT) {
+      // Every Blackboard submission has a .txt. It is the submission when the student
+      // typed into the editor, and a metadata receipt when they attached files — only
+      // its contents distinguish them, so the review list would otherwise mislabel it.
+      try {
+        const parsed = parseBBSubmissionTxt(await readTextFile(file));
+        return parsed.hasSubmission ? KIND_BB_TEXT : KIND_BB_STUB;
+      } catch { return KIND_BB_STUB; }
+    }
+    if (byName !== null) return byName;
+    return pdfKindFromProfile(await pdfTextProfile(file));
+  }
+
+  // Pull the gradable text out of a digital file. Returns "" when there is none, which
+  // the caller turns into the fail-closed "No text layer found" stop.
+  async function extractDigitalText(file, kind) {
+    if (kind === KIND_DOCX) return docxToText(file);
+    if (kind === KIND_BB_TEXT) return parseBBSubmissionTxt(await readTextFile(file)).submissionText;
+    return (await pdfTextProfile(file)).text; // KIND_TEXT_PDF
   }
 
   async function pdfToImages(file, maxPages = 16, maxDimension = 1200, quality = 0.75, onPages) {
@@ -2570,12 +2699,10 @@ work_present must be true ONLY when classification is HAS_WORK.`;
       // Reverse so later-uploaded files (notebook pages) come before cover sheet.
       // If instructor checked "skip cover sheet", drop the last file (earliest upload).
       let groupFiles = group.files.map(item => item.file).reverse();
-      // #25: Blackboard exports a per-submission .txt metadata stub alongside the
-      // real attachments — never gradable. Exclude and count for an honest note.
-      groupFiles = groupFiles.filter(f => {
-        if (/\.txt$/i.test(f.name)) { bbStubFiles.push(f.name); return false; }
-        return true;
-      });
+      // #25/#37: Blackboard writes one .txt per submission. It is a metadata stub when
+      // the student attached files — but it IS the submission when they typed into the
+      // editor. It can no longer be dropped by extension here; the per-file loop parses
+      // it and only the header-only ones are counted as stubs.
       if (skipCoverSheet.has(group.studentId) && groupFiles.length > 1) {
         console.log(`[${group.studentId}] Skipping cover sheet: [submission]`);
         groupFiles = groupFiles.slice(0, -1);
@@ -2603,6 +2730,18 @@ work_present must be true ONLY when classification is HAS_WORK.`;
         const seenOriginalNames = new Set();
         const heicFailedForStudent = [];
         const docxFailedForStudent = [];
+        // #37: typed submissions. `textParts` holds the already-redacted text; it is kept
+        // separate from pageBlocks because only pixels go through the name-zone check.
+        const textParts = [];
+        const unreadableForStudent = [];
+        let textReplacements = 0;
+        // Identity for BB Batch Mode comes from the filename (<username>_attempt_…),
+        // joined to the vault's stored bbUsername — the SAME join the Confirm Students
+        // step uses, so the alias stamped into the text and the alias the instructor
+        // confirms can never disagree. No match (e.g. an UNRECOGNIZED file) still redacts;
+        // it just has no own-alias to substitute into a "Name:" header, and identity falls
+        // to manual assignment with the existing duplicate-alias guard.
+        const ownAlias = aliasForBBUsername(group.studentId);
         for (let fi = 0; fi < groupFiles.length; fi++) {
           const f = groupFiles[fi];
           try {
@@ -2620,6 +2759,46 @@ work_present must be true ONLY when classification is HAS_WORK.`;
                 console.log(`Skipping [submission] — matches Zone 1 assignment prompt`);
                 continue;
               }
+            }
+            // #37: route by submission kind BEFORE any rasterising. A typed submission
+            // has no handwritten name zone, so it never reaches the image check — that
+            // check is what failed on every typed run, verifying a name zone that does
+            // not exist. Its text is redacted against the vault instead.
+            const kind = bbFileKinds[fileKindKey(f)] || await detectFileKind(f);
+            const path = redactionPathFor(kind); // 'text' | 'name-zone' | 'none'
+            if (path === "text") {
+              const extracted = await extractDigitalText(f, kind);
+              if (kind === KIND_BB_TEXT && !String(extracted).trim()) {
+                // Header-only .txt = Blackboard's metadata stub, not a submission (#25).
+                bbStubFiles.push(f.name);
+                continue;
+              }
+              // FAIL CLOSED: nothing extracted at all.
+              requireExtractedText(extracted, `${KIND_LABELS[kind].label} file ${fi + 1} of ${studentLabel}`);
+              if (!doRedact) {
+                // §3.3: the same explicit per-course opt-out the image path honours
+                // (c.redactNames === false), logged so a deliberate skip is never silent.
+                console.log(`[REDACT TEXT] ${studentLabel} file ${fi + 1}: skipped — disabled by course setting`);
+                textParts.push({ kind, text: extracted });
+                continue;
+              }
+              // FAIL CLOSED: no vault means no names to remove and no alias to put in.
+              const vault = requireVault(unlockedRosters[activeCourseCode], activeCourseCode);
+              const { text: safeText, replacements } = redactRosterNames(extracted, vault, { ownAlias });
+              // Count only — a redaction log must never carry the names it removed.
+              console.log(`[REDACT TEXT] ${studentLabel} file ${fi + 1} (${kind}): ${replacements} name replacement(s) over ${safeText.length} chars`);
+              textReplacements += replacements;
+              textParts.push({ kind, text: safeText });
+              continue;
+            }
+            if (kind === KIND_BB_STUB) {
+              bbStubFiles.push(f.name); // #25: Blackboard's metadata receipt, never gradable
+              continue;
+            }
+            if (kind === KIND_UNKNOWN) {
+              console.warn(`[BB batch] ${studentLabel}: unsupported file type — skipping [submission] (${f.type})`);
+              unreadableForStudent.push(f.name);
+              continue;
             }
             const isPDFFile = f.type === "application/pdf";
             const isImgFile = f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(f.name);
@@ -2660,12 +2839,19 @@ work_present must be true ONLY when classification is HAS_WORK.`;
             } else {
               console.warn(`Skipping unrecognised file type: [submission] (${f.type})`);
             }
-          } catch (err) { console.error("Error processing file", "[submission]", err); }
+          } catch (err) {
+            // #37: a redaction stop is fail-closed and must NOT be swallowed here —
+            // it aborts the run the same way the image path's does.
+            if (err && err.isRedaction) throw err;
+            console.error("Error processing file", "[submission]", err);
+          }
         }
         // §3.3/#25: redact name zones across ALL of this student's pages — BB
         // reverses files so the name-bearing cover sheet can land anywhere, so
         // page-1-only isn't safe here. Then capture page 1 as graded (#23).
         let groupRedacted = false, groupScanned = false;
+        // #37: only pixels go through the name-zone check. A group with no image pages is
+        // entirely typed; its names were already removed from the text above.
         if (doRedact && pageBlocks.length) {
           const b64s = pageBlocks.map(b => b.source.data);
           const rr = await redactPageImages(b64s, { all: true });
@@ -2678,13 +2864,23 @@ work_present must be true ONLY when classification is HAS_WORK.`;
         // that drive the banner — one truth. _subId dedupes multi-result groups.
         const tagImg = (arr) => arr.map(s => ({ ...s, _pageImage: groupImg, _pageRedacted: groupRedacted, _pageScanned: groupScanned, _subId: `bb${gi}` }));
         // If all files failed as HEIC, return a special unprocessable result instead of grading
-        if (pageBlocks.length === 0 && docxFailedForStudent.length > 0) {
+        if (pageBlocks.length === 0 && textParts.length === 0 && docxFailedForStudent.length > 0) {
           console.warn(`[BB batch] ${studentLabel}: all files are DOCX — returning DOCX badge`);
           return tagImg([{ studentName: studentLabel, overallTier: "DOCX", dimensions: { conceptualUnderstanding: "DOCX", problemSolving: "DOCX", workShown: "DOCX", accuracy: "DOCX" }, problems: [], feedback: "Submission could not be processed — Word documents are not supported. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `DOCX files: ${docxFailedForStudent.join(", ")}` }]);
         }
-        if (pageBlocks.length === 0 && heicFailedForStudent.length > 0) {
+        if (pageBlocks.length === 0 && textParts.length === 0 && heicFailedForStudent.length > 0) {
           console.warn(`[BB batch] ${studentLabel}: all files are unprocessable HEIC — returning HEIC badge`);
           return tagImg([{ studentName: studentLabel, overallTier: "HEIC", dimensions: { conceptualUnderstanding: "HEIC", problemSolving: "HEIC", workShown: "HEIC", accuracy: "HEIC" }, problems: [], feedback: "Submission could not be processed — HEIC format is not supported in this browser. Ask the student to resubmit as JPG or PDF.", strengths: [], growthAreas: [], instructorNote: `HEIC files: ${heicFailedForStudent.join(", ")}` }]);
+        }
+        if (pageBlocks.length === 0 && textParts.length === 0) {
+          // #37: every file was a stub or unreadable. Previously this fell through and
+          // asked the model to grade an empty submission.
+          console.warn(`[BB batch] ${studentLabel}: nothing gradable in this submission`);
+          return tagImg([errorResult(studentLabel,
+            unreadableForStudent.length
+              ? "No gradable content — the attached file type is not supported."
+              : "No gradable content — Blackboard recorded this submission with no typed text and no readable attachment.",
+            "Check the submission in Blackboard; nothing was sent for grading.")]);
         }
         if (runFatal) { // #35: the same account-level failure would come back here
           return tagImg([skippedResult(studentLabel, runFatal)]);
@@ -2701,9 +2897,16 @@ ${problemScope.trim() ? `The student was assigned the following problems: ${prob
 5. Weight process and reasoning heavily.
 6. Use "${studentLabel}" as the studentName in your response.
 Return a JSON array with exactly ONE student object.`;
+        // #37: typed submissions enter as text blocks where the scanned pages would have
+        // entered as image blocks. The prompt template, the block order and the answer-key
+        // position are unchanged — only the medium of the student work differs.
+        const workBlocks = [
+          ...textParts.map((tp) => ({ type: "text", text: tp.text })),
+          ...pageBlocks,
+        ];
         const contentBlocks = [
           { type: "text", text: "=== STUDENT WORK (grade everything below this line) ===" },
-          ...pageBlocks,
+          ...workBlocks,
           { type: "text", text: "=== END OF STUDENT WORK ===" },
           ...(sharedBlocks.length ? [{ type: "text", text: "=== ANSWER KEY (for reference — do not grade this, use it to evaluate the student work above) ===" }, ...sharedBlocks] : [])
         ];
@@ -2719,6 +2922,28 @@ Return a JSON array with exactly ONE student object.`;
           if (bbInventory && bbInventory.length > 0) {
             bbUserPrompt = buildInventoryPrefix(bbInventory) + userPrompt;
           }
+        }
+        // REQUIREMENT: the grading model must only ever receive redacted text. This is the
+        // last gate — nothing touches the payload after it. It checks every TEXT block
+        // (which is where the typed submission now lives) plus the instructor's own
+        // free-text fields, using the SAME matcher the redactor used, so a name the
+        // redactor would replace can never slip past and a clean payload can never be
+        // falsely blocked. The `Student ID: <username>` line in the prompt is deliberately
+        // NOT rewritten here: it is the pre-existing identity key and the prompt template
+        // is frozen (determinism baseline) — a username is not a roster name string.
+        const vaultForCheck = doRedact ? (unlockedRosters[activeCourseCode] || []) : [];
+        if (vaultForCheck.length) {
+          assertNoRosterNames(
+            [
+              ...contentBlocks.filter((b) => b.type === "text").map((b) => b.text),
+              rubric, courseContext, problemScope, assignment,
+            ].filter(Boolean),
+            vaultForCheck,
+            studentLabel,
+          );
+        }
+        if (textParts.length) {
+          console.log(`[REDACT TEXT] ${studentLabel}: ${textParts.length} typed part(s), ${textReplacements} replacement(s), payload verified clean`);
         }
         const raw = await fetchGradeResult({ contentBlocks, systemPrompt, userPrompt: bbUserPrompt });
         const cleaned = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
@@ -5097,9 +5322,25 @@ Return a JSON array with exactly ONE student object.`;
                 )}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {group.files.map((item, fi) => (
-                  <div key={fi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: "#3A3A35", background: "#F5F4EF", borderRadius: 4, padding: "6px 10px" }}>
-                    <span>📄 {item.file.name}</span>
+                {group.files.map((item, fi) => {
+                  // #37: which redaction path this file will take. Typed submissions have
+                  // no name zone to OCR; they are redacted as text against the vault.
+                  const kind = bbFileKinds[fileKindKey(item.file)];
+                  const meta = kind ? KIND_LABELS[kind] : null;
+                  const digital = isDigitalKind(kind);
+                  const tone = !meta ? { bg: "#EFEEE8", fg: "#5A5A55", br: "#D8D6CE" }
+                    : kind === KIND_UNKNOWN ? { bg: "#FCEBEB", fg: "#9f1239", br: "#F5BEBE" }
+                    : digital ? { bg: "#E6F1FB", fg: "#185FA5", br: "#A3C4E8" }
+                    : { bg: "#E7F2EE", fg: "#0F6E56", br: "#9FCBBB" };
+                  return (
+                  <div key={fi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12, color: "#3A3A35", background: "#F5F4EF", borderRadius: 4, padding: "6px 10px" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{digital ? "⌨" : "📄"} {item.file.name}</span>
+                      <span title={meta ? meta.detail : "Reading the file to determine its type…"}
+                        style={{ flexShrink: 0, background: tone.bg, color: tone.fg, border: `1px solid ${tone.br}`, borderRadius: 3, fontSize: 10, fontWeight: 700, padding: "1px 6px" }}>
+                        {meta ? meta.label : "checking…"}
+                      </span>
+                    </span>
                     <button
                       onClick={() => {
                         const updated = bbGroups.map((g, idx) => idx !== gi ? g : {
@@ -5112,8 +5353,16 @@ Return a JSON array with exactly ONE student object.`;
                       ✕ Remove
                     </button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
+              {group.files.some(item => isDigitalKind(bbFileKinds[fileKindKey(item.file)])) && (
+                <div style={{ marginTop: 8, fontSize: 11.5, color: "#185FA5", background: "#F1F5FF", border: "1px solid #cfe0ff", borderRadius: 4, padding: "6px 10px" }}>
+                  ⌨ Typed submission — no handwritten name zone to scan. Names are removed from
+                  the text against this course's roster vault and replaced with the student's alias
+                  before anything is sent for grading.
+                </div>
+              )}
               {group.files.length > 1 && (
                 <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 12, color: "#5A5A55", cursor: "pointer", userSelect: "none" }}>
                   <input
