@@ -54,27 +54,79 @@ export function redactionPathFor(kind) {
   return 'name-zone';
 }
 
-// ── Blackboard filename identity (requirement 4) ───────────────────────────
-// "<assignment>_<username>_attempt_<timestamp>[_<original filename>]".
+// ── Blackboard filename identity ───────────────────────────────────────────
+// Bulk-download names are "<assignment title>_<username>_attempt_<timestamp>[_<original
+// filename>]", and the assignment title is the instructor's free text. A Blackboard Ultra
+// title with a date in it — "Prep Task - Quadratic Functions - 9_17_26" — puts underscores
+// on the LEFT of the username, which one regex cannot split: matching the username as
+// [A-Za-z0-9_]+ swallowed the tail of the title and gave "17_26_03051898" instead of
+// "03051898", so nothing joined to the roster and Confirm Students showed 0 of 10 mapped.
 //
-// The trailing original filename is OPTIONAL: Blackboard omits it on the per-submission
-// .txt, which is named "...attempt_2026-09-26-14-31-05.txt". The old pattern required it,
-// so every editor-typed submission failed to parse and was filed under UNRECOGNIZED —
-// exactly the files that carry a typed submission. Returns null when the name is not a
-// Blackboard export at all, which routes the file to manual assignment.
+// So: split on the "_attempt_" delimiter and take exactly ONE token from the end of the
+// left side. A username never contains an underscore; a title always may.
+const ATTEMPT_MARKER = '_attempt_';
+const TIMESTAMP_LEN = 19; // YYYY-MM-DD-HH-MM-SS
+const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/;
+
+// Returns { studentId, timestamp, originalName }, or null when the name is not a
+// Blackboard export — which routes the file to manual assignment.
 export function parseBBFilename(filename) {
-  const m = String(filename || '').match(
-    /^(.+?)_([a-zA-Z0-9_]{2,20})_attempt_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})(?:_(.+)|(\.[A-Za-z0-9]{1,8}))?$/
-  );
-  if (!m) return null;
-  const [, , studentId, timestamp, originalName, ext] = m;
-  return {
-    studentId,
-    timestamp,
-    // Used to de-duplicate Blackboard's double-exports. With no original filename, a
-    // per-submission synthetic key keeps the .txt from colliding with an attachment.
-    originalName: originalName || `${studentId}_${timestamp}${ext || ''}`,
-  };
+  const name = String(filename || '');
+  // A title could itself contain "_attempt_", so the LAST occurrence is the delimiter:
+  // everything after it is Blackboard's own fixed structure.
+  const at = name.lastIndexOf(ATTEMPT_MARKER);
+  if (at <= 0) return null;
+
+  // Exactly one token, never more: the final "_"-delimited piece of the left side.
+  const left = name.slice(0, at);
+  const studentId = left.slice(left.lastIndexOf('_') + 1);
+  if (!studentId || !/^[A-Za-z0-9.-]+$/.test(studentId)) return null;
+
+  const right = name.slice(at + ATTEMPT_MARKER.length);
+  const timestamp = right.slice(0, TIMESTAMP_LEN);
+  if (!TIMESTAMP_RE.test(timestamp)) return null;
+
+  // After the timestamp: "_<original filename>" for an attachment, or just the extension
+  // (or nothing) for Blackboard's per-submission .txt.
+  const tail = right.slice(TIMESTAMP_LEN);
+  const originalName = tail.startsWith('_')
+    ? tail.slice(1)
+    // No original filename — a per-submission synthetic key, so the .txt cannot collide
+    // with an attachment when Blackboard's duplicate exports are de-duplicated.
+    : `${studentId}_${timestamp}${tail}`;
+  if (!originalName) return null;
+
+  return { studentId, timestamp, originalName };
+}
+
+// ── Roster matching for a parsed Blackboard identity ───────────────────────
+// Which column a bulk-download filename carries varies by institution: CT State Ultra
+// puts the numeric Student ID there ("03051898") while other exports put the username.
+// So try Username first, then Student ID. Both sides are compared with whitespace and
+// case removed, then again with leading zeros stripped — a roster CSV opened in Excel
+// loses them ("03051898" becomes "3051898").
+const idKey = (v) => String(v == null ? '' : v).replace(/\s+/g, '').toLowerCase();
+const noZeros = (v) => idKey(v).replace(/^0+/, '');
+
+export function matchRosterByBBId(parsedId, roster) {
+  const want = idKey(parsedId);
+  if (!want) return null;
+  const list = Array.isArray(roster) ? roster : [];
+  const wantNoZeros = noZeros(parsedId);
+  // Ordered most specific first: an exact Username match is the strongest claim and a
+  // zero-stripped match the weakest, so the loose ones are only reached when nothing
+  // exact fits.
+  const attempts = [
+    (r) => idKey(r.bbUsername) === want,
+    (r) => idKey(r.studentId) === want,
+    (r) => !!wantNoZeros && noZeros(r.bbUsername) === wantNoZeros,
+    (r) => !!wantNoZeros && noZeros(r.studentId) === wantNoZeros,
+  ];
+  for (const test of attempts) {
+    const hit = list.find((r) => r && test(r));
+    if (hit) return hit;
+  }
+  return null;
 }
 
 // A PDF needs this much extractable text before we will treat it as typed rather than

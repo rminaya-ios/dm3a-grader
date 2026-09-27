@@ -7,6 +7,7 @@ import {
   isDigitalKind, classifyByName, pdfKindFromProfile,
   stripDocxXmlToText, htmlToText, parseBBSubmissionTxt,
   findRosterNameHits, redactRosterNames, redactionPathFor, parseBBFilename, identityLineValue,
+  matchRosterByBBId,
   requireVault, requireExtractedText, assertNoRosterNames,
 } from '../src/blind/textRedact.js';
 
@@ -234,12 +235,99 @@ test('filename: an attachment yields the username and the original name', () => 
 });
 
 test('filename: the editor .txt parses even with no original filename', () => {
-  // THE regression: Blackboard omits the trailing name on the .txt, so the old pattern
-  // returned null and every editor-typed submission was filed under UNRECOGNIZED.
+  // Blackboard omits the trailing name on the .txt, so a pattern that required it returned
+  // null and every editor-typed submission was filed under UNRECOGNIZED.
   const p = parseBBFilename('Quadratic Functions_jdoe_attempt_2026-09-26-14-31-05.txt');
   assert.notEqual(p, null, 'must not be unparseable');
   assert.equal(p.studentId, 'jdoe', 'identity still comes from the filename');
   assert.equal(p.originalName, 'jdoe_2026-09-26-14-31-05.txt', 'synthetic key: it cannot collide with an attachment');
+});
+
+// ── Blackboard Ultra: underscores inside the assignment title ──────────────
+// Both filenames are real, from CT State Capital (Ultra bulk download). The title carries
+// a date — "… - 9_17_26" — so the underscores sit on the LEFT of the username. Taking more
+// than one token yielded "17_26_03051898", nothing joined to the roster, and Confirm
+// Students showed 0 of 10 mapped.
+const ULTRA_DOCX = 'Prep Task - Quadratic Functions - 9_17_26_03051898_attempt_2026-09-16-19-41-23_QUADRATIC PREP TASK.docx';
+const ULTRA_TXT = 'Prep Task - Quadratic Functions - 9_17_26_03051898_attempt_2026-09-16-19-41-23.txt';
+
+test('filename (Ultra): a title with underscores yields the single username token', () => {
+  const p = parseBBFilename(ULTRA_DOCX);
+  assert.equal(p.studentId, '03051898', 'exactly the token before _attempt_, never more');
+  assert.equal(p.timestamp, '2026-09-16-19-41-23');
+  assert.equal(p.originalName, 'QUADRATIC PREP TASK.docx');
+});
+
+test('filename (Ultra): the same submission\'s .txt parses to the same student', () => {
+  const p = parseBBFilename(ULTRA_TXT);
+  assert.equal(p.studentId, '03051898', 'the .txt must group with its attachment');
+  assert.equal(p.timestamp, '2026-09-16-19-41-23');
+  assert.equal(p.originalName, '03051898_2026-09-16-19-41-23.txt');
+  assert.equal(parseBBFilename(ULTRA_DOCX).studentId, p.studentId, 'both files land in one group');
+});
+
+test('filename (Ultra): the .txt and the attachment de-duplicate separately', () => {
+  // groupBBFiles drops a second file with the same originalName. The synthetic key must
+  // not collide with the attachment's real name, or one of the two would be discarded.
+  assert.notEqual(parseBBFilename(ULTRA_TXT).originalName, parseBBFilename(ULTRA_DOCX).originalName);
+});
+
+test('filename: an Original-style name (no underscores in the title) still parses', () => {
+  const p = parseBBFilename('Quadratic Functions_jdoe_attempt_2026-09-26-14-31-05_work.pdf');
+  assert.equal(p.studentId, 'jdoe');
+  assert.equal(p.originalName, 'work.pdf');
+});
+
+test('filename: a title containing "_attempt_" does not fool the split', () => {
+  // The LAST occurrence is the delimiter, because Blackboard's own structure follows it.
+  const p = parseBBFilename('Retake_attempt_2_final_03051898_attempt_2026-09-16-19-41-23_work.pdf');
+  assert.equal(p.studentId, '03051898');
+  assert.equal(p.originalName, 'work.pdf');
+});
+
+test('filename: a multi-token fragment can never be returned as the username', () => {
+  for (const n of [ULTRA_DOCX, ULTRA_TXT, 'a_b_c_d_e_f_zz9_attempt_2026-09-16-19-41-23.txt']) {
+    const p = parseBBFilename(n);
+    assert.notEqual(p, null);
+    assert.equal(p.studentId.includes('_'), false, `username must be one token, got "${p.studentId}"`);
+  }
+});
+
+// ── Roster matching: Username, then Student ID, then zero-stripped ─────────
+// CT State Ultra roster CSV: Last Name, First Name, Username, Student ID, Last Access, …
+const CT_ROSTER = [
+  { alias: 'MATH10-AA11', studentName: 'Jane Doe', firstName: 'Jane', lastName: 'Doe', bbUsername: 'jdoe', studentId: '03051898' },
+  { alias: 'MATH10-BB22', studentName: 'Marcus Whitfield', firstName: 'Marcus', lastName: 'Whitfield', bbUsername: 'mwhitfield', studentId: '03060042' },
+];
+
+test('roster match: the Username column wins first', () => {
+  assert.equal(matchRosterByBBId('jdoe', CT_ROSTER).alias, 'MATH10-AA11');
+  assert.equal(matchRosterByBBId('  JDOE  ', CT_ROSTER).alias, 'MATH10-AA11', 'case and whitespace insensitive');
+});
+
+test('roster match: falls through to Student ID — the CT State Ultra case', () => {
+  // The filename carries the numeric Student ID, not the username.
+  assert.equal(matchRosterByBBId(parseBBFilename(ULTRA_DOCX).studentId, CT_ROSTER).alias, 'MATH10-AA11');
+});
+
+test('roster match: leading zeros stripped on either side', () => {
+  // A roster CSV opened in Excel loses them.
+  assert.equal(matchRosterByBBId('3051898', CT_ROSTER).alias, 'MATH10-AA11', 'zeros missing from the filename side');
+  const excelRoster = [{ alias: 'X', bbUsername: '', studentId: '3051898' }];
+  assert.equal(matchRosterByBBId('03051898', excelRoster).alias, 'X', 'zeros missing from the roster side');
+});
+
+test('roster match: no match returns null rather than a wrong student', () => {
+  assert.equal(matchRosterByBBId('99999999', CT_ROSTER), null);
+  assert.equal(matchRosterByBBId('', CT_ROSTER), null);
+  assert.equal(matchRosterByBBId('0', CT_ROSTER), null, 'an all-zeros id must not match everything');
+  assert.equal(matchRosterByBBId('jdoe', []), null);
+  assert.equal(matchRosterByBBId('jdoe', undefined), null);
+});
+
+test('roster match: a blank roster column never matches a blank parse', () => {
+  const sparse = [{ alias: 'Y', bbUsername: '', studentId: '' }];
+  assert.equal(matchRosterByBBId('03051898', sparse), null, 'empty columns must not swallow every submission');
 });
 
 test('filename: a numeric student id also parses', () => {

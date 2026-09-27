@@ -14,7 +14,7 @@ import { redactNameZone, terminateRedactor } from "./blind/redact.js";
 import {
   KIND_SCAN, KIND_DOCX, KIND_BB_TEXT, KIND_BB_STUB, KIND_UNKNOWN, KIND_LABELS,
   isDigitalKind, redactionPathFor, classifyByName, pdfKindFromProfile, parseBBFilename,
-  stripDocxXmlToText, parseBBSubmissionTxt, identityLineValue,
+  stripDocxXmlToText, parseBBSubmissionTxt, identityLineValue, matchRosterByBBId,
   redactRosterNames, assertNoRosterNames, requireVault, requireExtractedText,
 } from "./blind/textRedact.js";
 import LandingPage from "./LandingPage";
@@ -1386,11 +1386,9 @@ export default function DM3AGraderV5() {
   // the only place that join can be made, and it happens in the browser — the username
   // is used as a key and is never displayed.
   const aliasForBBUsername = (username) => {
-    const u = String(username || "").trim().toLowerCase();
-    if (!u || u === "unrecognized") return "";
-    const hit = (unlockedRosters[activeCourseCode] || []).find(
-      (r) => String(r.bbUsername || "").trim().toLowerCase() === u
-    );
+    const u = String(username || "").trim();
+    if (!u || u.toLowerCase() === "unrecognized") return "";
+    const hit = matchRosterByBBId(u, unlockedRosters[activeCourseCode] || []);
     return hit ? hit.alias : "";
   };
   const bbUsernameOf = (studentName) => {
@@ -1698,7 +1696,9 @@ export default function DM3AGraderV5() {
         // source-filename username against the vault's stored BB username. The username
         // is a key only; it is never displayed and never leaves the browser.
         const user = bbUsernameOf(s.studentName);
-        const userMatch = user ? activeRoster.find((r) => r.bbUsername && norm(r.bbUsername) === norm(user)) : null;
+        // Username column first, then Student ID, then both with leading zeros stripped —
+        // which of the two a bulk-download filename carries varies by institution.
+        const userMatch = user ? matchRosterByBBId(user, activeRoster) : null;
         if (userMatch) { mapping[i] = userMatch.alias; auto[i] = true; return; }
         mapping[i] = ""; // Skip (not in vault)
       } else {
@@ -5611,7 +5611,7 @@ Return a JSON array with exactly ONE student object.`;
               {rosterConfirmed && <span style={{ fontSize: 12, fontWeight: 700, color: "#0F6E56" }}>✓ Confirmed</span>}
             </div>
             <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
-              Blackboard downloads map themselves — each submission is matched to your roster by its file, in your browser (the username is never shown or sent). Verify the ✓ auto-matches; assign any leftover ones. Nothing is sent to the server in this step.
+              Blackboard downloads map themselves — each submission is matched to your roster by its file, in your browser. Verify the ✓ auto-matches; assign any leftover ones. The identifier from a filename is shown only if nothing matched, so you can see what was read. Nothing is sent to the server in this step.
             </p>
 
             {(() => {
@@ -5624,6 +5624,25 @@ Return a JSON array with exactly ONE student object.`;
                   {mappedCount} of {results.length} students mapped · {skipCount} will be skipped (not tracked).
                   {autoCount > 0 && <span style={{ color: "#0F6E56", display: "block", marginTop: 4 }}>✓ {autoCount} auto-matched from the submission files — verify below.</span>}
                   {dupCount > 0 && <span style={{ color: "#9f1239", display: "block", marginTop: 4 }}>⚠ {dupCount} student{dupCount === 1 ? " is" : "s are"} assigned to more than one submission — a grade is lost unless they submitted more than once.</span>}
+                  {autoCount === 0 && (() => {
+                    // #39: the identifier read out of the first Blackboard filename. This is
+                    // the one fact that distinguishes a mis-parsed filename from a roster
+                    // that simply lacks the column those filenames use.
+                    const firstId = results.map((r) => bbUsernameOf(r.studentName)).find(Boolean);
+                    if (!firstId) return null;
+                    const cols = activeRoster.length
+                      ? `${activeRoster.some((r) => r.bbUsername) ? "Username" : ""}${activeRoster.some((r) => r.bbUsername) && activeRoster.some((r) => r.studentId) ? " and " : ""}${activeRoster.some((r) => r.studentId) ? "Student ID" : ""}` || "neither Username nor Student ID"
+                      : "an empty roster";
+                    return (
+                      <span style={{ color: "#854F0B", display: "block", marginTop: 6, fontWeight: 400 }}>
+                        Nothing matched automatically. The identifier read from the first submission&apos;s
+                        filename is <code style={{ background: "#FAEEDA", border: "1px solid #E8C98A", borderRadius: 3, padding: "0 4px", fontWeight: 700 }}>{firstId}</code>.
+                        It is matched against your roster&apos;s Username column, then Student ID (leading
+                        zeros ignored); this course&apos;s vault currently has {cols}. If that value is not in
+                        your roster, re-import the Grade Center CSV — otherwise assign the students below by hand.
+                      </span>
+                    );
+                  })()}
                 </div>
               );
             })()}
