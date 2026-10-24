@@ -19,6 +19,17 @@ const rosterVaultSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // The account that owns this vault (models/User.js). Course codes are only
+    // unique per instructor, so this — not the code — is what lib/vaultAccess.js
+    // checks. null on vaults written before October 2026; the owner claims it
+    // on first signed-in access.
+    ownerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+
     // Client-side-encrypted blob, stored verbatim. Shape (before base64/JSON):
     //   { salt, iv, ciphertext, kdf: 'argon2id'|'pbkdf2', kdfParams }
     // Accepted as an object or a base64 string; the server treats it as opaque.
