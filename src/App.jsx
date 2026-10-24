@@ -7,6 +7,7 @@ const BBExport = lazy(() => import("./blind/BBExport.jsx"));
 import { assignAliases, normalizeAlias, matchAlias } from "./blind/alias.js";
 import { encryptMapping, decryptMapping, MIN_PASSPHRASE_LEN } from "./blind/vault.js";
 import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
+import { canOfferTrust, trustDevice, refreshTrustIfPresent, revokeTrust, trustedCourses, unlockTrusted, trustReasonText, TRUST_EXPIRES_LABEL } from "./blind/deviceTrust.js";
 import { diffRoster } from "./blind/rosterDiff.js";
 import { detectAliasCsvColumns, readAliasCsvRow, mergeAliasRestore, filterRosterRows } from "./blind/rosterMerge.js";
 import { buildNameIndex } from "./blind/translate.js";
@@ -811,6 +812,12 @@ export default function DM3AGraderV5() {
   const [vaultNote, setVaultNote] = useState("");
   const [securePass, setSecurePass] = useState({}); // courseCode -> passphrase input (secure action)
   const [viewAliases, setViewAliases] = useState(null); // #21: courseCode whose alias table is shown
+  // "Trust this device" (blind/deviceTrust.js) — automation browser only. The
+  // trusted copies live in IndexedDB; this is just which courses have one, and
+  // why a trusted unlock was refused (course code -> plain-English reason).
+  const [trustChecked, setTrustChecked] = useState(false);
+  const [trustedCodes, setTrustedCodes] = useState([]);
+  const [trustRefusals, setTrustRefusals] = useState({});
   // #40: bumped on every vault write (unlock, secure, roster update, alias restore,
   // purge). The Confirm Students matching depends on it, so it re-runs the moment the
   // vault changes — no page reload. A counter rather than relying on the roster array's
@@ -1473,6 +1480,49 @@ export default function DM3AGraderV5() {
   }
 
   // Graceful gate: open the inline unlock prompt. onUnlocked(roster) runs on success.
+  async function revokeDeviceTrust(courseCode) {
+    await revokeTrust(courseCode);
+    setTrustedCodes((list) => list.filter((x) => x !== courseCode));
+    setTrustRefusals((m) => { const n = { ...m }; delete n[courseCode]; return n; });
+    setVaultNote(`${courseCode} is no longer trusted on this device. It will need your passphrase here.`);
+  }
+
+  // Trusted unlock: on load (signed in, courses known), open every course this
+  // device holds a trusted copy for. A refusal — expired, roster changed, not the
+  // automation browser — leaves the course LOCKED, so grading stops on the normal
+  // "roster vault not loaded" gate. Course codes (never names) are mirrored onto
+  // <html data-dm3a-trusted-unlocked> for the grading runner to check.
+  const trustedUnlockRan = useRef(false);
+  useEffect(() => {
+    if (!authUser || trustedUnlockRan.current || !courses.some((c) => c.vaulted)) return;
+    trustedUnlockRan.current = true;
+    (async () => {
+      const codes = await trustedCourses();
+      setTrustedCodes(codes);
+      const opened = [];
+      const refused = {};
+      for (const code of codes) {
+        if (!courses.some((c) => c.courseCode === code && c.vaulted)) continue;
+        try {
+          const vault = await getVault(code);
+          const r = await unlockTrusted(code, vault && vault.blob);
+          if (!r.ok) { refused[code] = trustReasonText(r.reason); continue; }
+          const roster = (r.mapping.students || []).filter((s) => !s.dropped);
+          setUnlockedRosters((m) => ({ ...m, [code]: roster }));
+          opened.push(code);
+        } catch (e) {
+          refused[code] = `Trusted unlock failed: ${e && e.message}`;
+        }
+      }
+      if (opened.length) bumpVault(); // #40: re-run Confirm Students matching
+      setTrustRefusals(refused);
+      document.documentElement.dataset.dm3aTrustedUnlocked = opened.join(",");
+      document.documentElement.dataset.dm3aTrustedRefused = Object.keys(refused).join(",");
+      if (opened.length) console.log(`[TRUST] unlocked on this device: ${opened.join(", ")}`);
+      for (const [code, why] of Object.entries(refused)) console.warn(`[TRUST] ${code} stays locked — ${why}`);
+    })();
+  }, [authUser, courses]);
+
   function openUnlock(courseCode, message, onUnlocked) {
     setUnlockPass("");
     setUnlockError("");
@@ -1498,6 +1548,13 @@ export default function DM3AGraderV5() {
       bumpVault(); // #40: re-run Confirm Students matching
       setSessionPass((m) => ({ ...m, [code]: unlockPass }));
       if (activeCourseCode === code) setActiveRoster(roster);
+      if (trustChecked && canOfferTrust()) {
+        await trustDevice(code, mapping, vault.blob);
+        setTrustedCodes((list) => [...new Set([...list, code])]);
+        setTrustRefusals((m) => { const n = { ...m }; delete n[code]; return n; });
+        setVaultNote(`${code} is trusted on this device until ${TRUST_EXPIRES_LABEL}. It will unlock itself in this browser.`);
+      }
+      setTrustChecked(false);
       const cb = unlockPrompt.onUnlocked;
       setUnlockPrompt(null);
       setUnlockPass("");
@@ -1553,6 +1610,7 @@ export default function DM3AGraderV5() {
     bumpVault(); // #40: re-run Confirm Students matching
     setSessionPass((m) => ({ ...m, [course.courseCode]: passphrase }));
     if (activeCourseCode === course.courseCode) setActiveRoster(withAliases);
+    await refreshTrustIfPresent(course.courseCode, mapping, blob).catch(() => {});
   }
 
   // Re-upload a roster CSV → diff against the decrypted mapping (alias continuity)
@@ -1606,6 +1664,8 @@ export default function DM3AGraderV5() {
     bumpVault(); // #40: re-run Confirm Students matching
     if (activeCourseCode === course.courseCode) setActiveRoster(live);
     persistCourses(courses.map((c) => c.courseCode === course.courseCode ? { ...c, vaultUpdatedAt: new Date().toISOString() } : c));
+    // Keep a trusted copy on this device in step with the vault just written.
+    await refreshTrustIfPresent(course.courseCode, mapping, blob).catch(() => {});
     setVaultNote(
       `Roster updated for ${course.courseCode}: ${added.length} added, ${dropped.length} dropped (flagged, not deleted).` +
       (incomingSkipped.length ? ` Skipped ${incomingSkipped.length} non-student row(s): ${incomingSkipped.map((x) => `${x.row.name || x.row.last} (${x.reason})`).join(", ")}.` : "")
@@ -1704,6 +1764,7 @@ export default function DM3AGraderV5() {
       throw new Error("Vault read-back verification failed — the aliases may not have been restored. Please retry.");
     }
     downloadKeyBackup(course.courseCode, blob);
+    await refreshTrustIfPresent(course.courseCode, mapping, blob).catch(() => {});
     const live = merged.filter((s) => !s.dropped);
     setUnlockedRosters((m) => ({ ...m, [course.courseCode]: live }));
     bumpVault(); // #40: re-run Confirm Students matching
@@ -1737,6 +1798,8 @@ export default function DM3AGraderV5() {
   // Purge a course's server vault + in-memory copies (per-course purge button).
   async function purgeCourseVault(course) {
     await deleteVault(course.courseCode);
+    await revokeTrust(course.courseCode).catch(() => {});
+    setTrustedCodes((list) => list.filter((x) => x !== course.courseCode));
     setUnlockedRosters((m) => { const n = { ...m }; delete n[course.courseCode]; return n; });
     bumpVault(); // #40: re-run Confirm Students matching
     setSessionPass((m) => { const n = { ...m }; delete n[course.courseCode]; return n; });
@@ -4442,9 +4505,15 @@ Return a JSON array with exactly ONE student object.`;
           onKeyDown={e => { if (e.key === "Enter") doUnlock(); }}
           style={{ ...styles.input, marginBottom: 8 }} />
         {unlockError && <div style={{ color: "#9f1239", fontSize: 12.5, marginBottom: 8 }}>{unlockError}</div>}
+        {canOfferTrust() && (
+          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, color: "#3A3A36", margin: "0 0 12px" }}>
+            <input type="checkbox" checked={trustChecked} onChange={(e) => setTrustChecked(e.target.checked)} style={{ marginTop: 2 }} />
+            <span><b>Trust this device until {TRUST_EXPIRES_LABEL}</b> — this automation browser unlocks {unlockPrompt.courseCode} by itself for grading runs. Your passphrase is not saved. Revoke anytime from the course card.</span>
+          </label>
+        )}
         <div style={{ display: "flex", gap: 8 }}>
           <button type="button" style={styles.btn} disabled={vaultBusy} onClick={doUnlock}>{vaultBusy ? "Unlocking…" : "Unlock"}</button>
-          <button type="button" style={styles.btnOutline} disabled={vaultBusy} onClick={() => { setUnlockPrompt(null); setUnlockPass(""); setUnlockError(""); }}>Cancel</button>
+          <button type="button" style={styles.btnOutline} disabled={vaultBusy} onClick={() => { setUnlockPrompt(null); setUnlockPass(""); setUnlockError(""); setTrustChecked(false); }}>Cancel</button>
         </div>
       </div>
     </div>
@@ -5051,6 +5120,15 @@ Return a JSON array with exactly ONE student object.`;
                         {unlockedRosters[c.courseCode]
                           ? <span style={{ color: "#0F6E56", marginLeft: 8 }}>· Unlocked ({unlockedRosters[c.courseCode].length} students · names in memory only)</span>
                           : <button type="button" style={{ ...styles.btnOutline, marginLeft: 8, padding: "2px 8px", fontSize: 12 }} onClick={() => openUnlock(c.courseCode, "Enter your course passphrase to unlock names for this session.", () => {})}>Unlock</button>}
+                        {trustedCodes.includes(c.courseCode) && (
+                          <div style={{ marginTop: 6, color: "#185FA5" }}>
+                            🖥 Trusted on this device until {TRUST_EXPIRES_LABEL}
+                            <button type="button" style={{ ...styles.btnOutline, marginLeft: 8, padding: "2px 8px", fontSize: 12 }} onClick={() => runVault(() => revokeDeviceTrust(c.courseCode))}>Revoke</button>
+                          </div>
+                        )}
+                        {trustRefusals[c.courseCode] && (
+                          <div style={{ marginTop: 6, color: "#854F0B" }}>⚠ {trustRefusals[c.courseCode]}</div>
+                        )}
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                           {/* #21: view/print the codes so the instructor can distribute them (unlocked only). */}
                           {unlockedRosters[c.courseCode] && (
