@@ -187,14 +187,6 @@ function ReviewCard({ id, onBack, onChange }) {
     }
   }
 
-  // Put the Loom in a window on the left half of the screen, beside this card.
-  function openLoom() {
-    const w = Math.round(window.screen.availWidth / 2);
-    const h = window.screen.availHeight;
-    const win = window.open(s.loomUrl, 'dm3a-loom', `width=${w},height=${h},left=0,top=0`);
-    if (win) win.opener = null; // the Loom page gets no handle back to the hub
-  }
-
   const card = s.review || {};
   return (
     <div>
@@ -202,8 +194,37 @@ function ReviewCard({ id, onBack, onChange }) {
       <h3 style={{ fontSize: 18, margin: '8px 0 2px' }}>{s.name}</h3>
       <div style={muted}>{s.courseCode} · {s.assignmentName} · due {day(s.dueAt)} · photo {dayTime(s.photoReceivedAt)}</div>
 
-      <div style={{ margin: '14px 0' }}>
-        {s.loomUrl ? <button style={smallBtn} onClick={openLoom}>Open Loom beside this card</button> : <span style={muted}>No video yet.</span>}
+      {/* Top: the written work beside the video link. */}
+      <div style={{ ...S.card, display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+          <span style={S.label}>Written work (name blacked out)</span>
+          {s.pages.length ? (
+            s.pages.map((p, i) => <img key={i} alt={`Page ${i + 1}`} src={`data:image/jpeg;base64,${p}`} style={{ width: '100%', border: '1px solid #EEE', marginBottom: 8 }} />)
+          ) : (
+            <p style={muted}>No photo yet.</p>
+          )}
+        </div>
+        <div style={{ flex: '0 1 240px' }}>
+          <span style={S.label}>Video</span>
+          {s.loomUrl ? (
+            <>
+              {/* A plain link you click; code never opens the video itself. */}
+              <a href={s.loomUrl} target="_blank" rel="noopener noreferrer" style={{ ...smallBtn, display: 'inline-block', textDecoration: 'none', fontSize: 16, padding: '10px 18px' }}>
+                Open video ↗
+              </a>
+              <div style={{ ...muted, marginTop: 8, wordBreak: 'break-all' }}>{s.loomUrl}</div>
+              <div style={{ ...muted, marginTop: 4 }}>Opens in a new tab. Sent {dayTime(s.transcriptReceivedAt)}.</div>
+            </>
+          ) : (
+            <p style={muted}>No video yet. The student hasn't sent their Loom link.</p>
+          )}
+          {s.transcript && (
+            <div style={{ marginTop: 12 }}>
+              <button style={S.linkBtn} onClick={() => setShowTranscript((v) => !v)}>{showTranscript ? 'Hide' : 'Show'} transcript</button>
+            </div>
+          )}
+        </div>
+        {showTranscript && s.transcript && <pre style={{ flexBasis: '100%', whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 14, margin: 0 }}>{s.transcript}</pre>}
       </div>
 
       <div style={{ ...S.card, background: '#FAFAF7' }}>
@@ -265,17 +286,6 @@ function ReviewCard({ id, onBack, onChange }) {
         {exError && <p style={S.error}>{exError}</p>}
       </div>
 
-      <div style={S.card}>
-        <span style={S.label}>Written work (name blacked out)</span>
-        {s.pages.map((p, i) => <img key={i} alt={`Page ${i + 1}`} src={`data:image/jpeg;base64,${p}`} style={{ width: '100%', border: '1px solid #EEE', marginBottom: 8 }} />)}
-        {s.transcript && (
-          <>
-            <button style={S.linkBtn} onClick={() => setShowTranscript((v) => !v)}>{showTranscript ? 'Hide' : 'Show'} transcript</button>
-            {showTranscript && <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 14 }}>{s.transcript}</pre>}
-          </>
-        )}
-      </div>
-
       <div style={{ margin: '4px 0 12px' }}>
         <button style={S.quietBtn} disabled={busy} onClick={removeRecord}>Remove this record (e.g. your own test)</button>
       </div>
@@ -302,7 +312,7 @@ function Review({ onChange }) {
       {[...list].sort((a, b) => order(a) - order(b)).map((s) => (
         <button key={s.id} onClick={() => setOpen(s.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderTop: '1px solid #EEEDE7', padding: '10px 0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 14 }}>
           <strong>{s.name}</strong> · {s.courseCode} · {s.assignmentName}
-          <div style={muted}>{status(s)}{s.recommendedLevel && !s.confirmedLevel ? ` · draft ${s.recommendedLevel}` : ''}</div>
+          <div style={muted}>{status(s)}{s.recommendedLevel && !s.confirmedLevel ? ` · draft ${s.recommendedLevel}` : ''}{s.loomUrl ? ' · video in' : ''}</div>
           <div>{s.flags.map((f) => <span key={f} style={flagPill}>{FLAG[f] || f}</span>)}</div>
         </button>
       ))}
