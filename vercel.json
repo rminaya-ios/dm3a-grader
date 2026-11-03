@@ -15,6 +15,10 @@
     {
       "source": "/hub",
       "destination": "/index.html"
+    },
+    {
+      "source": "/makeup/:path*",
+      "destination": "/index.html"
     }
   ]
 }

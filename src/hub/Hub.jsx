@@ -11,6 +11,8 @@ import { S } from '../auth/styles.js';
 import * as api from '../auth/api.js';
 import AuthGate from '../auth/AuthGate.jsx';
 import SettingsPanel from './SettingsPanel.jsx';
+import MakeupPanel from '../makeup/MakeupPanel.jsx';
+import * as makeupApi from '../makeup/api.js';
 
 // The Grader lives on the bare domain; app.dm3agrader.com → dm3agrader.com. In
 // local dev the hub is served at /hub, so the Grader is just "/".
@@ -21,7 +23,7 @@ function graderUrl() {
 
 const TOOLS = [
   { key: 'grader', name: 'Grader', blurb: 'Scan, grade and post a class set.', href: graderUrl(), status: 'live' },
-  { key: 'makeup', name: 'Make-up', blurb: 'Absences, video explanations, late work.', status: 'next' },
+  { key: 'makeup', name: 'Make-up', blurb: 'Video make-ups you approve: requests, review, Blackboard.', status: 'live', panel: true },
   { key: 'checkpoint', name: 'CheckPoint', blurb: 'In-class checks.', href: 'https://checkpoint.dm3agrader.com', status: 'link' },
   { key: 'attendance', name: 'Attendance', blurb: 'Attendance and Blackboard sync.', href: 'https://dm3a-attendance.vercel.app', status: 'link' },
   { key: 'calc', name: 'Grade Calculator', blurb: 'Course grade calculator.', href: 'https://dm3a-grade-calculator.vercel.app', status: 'link' },
@@ -44,7 +46,12 @@ const pill = (bg, fg) => ({
   background: bg, color: fg, padding: '2px 8px', borderRadius: 10, marginBottom: 10,
 });
 
-function Tile({ t }) {
+const badge = {
+  position: 'absolute', top: 12, right: 12, minWidth: 22, height: 22, borderRadius: 11, background: '#A32D2D',
+  color: '#fff', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px',
+};
+
+function Tile({ t, count, onOpen }) {
   const label = t.status === 'live' ? pill('#E1F5EE', '#0F6E56') : t.status === 'next' ? pill('#F3EBD3', '#7A5A10') : pill('#EEEDE7', '#5A5A55');
   const text = t.status === 'live' ? 'Live' : t.status === 'next' ? 'Coming next' : 'Link';
   const body = (
@@ -52,8 +59,10 @@ function Tile({ t }) {
       <span style={label}>{text}</span>
       <h3 style={tileName}>{t.name}</h3>
       <p style={tileBlurb}>{t.blurb}</p>
+      {count > 0 && <span style={badge} title="New requests and videos to review">{count}</span>}
     </>
   );
+  if (t.panel) return <button style={{ ...tile, position: 'relative' }} onClick={onOpen}>{body}</button>;
   if (!t.href) return <div style={{ ...tile, cursor: 'default', opacity: 0.75 }}>{body}</div>;
   return <a style={tile} href={t.href}>{body}</a>;
 }
@@ -62,6 +71,12 @@ export default function Hub() {
   const [state, setState] = useState({ loading: true, user: null });
   const [courses, setCourses] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showMakeup, setShowMakeup] = useState(false);
+  const [makeupCount, setMakeupCount] = useState(0);
+
+  function refreshMakeupCount() {
+    makeupApi.summary().then((d) => setMakeupCount((d.pending || 0) + (d.toReview || 0))).catch(() => {});
+  }
 
   useEffect(() => {
     api.me().then(({ user }) => setState({ loading: false, user }));
@@ -70,7 +85,9 @@ export default function Hub() {
   useEffect(() => {
     if (!state.user) return;
     api.listCourses().then((d) => setCourses(d.courses || [])).catch(() => setCourses([]));
+    refreshMakeupCount();
   }, [state.user]);
+
 
   if (state.loading) return <div style={S.page}>Loading…</div>;
 
@@ -99,7 +116,9 @@ export default function Hub() {
         </div>
 
         <div style={grid}>
-          {TOOLS.map((t) => <Tile key={t.key} t={t} />)}
+          {TOOLS.map((t) => (
+            <Tile key={t.key} t={t} count={t.key === 'makeup' ? makeupCount : 0} onOpen={() => setShowMakeup((v) => !v)} />
+          ))}
           <button style={tile} onClick={() => setShowSettings((v) => !v)}>
             <span style={pill('#E6ECF7', '#24467A')}>Shared</span>
             <h3 style={tileName}>Settings</h3>
@@ -107,6 +126,7 @@ export default function Hub() {
           </button>
         </div>
 
+        {showMakeup && <MakeupPanel onClose={() => setShowMakeup(false)} onChange={refreshMakeupCount} />}
         {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
 
         <div style={S.card}>

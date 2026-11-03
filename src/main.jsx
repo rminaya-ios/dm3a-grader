@@ -14,12 +14,23 @@ const ResetPage = lazy(() => import('./auth/ResetPage.jsx'))
 // DM3A Hub: app.dm3agrader.com is a second domain on this same Vercel project.
 // Any path on the app.* host renders the hub; /hub does too, for local dev.
 const Hub = lazy(() => import('./hub/Hub.jsx'))
+// Make-up student pages: public (no sign-in), on the hub domain.
+//   /makeup/request/<courseToken>  the course's request form
+//   /makeup/<token>                a student's personal link
+const RequestPage = lazy(() => import('./makeup/RequestPage.jsx'))
+const StudentPage = lazy(() => import('./makeup/StudentPage.jsx'))
 const path = window.location.pathname.replace(/\/+$/, '')
 const isHub = window.location.hostname.startsWith('app.') || path === '/hub'
+const makeupRequest = /^\/makeup\/request\/([A-Za-z0-9_-]+)$/.exec(path)
+const makeupLink = /^\/makeup\/([A-Za-z0-9_-]+)$/.exec(path)
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    {isHub ? (
+    {makeupRequest ? (
+      <Suspense fallback={null}><RequestPage courseToken={makeupRequest[1]} /></Suspense>
+    ) : makeupLink ? (
+      <Suspense fallback={null}><StudentPage token={makeupLink[1]} /></Suspense>
+    ) : isHub ? (
       <Suspense fallback={null}><Hub /></Suspense>
     ) : path === '/admin' ? (
       <Suspense fallback={null}><AdminDashboard /></Suspense>
