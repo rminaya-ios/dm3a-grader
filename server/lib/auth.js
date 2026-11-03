@@ -3,7 +3,7 @@
 //
 // Policy mirrors lib/adminAuth.js: read config from env, trim it (Railway's
 // variable editor loves trailing newlines), and FAIL CLOSED when unconfigured —
-// no JWT_SECRET means every session check rejects, never opens.
+// no HUB_JWT_SECRET (or legacy JWT_SECRET) means every session check rejects.
 //
 // The session cookie is httpOnly (JavaScript on the page cannot read it, so an XSS
 // bug can't exfiltrate a session), Secure + SameSite=Lax in production, and scoped
@@ -26,8 +26,12 @@ const MIN_PASSWORD_LENGTH = 10;
 
 const isProd = () => process.env.NODE_ENV === 'production';
 
+// HUB_JWT_SECRET is the name going forward: the same cookie is the sign-in for
+// every *.dm3agrader.com tool (shared/auth/verifyHubSession.js). JWT_SECRET is
+// read only as a fallback during the rename — remove it from Railway once
+// production sign-in is verified on HUB_JWT_SECRET. Same value, so no sign-outs.
 function jwtSecret() {
-  return String(process.env.JWT_SECRET || '').trim();
+  return String(process.env.HUB_JWT_SECRET || process.env.JWT_SECRET || '').trim();
 }
 
 // ── Passwords ────────────────────────────────────────────────────────────────

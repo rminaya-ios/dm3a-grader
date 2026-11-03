@@ -66,6 +66,7 @@ const corsOptions = {
            'https://dm3a-grader-f4cld6wk8-ralph-minayas-projects.vercel.app',
            'https://dm3agrader.com',
            'https://www.dm3agrader.com',
+           'https://app.dm3agrader.com', // the hub (same Vercel project, second domain)
            'http://localhost:5173'],
   // PUT/PATCH/DELETE for the roster-vault routes; x-admin-key for the admin
   // dashboard. Missing x-admin-key here is what broke the /admin gate — the

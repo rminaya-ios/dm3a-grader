@@ -29,6 +29,16 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Other addresses that sign in to THIS account (e.g. school accounts), used by
+    // Google sign-in and email+password login. Never a second account. Written
+    // only by scripts/linkEmails.js, which refuses an address that is already
+    // another account's email or link. Lowercased like `email`.
+    linkedEmails: {
+      type: [{ type: String, trim: true, lowercase: true }],
+      default: [],
+      index: true,
+    },
+
     // Display name, e.g. "Dr. Ralph Minaya". Cosmetic only.
     name: {
       type: String,
@@ -62,8 +72,16 @@ userSchema.methods.toPublic = function toPublic() {
     id: String(this._id),
     email: this.email,
     name: this.name || '',
+    linkedEmails: this.linkedEmails || [],
     createdAt: this.createdAt,
   };
+};
+
+// The account an address signs in to: its primary email or a linked one.
+userSchema.statics.findByLoginEmail = function findByLoginEmail(email, projection) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!e) return Promise.resolve(null);
+  return this.findOne({ $or: [{ email: e }, { linkedEmails: e }] }, projection);
 };
 
 module.exports = mongoose.model('User', userSchema);

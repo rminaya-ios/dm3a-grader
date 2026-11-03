@@ -45,6 +45,10 @@ export const register = (email, password, name) =>
 export const login = (email, password) =>
   call('/api/auth/login', { method: 'POST', body: { email, password } });
 
+// Google Identity Services ID token → the same session cookie as login().
+export const googleLogin = (credential) =>
+  call('/api/auth/google', { method: 'POST', body: { credential } });
+
 export const legacyLogin = (password) =>
   call('/api/auth/legacy-login', { method: 'POST', body: { password } });
 

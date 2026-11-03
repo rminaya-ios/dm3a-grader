@@ -14,6 +14,7 @@
 import { useState } from 'react';
 import { S } from './styles.js';
 import Header from './Header.jsx';
+import GoogleButton, { googleSignInEnabled } from './GoogleButton.jsx';
 import * as api from './api.js';
 
 function PasswordField({ label, value, onChange, autoComplete, placeholder, autoFocus }) {
@@ -200,6 +201,14 @@ export default function AuthGate({ onAuthed, onBack, initialView = 'login' }) {
       <div style={S.shell}>
         <Header title="Sign in" sub="Mastery-Based AI Grading · Dr. Ralph Minaya, Ed.D." />
         <div style={S.card}>
+          {googleSignInEnabled && (
+            <>
+              <GoogleButton onAuthed={onAuthed} onError={setError} />
+              <p style={{ ...S.hint, textAlign: 'center', margin: '14px 0' }}>
+                or sign in with your email and password
+              </p>
+            </>
+          )}
           <form onSubmit={(e) => submit(e, async () => {
             const { user } = await api.login(email, password);
             onAuthed({ user, legacy: false });

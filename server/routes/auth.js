@@ -8,6 +8,7 @@
 //   POST /legacy-login    shared-password fallback, while ALLOW_LEGACY_LOGIN=true
 //   POST /request-reset   email a reset link (always reports success)
 //   POST /reset           consume a reset token, set a new password
+//   POST /google          sign in with a Google ID token (existing accounts only)
 //
 // Does not touch: Student Access Codes, the trial-password system, piiGuard, the
 // roster vault, or the grading/redaction pipeline.
@@ -26,6 +27,7 @@ const {
   generateResetToken,
   hashResetToken,
 } = require('../lib/auth.js');
+const { verifyGoogleCredential, isEmailAllowed, decideGoogleLogin } = require('../lib/googleAuth.js');
 
 const router = express.Router();
 
@@ -69,7 +71,7 @@ router.post('/register', async (req, res) => {
     const pwProblem = passwordProblem(password);
     if (pwProblem) return res.status(400).json({ error: pwProblem });
 
-    if (await User.exists({ email })) {
+    if (await User.findByLoginEmail(email, { _id: 1 })) {
       // Registration necessarily reveals that an address is taken — there is no
       // way around it without a confirm-by-email flow. Reset does not leak.
       return res.status(409).json({ error: 'An account with that email already exists. Try signing in instead.' });
@@ -100,7 +102,7 @@ router.post('/login', async (req, res) => {
     const password = String(req.body?.password || '');
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
 
-    const user = await User.findOne({ email });
+    const user = await User.findByLoginEmail(email);
     // Same message and (roughly) the same timing whether the account is missing
     // or the password is wrong — don't confirm which addresses are registered.
     const ok = await verifyPassword(password, user?.passwordHash);
@@ -193,7 +195,7 @@ router.post('/request-reset', async (req, res) => {
     if (await overLimit(`reset-ip:${clientIp(req)}`, RESET_MAX_PER_IP, RESET_WINDOW_S)) return res.json(generic);
     if (await overLimit(`reset-em:${email}`, RESET_MAX_PER_EMAIL, RESET_WINDOW_S)) return res.json(generic);
 
-    const user = await User.findOne({ email });
+    const user = await User.findByLoginEmail(email);
     if (!user) return res.json(generic);
 
     const { raw, hash, expiresAt } = generateResetToken();
@@ -273,6 +275,32 @@ router.post('/reset', async (req, res) => {
   } catch (err) {
     console.error('[auth] reset error:', err.message);
     return res.status(500).json({ error: 'Could not reset the password. Please try again.' });
+  }
+});
+
+// ── POST /api/auth/google ────────────────────────────────────────────────────
+// Body: { credential } — the ID token from Google Identity Services on the page.
+// Verified server-side (signature, expiry, audience = GOOGLE_CLIENT_ID), then
+// matched to an EXISTING account by primary or linked email. Never creates one.
+router.post('/google', async (req, res) => {
+  try {
+    if (await overLimit(`google:${clientIp(req)}`, LOGIN_MAX_PER_IP, LOGIN_WINDOW_S)) {
+      return res.status(429).json({ error: 'Too many sign-in attempts. Try again in a few minutes.' });
+    }
+
+    const claims = await verifyGoogleCredential(req.body?.credential);
+    const allowed = !!claims && isEmailAllowed(claims.email);
+    const user = allowed && claims.emailVerified ? await User.findByLoginEmail(claims.email) : null;
+
+    const decision = decideGoogleLogin({ claims, allowed, user });
+    if (!decision.allow) return res.status(decision.status).json({ error: decision.error });
+
+    setSessionCookie(res, { uid: String(user._id), email: user.email });
+    console.log(`[auth] google sign-in: ${claims.email}`); // instructor address only
+    return res.json({ user: user.toPublic() });
+  } catch (err) {
+    console.error('[auth] google error:', err.message);
+    return res.status(500).json({ error: 'Could not sign in with Google. Please try again.' });
   }
 });
 
