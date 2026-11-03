@@ -1120,6 +1120,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/my/courses', myCoursesRoutes);
 // Hub: per-owner Settings shared by every tool (bands, BB points, late policy).
 app.use('/api/my/settings', require('./routes/settings.js'));
+// Make-up module (docs/makeup-module-spec.md): the instructor's queue and review
+// (signed in), and the public student pages' API (no sign-in; link token only).
+app.use('/api/my/makeup', require('./routes/makeup.js'));
+app.use('/api/makeup', require('./routes/makeupPublic.js'));
 // ── END INSTRUCTOR ACCOUNTS ────────────────────────────────────
 
 app.listen(PORT, () => {

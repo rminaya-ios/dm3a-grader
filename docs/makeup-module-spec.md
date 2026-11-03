@@ -137,8 +137,12 @@ builds a CSV that Ralph uploads. Blackboard sign-in is Microsoft SSO and is neve
   profile, like the attendance sync. USJ's Original Course View goes read-only on 2027-01-01, so
   that would have to target Ultra.
 
-**B. Where the personal-link page lives.** *Recommended:* `makeup.dm3agrader.com` (one more
-CNAME in Namecheap), kept separate from the Grader and the hub.
+**A is decided (2026-11-03):** confirmed levels go into the existing Blackboard upload file.
+
+**B is decided (2026-11-03):** no new subdomain and no DNS change. Student pages are public
+routes on the hub domain that need no hub sign-in:
+- request form: `app.dm3agrader.com/makeup/request/<courseToken>`
+- personal link: `app.dm3agrader.com/makeup/<token>`
 
 ## Out of scope for v1
 - Absent-student follow-up (attendance → drafts). Later.
