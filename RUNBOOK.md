@@ -23,7 +23,9 @@ One cookie signs you in to every `*.dm3agrader.com` tool.
 - Signed with **`HUB_JWT_SECRET`**. One value, stored in two places:
   - Railway variable `HUB_JWT_SECRET` (service `dm3a-grader`)
   - Mac Keychain: `security find-generic-password -s HUB_JWT_SECRET -a dm3a-hub -w`
-- `JWT_SECRET` is a temporary fallback with the **same value**. Remove it from Railway once production sign-in is verified on `HUB_JWT_SECRET` (step F).
+- `JWT_SECRET` was the old name. It was **removed from Railway on 2026-11-02** after production
+  sign-in was verified on `HUB_JWT_SECRET`. The code still reads it as a fallback only for
+  old local `.env` files.
 - Changing the secret signs everyone out everywhere. Change both places together.
 
 ### Who may sign in (config, no rebuild)
@@ -121,10 +123,13 @@ Setting a Railway variable without redeploying: `railway variable set KEY=value 
 Railway CLI login: `railway login --browserless`, then **Ralph** opens the link while signed
 in to Railway **with GitHub** and clicks Authorize.
 
-**After production sign-in is verified on HUB_JWT_SECRET**, remove the fallback:
-`railway variable delete JWT_SECRET` (then redeploy). Everyone stays signed in (same value).
+(`JWT_SECRET` was removed from Railway on 2026-11-02; only `HUB_JWT_SECRET` remains.)
 
 ## G. Hub domain (app.dm3agrader.com)
+
+Live since 2026-11-02. Let's Encrypt certificate, renewed by Vercel automatically. Vercel
+reports "valid configuration"; it *recommends* a newer project-specific CNAME
+(`a938ca5b16547d65.vercel-dns-017.com`) — optional, the current record works.
 
 - Vercel: project `dm3a-grader` → Settings → Domains → `app.dm3agrader.com`.
 - DNS (Namecheap → dm3agrader.com → Advanced DNS): `CNAME` host `app` → `cname.vercel-dns.com.`
