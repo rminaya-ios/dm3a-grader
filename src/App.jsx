@@ -2563,6 +2563,9 @@ export default function DM3AGraderV5() {
     try {
       response = await fetch(`${SERVER_URL}/grade`, {
         method: "POST",
+        // Sends the sign-in cookie so the server can put the instructor's owner id
+        // on the cost record. It changes nothing about the grade (test/gradeOwner.test.js).
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });

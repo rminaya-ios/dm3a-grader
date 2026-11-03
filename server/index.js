@@ -50,6 +50,7 @@ const { piiGuard } = require('./middleware/piiGuard.js');
 const cookieParser = require('cookie-parser');
 const authRoutes = require('./routes/auth.js');
 const myCoursesRoutes = require('./routes/myCourses.js');
+const { readSession } = require('./lib/auth.js'); // /grade cost-record owner only
 
 // ── Blind Grading (Part C-final): BLANKET PII guard — zero exemptions ──────────
 // piiGuard is now on every grading/recording route: /grade, /detect-work,
@@ -293,10 +294,12 @@ async function recordGradingEvent({
   recordedVia = 'auto',
   accessCode = '',
   courseCode = '',
+  ownerId = null, // signed-in instructor (lib/owner.js); null for students/anonymous
 }) {
   try {
     const u = usage || {};
     await GradingEvent.create({
+      ownerId,
       submissionCount,
       gradingDurationMs,
       recordedVia,
@@ -368,6 +371,10 @@ async function attachApiUsageToSubmissions(ctx, apiUsage, summary) {
 
 app.post('/grade', piiGuard, async (req, res) => {
   const gradeStartedAt = Date.now();
+  // Owner for the cost record ONLY. Read-only and never rejects: a signed-out
+  // student or trial user grades exactly as before, and nothing about the grade
+  // itself depends on who is signed in.
+  const gradeOwnerId = readSession(req)?.uid || null;
   try {
     const clientBlocks = req.body.contentBlocks || req.body.clientBlocks || [];
     const recvImageBlocks = clientBlocks.filter(b => b.type === 'image');
@@ -535,6 +542,7 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
         recordedVia: 'auto',
         accessCode: normalizeCode(codeCtx?.code),
         courseCode: codeCtx?.course || '',
+        ownerId: gradeOwnerId,
       });
     } catch (parseErr) {
       console.error('[parse] AI returned non-JSON response. Full text:', text.slice(0, 500));
@@ -566,6 +574,7 @@ If handwriting is difficult to read, give the student benefit of the doubt and a
         recordedVia: 'auto',
         accessCode: normalizeCode(codeCtxErr?.code),
         courseCode: codeCtxErr?.course || '',
+        ownerId: gradeOwnerId,
       });
     }
   } catch (err) {

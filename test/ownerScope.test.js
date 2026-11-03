@@ -8,37 +8,18 @@
 // production database can't be reached.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { startRealServer, serverRequire as require, sessionCookie } from './helpers/realServer.js';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const serverDir = path.join(here, '..', 'server');
-const require = createRequire(path.join(serverDir, 'index.js'));
-const { MongoMemoryServer } = require('mongodb-memory-server');
-const mongoose = require('mongoose');
 const User = require('./models/User.js');
 const Submission = require('./models/Submission.js');
 const AtRiskFlag = require('./models/AtRiskFlag.js');
 
-const SECRET = 'test-hub-secret-' + 'x'.repeat(40);
 const BRIDGE_KEY = 'test-bridge-key-123';
-const PORT = 3900 + Math.floor(Math.random() * 90);
-const BASE = `http://127.0.0.1:${PORT}`;
 
-let mongod;
-let child;
+let srv;
+let BASE;
 let A; // { user, cookie }
 let B;
-
-function cookieFor(user) {
-  const jwt = require('jsonwebtoken');
-  const token = jwt.sign({ uid: String(user._id), email: user.email }, SECRET, { expiresIn: '1h' });
-  return `dm3a_session=${token}`;
-}
 
 async function call(method, url, { who, body, headers = {} } = {}) {
   const res = await fetch(BASE + url, {
@@ -56,49 +37,23 @@ async function call(method, url, { who, body, headers = {} } = {}) {
 }
 
 before(async () => {
-  mongod = await MongoMemoryServer.create();
-  const uri = mongod.getUri('dm3a_test');
-  assert.match(uri, /^mongodb:\/\/127\.0\.0\.1:/, 'tests must only ever use the in-memory database');
-
-  await mongoose.connect(uri);
-  const { hashPassword } = require('./lib/auth.js');
-  const hash = await hashPassword('correct horse battery');
-  const ua = await User.create({ email: 'a@inst.edu', passwordHash: hash, linkedEmails: ['a@school.edu'] });
-  const ub = await User.create({ email: 'b@inst.edu', passwordHash: hash });
-  A = { user: ua, cookie: cookieFor(ua) };
-  B = { user: ub, cookie: cookieFor(ub) };
-
-  const env = {
-    PATH: process.env.PATH,
-    HOME: process.env.HOME,
-    NODE_ENV: 'test',
-    PORT: String(PORT),
-    MONGODB_URI: uri,
-    HUB_JWT_SECRET: SECRET,
+  srv = await startRealServer({
     RISK_BRIDGE_KEY: BRIDGE_KEY,
     GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
     SIGNUP_MODE: 'allowlist',
     ALLOWED_EMAILS: 'a@inst.edu',
-  };
-  child = spawn(process.execPath, [path.join(serverDir, 'index.js')], {
-    cwd: mkdtempSync(path.join(tmpdir(), 'dm3a-test-')),
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let log = '';
-  child.stdout.on('data', (d) => { log += d; });
-  child.stderr.on('data', (d) => { log += d; });
-  const deadline = Date.now() + 20000;
-  while (!(log.includes('DM3A Server running') && log.includes('MongoDB connected'))) {
-    if (Date.now() > deadline) throw new Error('server did not start:\n' + log);
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  BASE = srv.base;
+  const { hashPassword } = require('./lib/auth.js');
+  const hash = await hashPassword('correct horse battery');
+  const ua = await User.create({ email: 'a@inst.edu', passwordHash: hash, linkedEmails: ['a@school.edu'] });
+  const ub = await User.create({ email: 'b@inst.edu', passwordHash: hash });
+  A = { user: ua, cookie: sessionCookie(ua) };
+  B = { user: ub, cookie: sessionCookie(ub) };
 });
 
 after(async () => {
-  child?.kill();
-  await mongoose.disconnect();
-  await mongod?.stop();
+  await srv?.stop();
 });
 
 // ── Sign-in still works ───────────────────────────────────────────────────────
