@@ -52,6 +52,7 @@ export const approve = (id, endDate) => call(`/api/my/makeup/requests/${enc(id)}
 export const deny = (id) => call(`/api/my/makeup/requests/${enc(id)}/deny`, { method: 'POST' });
 export const newLink = (id) => call(`/api/my/makeup/requests/${enc(id)}/new-link`, { method: 'POST' });
 export const revoke = (id) => call(`/api/my/makeup/requests/${enc(id)}/revoke`, { method: 'POST' });
+export const removeRequest = (id) => call(`/api/my/makeup/requests/${enc(id)}`, { method: 'DELETE' });
 export const submissions = () => call('/api/my/makeup/submissions');
 export const submission = (id) => call(`/api/my/makeup/submissions/${enc(id)}`);
 export const setException = (id, exception, reason) =>

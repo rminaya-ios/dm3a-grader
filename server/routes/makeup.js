@@ -11,6 +11,8 @@
 //   POST /requests/:id/deny            → office-hours reply (email)
 //   POST /requests/:id/new-link        replace a lost link (old one stops working)
 //   POST /requests/:id/revoke          stop the link now
+//   DELETE /requests/:id               remove the request and its submissions
+//                                      (e.g. the instructor's own test record)
 //   GET  /submissions                  review list with cards and flags
 //   GET  /submissions/:id              one submission (+ photo pages, transcript)
 //   POST /submissions/:id/exception    { exception, reason } → cap lifted/restored
@@ -244,6 +246,24 @@ router.post('/requests/:id/revoke', async (req, res) => {
   } catch (err) {
     console.error('[makeup] revoke error:', err.message);
     return res.status(500).json({ error: 'Could not stop the link.' });
+  }
+});
+
+// Removes the request, its submissions and their photos for good. The UI asks
+// first. Owner-scoped like everything else.
+router.delete('/requests/:id', async (req, res) => {
+  try {
+    const r = await findOwned(MakeupRequest, req, req.params.id);
+    if (!r) return notFound(res);
+    const subs = await MakeupSubmission.find({ requestId: r._id, ownerId: owner(req) }).select('_id').lean();
+    const subIds = subs.map((x) => x._id);
+    await MakeupPhoto.deleteMany({ submissionId: { $in: subIds }, ownerId: owner(req) });
+    await MakeupSubmission.deleteMany({ _id: { $in: subIds }, ownerId: owner(req) });
+    await MakeupRequest.deleteOne({ _id: r._id, ownerId: owner(req) });
+    return res.json({ removed: true, submissions: subIds.length });
+  } catch (err) {
+    console.error('[makeup] remove error:', err.message);
+    return res.status(500).json({ error: 'Could not remove the record.' });
   }
 });
 

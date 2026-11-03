@@ -119,6 +119,13 @@ function Requests({ onChange }) {
                 {r.linkLive && <button style={S.quietBtn} onClick={() => act(r.id, () => api.revoke(r.id))}>Stop link</button>}
               </div>
             )}
+            <button
+              style={{ ...S.quietBtn, marginTop: 4 }}
+              disabled={busy === r.id}
+              onClick={() => window.confirm(`Remove this record for ${r.name}? The request and anything the student sent are deleted for good.`) && act(r.id, () => api.removeRequest(r.id))}
+            >
+              Remove record
+            </button>
           </div>
         );
       })}
@@ -132,6 +139,7 @@ function ReviewCard({ id, onBack, onChange }) {
   const [error, setError] = useState('');
   const [level, setLevel] = useState('');
   const [exReason, setExReason] = useState('');
+  const [exError, setExError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
 
@@ -153,6 +161,28 @@ function ReviewCard({ id, onBack, onChange }) {
       setError(e.message);
       return null;
     } finally {
+      setBusy(false);
+    }
+  }
+
+  function liftCap() {
+    if (!exReason.trim()) {
+      setExError('A documented exception needs a short reason.');
+      return;
+    }
+    setExError('');
+    run(() => api.setException(s.id, true, exReason));
+  }
+
+  async function removeRecord() {
+    if (!window.confirm(`Remove this record for ${s.name || 'this student'}? The request, photo, question and video link are deleted for good, and it won't appear in the Blackboard file.`)) return;
+    setBusy(true); setError('');
+    try {
+      await api.removeRequest(s.requestId);
+      onChange();
+      onBack();
+    } catch (e) {
+      setError(e.message);
       setBusy(false);
     }
   }
@@ -211,9 +241,13 @@ function ReviewCard({ id, onBack, onChange }) {
             </button>
           ))}
         </div>
-        <button style={{ ...S.btn, ...(busy || !level ? S.btnDisabled : {}) }} disabled={busy || !level} onClick={() => run(() => api.confirm(s.id, level))}>
-          {s.confirmedLevel ? `Confirmed ${s.confirmedLevel} — change to ${level}` : `Confirm ${level || ''}`}
-        </button>
+        {s.confirmedLevel && level === s.confirmedLevel ? (
+          <button style={{ ...S.btn, ...S.btnDisabled }} disabled>Confirmed {s.confirmedLevel}</button>
+        ) : (
+          <button style={{ ...S.btn, ...(busy || !level ? S.btnDisabled : {}) }} disabled={busy || !level} onClick={() => run(() => api.confirm(s.id, level))}>
+            {s.confirmedLevel ? `Change to ${level}` : `Confirm ${level || ''}`}
+          </button>
+        )}
         {s.confirmedLevel && <p style={{ ...S.success, marginTop: 10 }}>Confirmed {s.confirmedLevel}. It goes into your next Blackboard file (Blackboard tab).</p>}
         {error && <p style={S.error}>{error}</p>}
       </div>
@@ -221,13 +255,14 @@ function ReviewCard({ id, onBack, onChange }) {
       <div style={S.card}>
         <span style={S.label}>Documented exception (lifts the late cap)</span>
         {s.exception ? (
-          <p style={{ margin: 0 }}>On: {s.exceptionReason} <button style={S.linkBtn} disabled={busy} onClick={() => run(() => api.setException(s.id, false, ''))}>Remove</button></p>
+          <p style={{ margin: 0 }}>On: {s.exceptionReason} <button style={S.linkBtn} disabled={busy} onClick={() => { setExError(''); run(() => api.setException(s.id, false, '')); }}>Remove</button></p>
         ) : (
           <div style={{ display: 'flex', gap: 8 }}>
-            <input style={{ ...S.input, marginBottom: 0 }} placeholder="Reason, e.g. note on file" value={exReason} onChange={(e) => setExReason(e.target.value)} />
-            <button style={smallBtn2} disabled={busy} onClick={() => run(() => api.setException(s.id, true, exReason))}>Lift cap</button>
+            <input style={{ ...S.input, marginBottom: 0 }} placeholder="Reason, e.g. note on file" value={exReason} onChange={(e) => { setExReason(e.target.value); setExError(''); }} />
+            <button style={smallBtn2} disabled={busy} onClick={liftCap}>Lift cap</button>
           </div>
         )}
+        {exError && <p style={S.error}>{exError}</p>}
       </div>
 
       <div style={S.card}>
@@ -239,6 +274,10 @@ function ReviewCard({ id, onBack, onChange }) {
             {showTranscript && <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 14 }}>{s.transcript}</pre>}
           </>
         )}
+      </div>
+
+      <div style={{ margin: '4px 0 12px' }}>
+        <button style={S.quietBtn} disabled={busy} onClick={removeRecord}>Remove this record (e.g. your own test)</button>
       </div>
     </div>
   );

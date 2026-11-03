@@ -276,6 +276,16 @@ test('the whole make-up flow, owner-scoped, with no student name in the logs or 
   assert.deepEqual([...new Set(events.map((e) => e.recordedVia))].sort(), ['makeup:question', 'makeup:review', 'makeup:steps']);
   for (const e of events) assert.equal(String(e.ownerId), String(ownerA._id));
   assert.equal(await MakeupSubmission.countDocuments({ ownerId: ownerA._id }), 1);
+
+  // ── Remove record (e.g. the instructor's own test) ────────────────────────
+  assert.equal((await api('DELETE', `/api/my/makeup/requests/${r1.id}`, { cookie: cookieB })).status, 404);
+  const removed = await api('DELETE', `/api/my/makeup/requests/${r1.id}`, { cookie: cookieA });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.submissions, 1);
+  assert.equal(await MakeupSubmission.countDocuments({ ownerId: ownerA._id }), 0);
+  assert.equal(await MakeupPhoto.countDocuments({ ownerId: ownerA._id }), 0);
+  assert.equal((await api('GET', '/api/my/makeup/requests', { cookie: cookieA })).body.requests.length, 0);
+  assert.deepEqual((await api('GET', '/api/my/makeup/export', { cookie: cookieA })).body.rows, []);
 });
 
 test('denial: office-hours reply path, and a denied request has no link', async () => {
