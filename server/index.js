@@ -1109,6 +1109,8 @@ app.use('/api/courses', coursesRoutes);
 // mid-migration; /api/my/courses is strictly account-scoped.
 app.use('/api/auth', authRoutes);
 app.use('/api/my/courses', myCoursesRoutes);
+// Hub: per-owner Settings shared by every tool (bands, BB points, late policy).
+app.use('/api/my/settings', require('./routes/settings.js'));
 // ── END INSTRUCTOR ACCOUNTS ────────────────────────────────────
 
 app.listen(PORT, () => {

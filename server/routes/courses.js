@@ -17,6 +17,7 @@ const RosterVault = require('../models/RosterVault.js');
 const Course = require('../models/Course.js');
 const { piiGuard } = require('../middleware/piiGuard.js');
 const { requireAuth } = require('../lib/auth.js');
+const { getOwnerId } = require('../lib/owner.js');
 const { decideVaultAccess } = require('../lib/vaultAccess.js');
 
 const router = express.Router();
@@ -39,7 +40,7 @@ async function authorizeVault(req, res, method) {
     res.status(400).json({ error: 'courseId required' });
     return null;
   }
-  const userId = req.user && req.user.id;
+  const userId = getOwnerId(req);
   const [ownsCourse, vault] = await Promise.all([
     Course.exists({ userId, courseCode: courseId }),
     RosterVault.findOne({ courseId }).lean(),

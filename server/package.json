@@ -26,5 +26,8 @@
     "resend": "^6.12.4",
     "sharp": "^0.34.5",
     "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^10.4.3"
   }
 }

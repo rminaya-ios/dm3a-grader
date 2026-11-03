@@ -5,6 +5,7 @@
 
 const Submission = require('../models/Submission.js');
 const { evaluateRisk } = require('./riskEvaluator.js');
+const { ownerIdForProfessorEmail } = require('../lib/owner.js');
 
 /**
  * saveSubmission
@@ -29,7 +30,17 @@ const saveSubmission = async (data) => {
     feedbackSummary,
     semesterTag,
     source, // 'grader' (default) | 'checkpoint' — At-Risk Bridge provenance
+    userId: givenOwnerId, // set by signed-in callers; else resolved below
   } = data;
+
+  // Owner (lib/owner.js). The grading recorder and the CheckPoint bridge send
+  // no session cookie, so the owner is the account whose primary or linked email
+  // is professorEmail. A lookup failure must never lose the grade: the record is
+  // saved unowned (invisible to every account) and the backfill can claim it.
+  let userId = givenOwnerId || null;
+  if (!userId) {
+    try { userId = await ownerIdForProfessorEmail(professorEmail); } catch { userId = null; }
+  }
 
   // ── Derive pLabel from pScore ──────────────────────────────────────────
   const pLabel = `P${pScore}`;
@@ -40,6 +51,7 @@ const saveSubmission = async (data) => {
 
   // ── Save submission ────────────────────────────────────────────────────
   const submission = await Submission.create({
+    userId,
     alias,
     studentEmail,
     studentName,
@@ -66,6 +78,7 @@ const saveSubmission = async (data) => {
   let flagResult = null;
   try {
     flagResult = await evaluateRisk({
+      userId,
       studentKey,
       alias,
       studentEmail,
@@ -113,8 +126,11 @@ const getStudentHistory = async (studentKey, courseCode, limit = 10) => {
  * @param {string} courseCode
  * @param {string} assignmentName
  */
-const getAssignmentSubmissions = async (courseCode, assignmentName) => {
-  return Submission.find({ courseCode, assignmentName })
+// ownerId scopes to one account (routes/risk.js always passes it).
+const getAssignmentSubmissions = async (courseCode, assignmentName, ownerId) => {
+  const filter = { courseCode, assignmentName };
+  if (ownerId) filter.userId = ownerId;
+  return Submission.find(filter)
     .sort({ submittedAt: -1 })
     .lean();
 };

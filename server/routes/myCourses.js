@@ -7,7 +7,7 @@
 //   PUT    /:courseCode     update one
 //   DELETE /:courseCode     delete one
 //
-// EVERY query is filtered by req.user.id, so one instructor can never read or
+// EVERY query is filtered by getOwnerId(req), so one instructor can never read or
 // write another's course — including by guessing an id. Courses are addressed by
 // courseCode (not database id) because that is the key the rest of the app
 // already speaks: RosterVault.courseId, Submission.courseCode, GradingEvent.
@@ -18,6 +18,7 @@
 const express = require('express');
 const Course = require('../models/Course.js');
 const { requireAuth } = require('../lib/auth.js');
+const { getOwnerId } = require('../lib/owner.js');
 
 const router = express.Router();
 
@@ -54,7 +55,7 @@ function normalizeCode(raw) {
 // ── GET /api/my/courses ──────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const courses = await Course.find({ userId: req.user.id }).sort({ courseCode: 1 });
+    const courses = await Course.find({ userId: getOwnerId(req) }).sort({ courseCode: 1 });
     res.json({ courses: courses.map((c) => c.toPublic()) });
   } catch (err) {
     console.error('[my/courses] list error:', err.message);
@@ -68,7 +69,7 @@ router.post('/', async (req, res) => {
     const courseCode = normalizeCode(req.body?.courseCode);
     if (!courseCode) return res.status(400).json({ error: 'courseCode required' });
 
-    if (await Course.countDocuments({ userId: req.user.id }) >= MAX_COURSES_PER_USER) {
+    if (await Course.countDocuments({ userId: getOwnerId(req) }) >= MAX_COURSES_PER_USER) {
       return res.status(409).json({ error: 'Course limit reached.' });
     }
 
@@ -76,11 +77,11 @@ router.post('/', async (req, res) => {
     // still catches the concurrent-request race below), but don't depend on it
     // alone: if that index is ever missing, silently creating duplicate courses
     // is a much worse failure than a redundant query.
-    if (await Course.exists({ userId: req.user.id, courseCode })) {
+    if (await Course.exists({ userId: getOwnerId(req), courseCode })) {
       return res.status(409).json({ error: 'You already have a course with that code.' });
     }
 
-    const course = await Course.create({ userId: req.user.id, courseCode, ...sanitize(req.body || {}) });
+    const course = await Course.create({ userId: getOwnerId(req), courseCode, ...sanitize(req.body || {}) });
     res.status(201).json({ course: course.toPublic() });
   } catch (err) {
     if (err && err.code === 11000) {
@@ -102,7 +103,7 @@ router.post('/import', async (req, res) => {
     if (!incoming.length) return res.json({ imported: 0, skipped: 0, courses: [] });
 
     const existing = new Set(
-      (await Course.find({ userId: req.user.id }).select('courseCode').lean()).map((c) => c.courseCode)
+      (await Course.find({ userId: getOwnerId(req) }).select('courseCode').lean()).map((c) => c.courseCode)
     );
 
     let imported = 0;
@@ -111,7 +112,7 @@ router.post('/import', async (req, res) => {
       const courseCode = normalizeCode(raw?.courseCode);
       if (!courseCode || existing.has(courseCode)) { skipped++; continue; }
       try {
-        await Course.create({ userId: req.user.id, courseCode, ...sanitize(raw || {}) });
+        await Course.create({ userId: getOwnerId(req), courseCode, ...sanitize(raw || {}) });
         existing.add(courseCode);
         imported++;
       } catch (e) {
@@ -120,7 +121,7 @@ router.post('/import', async (req, res) => {
       }
     }
 
-    const courses = await Course.find({ userId: req.user.id }).sort({ courseCode: 1 });
+    const courses = await Course.find({ userId: getOwnerId(req) }).sort({ courseCode: 1 });
     console.log(`[my/courses] import for ${req.user.email}: ${imported} imported, ${skipped} skipped`);
     res.json({ imported, skipped, courses: courses.map((c) => c.toPublic()) });
   } catch (err) {
@@ -138,8 +139,8 @@ router.put('/:courseCode', async (req, res) => {
     if (!courseCode) return res.status(400).json({ error: 'courseCode required' });
 
     const course = await Course.findOneAndUpdate(
-      { userId: req.user.id, courseCode },
-      { $set: sanitize(req.body || {}), $setOnInsert: { userId: req.user.id, courseCode } },
+      { userId: getOwnerId(req), courseCode },
+      { $set: sanitize(req.body || {}), $setOnInsert: { userId: getOwnerId(req), courseCode } },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
     res.json({ course: course.toPublic() });
@@ -158,8 +159,11 @@ router.put('/:courseCode', async (req, res) => {
 router.delete('/:courseCode', async (req, res) => {
   try {
     const courseCode = normalizeCode(req.params.courseCode);
-    const result = await Course.deleteOne({ userId: req.user.id, courseCode });
-    res.json({ success: true, courseCode, deleted: result.deletedCount > 0 });
+    const result = await Course.deleteOne({ userId: getOwnerId(req), courseCode });
+    // Hub rule: no owner match → 404 (same answer for "not yours" and "gone").
+    // App.jsx ignores this response (best-effort mirror), so nothing changes there.
+    if (!result.deletedCount) return res.status(404).json({ error: 'No such course in your account.' });
+    res.json({ success: true, courseCode, deleted: true });
   } catch (err) {
     console.error('[my/courses] delete error:', err.message);
     res.status(500).json({ error: 'Could not delete the course.' });

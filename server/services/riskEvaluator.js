@@ -28,6 +28,7 @@ const INACTIVITY_DAYS   = 7;
  * @returns {Object|null} - the flag created/updated, or null if no flag
  */
 const evaluateRisk = async ({
+  userId = null, // owning account (lib/owner.js), stamped on new flags
   studentKey,
   alias,
   studentEmail,
@@ -94,6 +95,7 @@ const evaluateRisk = async ({
 
   // ── Create new flag ───────────────────────────────────────────────────
   const newFlag = await AtRiskFlag.create({
+    userId,
     alias,
     studentEmail,
     studentName,

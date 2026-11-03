@@ -8,10 +8,13 @@
 //   app.use('/api', riskRoutes);
 
 const express = require('express');
+const mongoose = require('mongoose');
 const Submission = require('../models/Submission.js');
 const AtRiskFlag = require('../models/AtRiskFlag.js');
 const { saveSubmission, getAssignmentSubmissions } = require('../services/submissionService.js');
 const { piiGuard } = require('../middleware/piiGuard.js');
+const { requireAuth } = require('../lib/auth.js');
+const { getOwnerId, ownerFilter } = require('../lib/owner.js');
 
 const router = express.Router();
 
@@ -26,9 +29,14 @@ const router = express.Router();
  *         assignmentName, assignmentWeight, assignmentIndex,
  *         pScore, rubricBreakdown, feedbackSummary, semesterTag }
  */
-router.post('/submissions/save', piiGuard, async (req, res) => {
+// Hub Phase 2: every route here needs a signed-in account and only sees that
+// account's records (lib/owner.js). requireAuth is per-route, NOT router.use():
+// this router is mounted at /api, so a router-level guard would also lock
+// /api/auth and friends. /api/risk/record and /api/risk/bridge live in index.js
+// and are unchanged (the bridge keeps its X-Risk-Bridge-Key, no cookie).
+router.post('/submissions/save', requireAuth, piiGuard, async (req, res) => {
   try {
-    const { submission, flagResult } = await saveSubmission(req.body);
+    const { submission, flagResult } = await saveSubmission({ ...req.body, userId: getOwnerId(req) });
     res.status(201).json({
       success: true,
       submission: submission._id,
@@ -45,13 +53,13 @@ router.post('/submissions/save', piiGuard, async (req, res) => {
  * Returns submission history for a single student in a course.
  * Query: ?studentEmail=&courseCode=&limit=10
  */
-router.get('/submissions/student', async (req, res) => {
+router.get('/submissions/student', requireAuth, async (req, res) => {
   try {
     const { studentEmail, courseCode, limit = 10 } = req.query;
     if (!studentEmail || !courseCode) {
       return res.status(400).json({ error: 'studentEmail and courseCode are required' });
     }
-    const submissions = await Submission.find({ studentEmail, courseCode })
+    const submissions = await Submission.find({ ...ownerFilter(req), studentEmail, courseCode })
       .sort({ submittedAt: -1 })
       .limit(Number(limit))
       .lean();
@@ -71,15 +79,18 @@ router.get('/submissions/student', async (req, res) => {
  * Sorted: ACT_NOW first, then WATCH, then by triggeredAt desc.
  * Query: ?professorEmail=&courseCode=
  */
-router.get('/risk/flags', async (req, res) => {
+router.get('/risk/flags', requireAuth, async (req, res) => {
   try {
+    // professorEmail is optional now: the owner already scopes the query, and
+    // one owner may teach under several addresses (User.linkedEmails).
     const { professorEmail, courseCode } = req.query;
-    if (!professorEmail || !courseCode) {
-      return res.status(400).json({ error: 'professorEmail and courseCode are required' });
+    if (!courseCode) {
+      return res.status(400).json({ error: 'courseCode is required' });
     }
 
     const flags = await AtRiskFlag.find({
-      professorEmail,
+      ...ownerFilter(req),
+      ...(professorEmail ? { professorEmail } : {}),
       courseCode,
       flagState: { $in: ['WATCH', 'ACT_NOW'] },
     })
@@ -89,9 +100,11 @@ router.get('/risk/flags', async (req, res) => {
     // Attach last 3 submission scores for sparkline display
     const flagsWithHistory = await Promise.all(
       flags.map(async (flag) => {
+        const studentKey = flag.alias || flag.studentEmail;
         const recent = await Submission.find({
-          studentEmail: flag.studentEmail,
+          ...ownerFilter(req),
           courseCode,
+          $or: [{ alias: studentKey }, { studentEmail: studentKey }],
         })
           .sort({ submittedAt: -1 })
           .limit(5)
@@ -119,10 +132,11 @@ router.get('/risk/flags', async (req, res) => {
  * Professor updates flag status after taking action.
  * Body: { action: 'contacted' | 'dismissed' | 'resolved', note: string }
  */
-router.patch('/risk/flags/:flagId', async (req, res) => {
+router.patch('/risk/flags/:flagId', requireAuth, async (req, res) => {
   try {
     const { action, note } = req.body;
-    const flag = await AtRiskFlag.findById(req.params.flagId);
+    if (!mongoose.isValidObjectId(req.params.flagId)) return res.status(404).json({ error: 'Flag not found' });
+    const flag = await AtRiskFlag.findOne({ _id: req.params.flagId, ...ownerFilter(req) });
 
     if (!flag) {
       return res.status(404).json({ error: 'Flag not found' });
@@ -153,14 +167,14 @@ router.patch('/risk/flags/:flagId', async (req, res) => {
  * The frontend or a follow-up Haiku call uses this to generate misconception insight.
  * Query: ?courseCode=&assignmentName=
  */
-router.get('/insights/assignment', async (req, res) => {
+router.get('/insights/assignment', requireAuth, async (req, res) => {
   try {
     const { courseCode, assignmentName } = req.query;
     if (!courseCode || !assignmentName) {
       return res.status(400).json({ error: 'courseCode and assignmentName are required' });
     }
 
-    const submissions = await getAssignmentSubmissions(courseCode, assignmentName);
+    const submissions = await getAssignmentSubmissions(courseCode, assignmentName, getOwnerId(req));
 
     if (submissions.length < 5) {
       return res.json({

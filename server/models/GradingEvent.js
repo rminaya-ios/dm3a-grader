@@ -50,6 +50,12 @@ const gradingEventSchema = new mongoose.Schema(
     // admin endpoints break usage/cost down per course later.
     accessCode: { type: String, default: '', index: true },
     courseCode: { type: String, default: '' },
+
+    // Owning account (models/User.js; lib/owner.js), when known. The /grade
+    // request sends no session cookie today, so new events stay null unless a
+    // signed-in caller is seen; scripts/backfillOwner.js assigns history. Still
+    // identity-free: an instructor account, never a student.
+    ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   },
   {
     timestamps: true, // createdAt is the event timestamp used by all time-series
