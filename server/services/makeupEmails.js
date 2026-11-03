@@ -4,8 +4,8 @@
 // (office hours), and the question. Every other message to a student is a
 // draft the instructor approves (v1).
 //
-// TEMPLATES_APPROVED stays false until Ralph OKs the exact wording. Until then
-// nothing is sent: the route still works, the instructor sees "email not sent"
+// TEMPLATES_APPROVED: Ralph OKed the exact wording on 2026-11-03. Set it to false
+// to stop all three: the routes still work, the instructor sees "email not sent"
 // on the request, and can copy the personal link by hand.
 //
 // Logs carry the request id and email kind only — never the address, the name,
@@ -13,7 +13,7 @@
 
 const { getResend } = require('../lib/clients.js');
 
-const TEMPLATES_APPROVED = false;
+const TEMPLATES_APPROVED = true; // Ralph approved the wording 2026-11-03
 const FROM = 'DM3A Grader <support@dm3agrader.com>';
 const SIGNATURE = '— Dr. Ralph Minaya';
 

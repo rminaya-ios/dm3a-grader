@@ -149,9 +149,9 @@ Spec: `docs/makeup-module-spec.md`. Hub → **Make-up** tile (badge = new reques
   `app.dm3agrader.com/makeup/<token>` (personal link). Personal links expire on the end date
   you pick when approving, or **30 days** after approval if you pick none. "New link" replaces
   a lost one; "Stop link" ends it.
-- **Automatic emails:** approval link, denial (office hours), and the question. They stay OFF
-  until the wording is approved: `TEMPLATES_APPROVED` in `server/services/makeupEmails.js`.
-  While off, the queue shows "Email to student: NOT sent" and shows the link to copy by hand.
+- **Automatic emails:** approval link, denial (office hours), and the question. Wording approved
+  2026-11-03 and ON. To stop all three, set `TEMPLATES_APPROVED` to false in
+  `server/services/makeupEmails.js`; the queue then shows "NOT sent" and the link to copy.
 - **Blackboard:** Make-up → Blackboard → download the Grade Center file (Work Offline →
   Download) → upload it there → choose the column → "Fill and download" → upload the new file
   in Blackboard. Points come from Settings → Blackboard points. Students are matched by email,

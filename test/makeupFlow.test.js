@@ -268,7 +268,7 @@ test('the whole make-up flow, owner-scoped, with no student name in the logs or 
   // ── Nothing identifying in the server's logs ──────────────────────────────
   const log = srv.log();
   assert.doesNotMatch(log, /Jordan|Testperson|ctstate\.edu|loom\.com|2x \+ 3/i);
-  assert.match(log, /\[makeup\] email "approved" for request [0-9a-f]{24} not sent: templates awaiting approval/);
+  assert.match(log, /\[makeup\] email "approved" for request [0-9a-f]{24} not sent: no mail key \(dev\)/);
 
   // Cost records carry the owner and no student.
   const GradingEvent = require('./models/GradingEvent.js');
@@ -293,5 +293,5 @@ test('denial: office-hours reply path, and a denied request has no link', async 
   assert.equal(denied.body.request.status, 'denied');
   assert.equal(denied.body.request.linkLive, false);
   assert.equal((await api('POST', `/api/my/makeup/requests/${r.id}/new-link`, { cookie: cookieB })).status, 409);
-  assert.match(srv.log(), /\[makeup\] email "denied" for request [0-9a-f]{24} not sent: templates awaiting approval/);
+  assert.match(srv.log(), /\[makeup\] email "denied" for request [0-9a-f]{24} not sent: no mail key \(dev\)/);
 });
