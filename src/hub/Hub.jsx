@@ -33,6 +33,9 @@ const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(2
 const tile = {
   ...S.card, marginBottom: 0, display: 'block', textDecoration: 'none', color: '#1A1A18',
   cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', fontSize: 'inherit', width: '100%',
+  // Padding inside the 100% width; without this the <a> tiles overflow their
+  // grid column by the card padding and overlap the next tile.
+  boxSizing: 'border-box', minWidth: 0,
 };
 const tileName = { fontSize: 18, margin: '0 0 6px' };
 const tileBlurb = { fontSize: 13, color: '#5A5A55', margin: 0 };
