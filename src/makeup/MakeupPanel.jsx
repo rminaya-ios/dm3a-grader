@@ -438,7 +438,7 @@ export default function MakeupPanel({ onClose, onChange }) {
   const [tab, setTab] = useState('requests');
   const tabs = [['requests', 'Requests'], ['review', 'Review'], ['assignments', 'Assignments'], ['blackboard', 'Blackboard']];
   return (
-    <div style={S.card}>
+    <div style={{ ...S.card, textAlign: 'left' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Make-up (video, by approval)</h2>
         <button style={S.quietBtn} onClick={onClose}>Close</button>

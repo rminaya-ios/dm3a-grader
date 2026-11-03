@@ -38,7 +38,7 @@ The video (Loom) make-up is an **exception**, not the default.
 - New requests show on the **Make-up tile with a count badge**. **No email to Ralph.**
 - Each request: one click **Approve** (optional end date) or **Deny**.
 - **Approve** → the system automatically emails the student a **private, unguessable personal
-  link**. The link expires with the approval (end date, or end of term if none).
+  link**. The link expires with the approval (the end date picked, or 30 days if none).
 - **Deny** → the system automatically sends a **polite reply pointing to office hours, MWF
   11:00 AM–12:00 PM**.
 - These two emails, and the question email in step 3, are **fixed templates** that Ralph
@@ -57,6 +57,9 @@ The video (Loom) make-up is an **exception**, not the default.
   4. **Same link, later:** paste the **Loom link** and the **transcript**.
 - The page tells the student the expected Loom: point at the paper, explain each step in order,
   and **answer the question at the end**.
+
+Build note: each course has a **Make-up assignments** list (name + due date) on the Make-up
+tile. Students pick from it, and its due date is what days late are counted from.
 
 ## 4. The random question
 - Must be about a **step the student actually wrote**: never a new problem, never a step that
@@ -110,9 +113,12 @@ Feedback or anything beyond the three fixed templates (approval link, denial, qu
 - Student **name and email** are needed to send email and for Ralph to see who asked. They are
   stored **encrypted at rest** (server key in Railway, separate from the session secret), shown
   only to the owner, and **never sent to the AI**.
-- **Photo:** redacted on the student's device before upload, using the same in-browser name
-  redaction the Grader uses (`src/blind/redact.js`). If redaction fails, the upload stops
-  (fail-closed), as in the Grader.
+- **Photo:** redacted on the server the moment it arrives, before it is stored or sent to the
+  AI, using the Grader's authoritative server pass (`server/lib/serverRedact.js`: name labels,
+  name pairs, and a blacked-out top strip as a safety net). If redaction fails, the upload
+  stops (fail-closed). The unredacted upload is never stored. *(Build note: server-side, not
+  on the student's device, because phone OCR misses handwritten names; the same reason the
+  Grader added its server pass.)*
 - **Transcript:** passed through `src/blind/textRedact.js` with the student's name (known from
   the request) before anything is sent to the AI. Spoken names are removed.
 - **Loom link:** stored for Ralph only. Code never opens, fetches, previews or sends it to the AI.

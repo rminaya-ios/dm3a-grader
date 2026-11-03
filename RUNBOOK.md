@@ -137,3 +137,29 @@ reports "valid configuration"; it *recommends* a newer project-specific CNAME
   `https://app.dm3agrader.com`, `http://localhost:5173`.
 - API CORS (`server/index.js`) lists `https://app.dm3agrader.com`.
 - Local dev: the hub is at `http://localhost:5173/hub`.
+
+## H. Make-up module (video make-ups by approval)
+Spec: `docs/makeup-module-spec.md`. Hub → **Make-up** tile (badge = new requests + videos to review).
+
+- **Set up a course:** Make-up → Assignments → add each assignment and its due date → Save.
+  Copy the course's **request link** into Blackboard. Days late are counted from the due date
+  you enter here to when the student's photo arrives.
+- **Student pages** (public, no sign-in, on the hub domain):
+  `app.dm3agrader.com/makeup/request/<courseToken>` (request form) and
+  `app.dm3agrader.com/makeup/<token>` (personal link). Personal links expire on the end date
+  you pick when approving, or **30 days** after approval if you pick none. "New link" replaces
+  a lost one; "Stop link" ends it.
+- **Automatic emails:** approval link, denial (office hours), and the question. They stay OFF
+  until the wording is approved: `TEMPLATES_APPROVED` in `server/services/makeupEmails.js`.
+  While off, the queue shows "Email to student: NOT sent" and shows the link to copy by hand.
+- **Blackboard:** Make-up → Blackboard → download the Grade Center file (Work Offline →
+  Download) → upload it there → choose the column → "Fill and download" → upload the new file
+  in Blackboard. Points come from Settings → Blackboard points. Students are matched by email,
+  then first + last name; anyone not matched is listed so you can enter them by hand.
+- **Secret:** `MAKEUP_PII_KEY` (Railway + Mac Keychain, service `MAKEUP_PII_KEY`, account
+  `dm3a-hub`) encrypts student names, emails and notes at rest. Without it the request form
+  answers "Requests are not open yet" instead of storing anything. **Never change it once
+  requests exist**: stored requests could no longer be read.
+- **Privacy:** photos are redacted on the server (same fail-closed pass as the Grader) before
+  they are stored or sent to the AI; transcripts have the student's name removed; the Loom
+  link is never opened by code. Logs carry record ids only.

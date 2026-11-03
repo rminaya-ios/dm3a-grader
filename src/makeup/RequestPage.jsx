@@ -41,7 +41,7 @@ export default function RequestPage({ courseToken }) {
 
   return (
     <div style={S.page}>
-      <div style={{ ...S.shell, maxWidth: 480 }}>
+      <div style={{ ...S.shell, maxWidth: 480, textAlign: 'left' }}>
         <div style={S.header}>
           <span style={S.badge}>DM3A Make-up</span>
           <h1 style={S.h1}>Request a video make-up</h1>
