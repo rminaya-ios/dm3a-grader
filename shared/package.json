@@ -1,0 +1,4 @@
+{
+  "//": "verifyHubSession.js is CommonJS so it can be copied into any Node server; the repo root is ESM.",
+  "type": "commonjs"
+}

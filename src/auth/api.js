@@ -82,6 +82,11 @@ export const deleteCourse = (courseCode) =>
 export const importCourses = (courses) =>
   call('/api/my/courses/import', { method: 'POST', body: { courses } });
 
+// ── Per-owner Settings (hub; shared by every tool) ──────────────────────────
+export const getSettings = () => call('/api/my/settings');
+
+export const saveSettings = (fields) => call('/api/my/settings', { method: 'PUT', body: fields });
+
 // Shared with the server (lib/auth.js). Kept in sync by hand — the server is
 // authoritative and re-validates every password it is sent.
 export const MIN_PASSWORD_LENGTH = 10;

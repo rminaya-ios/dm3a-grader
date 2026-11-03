@@ -11,11 +11,17 @@ const AdminDashboard = lazy(() => import('./AdminDashboard.jsx'))
 const BlindGrading = lazy(() => import('./blind/BlindGrading.jsx'))
 // Password reset needs a real URL because the link arrives by email (/reset?token=…).
 const ResetPage = lazy(() => import('./auth/ResetPage.jsx'))
+// DM3A Hub: app.dm3agrader.com is a second domain on this same Vercel project.
+// Any path on the app.* host renders the hub; /hub does too, for local dev.
+const Hub = lazy(() => import('./hub/Hub.jsx'))
 const path = window.location.pathname.replace(/\/+$/, '')
+const isHub = window.location.hostname.startsWith('app.') || path === '/hub'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    {path === '/admin' ? (
+    {isHub ? (
+      <Suspense fallback={null}><Hub /></Suspense>
+    ) : path === '/admin' ? (
       <Suspense fallback={null}><AdminDashboard /></Suspense>
     ) : path === '/blind' ? (
       <Suspense fallback={null}><BlindGrading /></Suspense>
