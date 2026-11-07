@@ -117,6 +117,13 @@ const submissionSchema = new mongoose.Schema(
       type: rubricBreakdownSchema,
       required: true,
     },
+    // Which overall-level rule produced pScore (src/levels.js LEVEL_VERSION).
+    // 2 = derived from the dimension levels. null = recorded before that rule (or
+    // by a caller that doesn't say), so older rows can be told apart.
+    levelVersion: {
+      type: Number,
+      default: null,
+    },
 
     // ── AI feedback snapshot ──────────────────────────────────────────────
     // Store a brief version for the dashboard; not the full feedback block

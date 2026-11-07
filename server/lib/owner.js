@@ -9,6 +9,7 @@
 //
 // Rule: a request with no owner, or a record that isn't the caller's, is a 404
 // (never a 403), so the API can't be used to discover other accounts' data.
+// One exception: the roster vault answers 403 — see lib/vaultAccess.js.
 
 const User = require('../models/User.js');
 

@@ -13,9 +13,13 @@ test('signed out is refused', () => {
   assert.equal(decideVaultAccess({ ...base, userId: undefined }).status, 401);
 });
 
-test('an account without the course gets 404, even if a vault exists', () => {
-  const d = decideVaultAccess({ ...base, ownsCourse: false, vault: { ownerId: ME } });
-  assert.deepEqual([d.allow, d.status], [false, 404]);
+test('an account without the course gets 403, whether or not a vault exists', () => {
+  for (const vault of [{ ownerId: ME }, null]) {
+    for (const method of ['GET', 'PUT', 'DELETE']) {
+      const d = decideVaultAccess({ ...base, method, userId: OTHER, ownsCourse: false, vault });
+      assert.deepEqual([d.allow, d.status], [false, 403]);
+    }
+  }
 });
 
 test('the owner reads, replaces and deletes their vault', () => {
@@ -27,7 +31,7 @@ test('the owner reads, replaces and deletes their vault', () => {
 test("another account with the same course code cannot touch the owner's vault", () => {
   for (const method of ['GET', 'PUT', 'DELETE']) {
     const d = decideVaultAccess({ ...base, method, userId: OTHER, vault: { ownerId: ME }, courseOwnerCount: 2 });
-    assert.deepEqual([d.allow, d.status], [false, 404]);
+    assert.deepEqual([d.allow, d.status], [false, 403]);
   }
 });
 

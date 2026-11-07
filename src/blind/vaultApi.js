@@ -14,6 +14,7 @@ import { SERVER_URL as API_BASE } from '../auth/api.js';
 async function vaultError(res, action) {
   const body = await res.json().catch(() => ({}));
   if (res.status === 401) return new Error('Sign in to your DM3A account to use the roster vault.');
+  if (res.status === 403) return new Error('This roster vault belongs to another DM3A account. Sign in with the account that created this course.');
   return new Error(body.error ? `${action}: ${body.error}` : `${action} (${res.status})`);
 }
 

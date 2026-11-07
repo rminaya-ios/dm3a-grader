@@ -30,13 +30,20 @@
 //   courseOwnerCount  how many accounts have a Course with this code
 //
 // Answer: { allow: true, claim?: true } or { allow: false, status, error }.
+//
+// STATUS CODES. 401 = not signed in. 403 = signed in, but this is not your vault
+// (you have no course with this code, or another account owns the vault). 404 =
+// your own course, no vault stored yet. The 403 is the same whether or not a
+// vault exists, so an account without the course still can't use these routes to
+// discover which course codes have vaults. (This is the one place that departs
+// from lib/owner.js's "404, never 403": the vault client needs to tell "no vault
+// yet" — which offers to create one — apart from "not yours", which must not.)
 function decideVaultAccess({ method, userId, ownsCourse, vault, courseOwnerCount }) {
-  // Same answer for "not yours" and "doesn't exist", so the routes can't be used
-  // to discover which course codes have vaults.
+  const forbidden = { allow: false, status: 403, error: 'This roster vault belongs to another DM3A account.' };
   const notFound = { allow: false, status: 404, error: 'no roster vault for this course in your account' };
 
   if (!userId) return { allow: false, status: 401, error: 'Not signed in.' };
-  if (!ownsCourse) return notFound;
+  if (!ownsCourse) return forbidden;
 
   if (!vault) {
     // Nothing to protect yet: creating (PUT) is the owner making their vault;
@@ -45,7 +52,7 @@ function decideVaultAccess({ method, userId, ownsCourse, vault, courseOwnerCount
   }
 
   if (vault.ownerId) {
-    return String(vault.ownerId) === String(userId) ? { allow: true } : notFound;
+    return String(vault.ownerId) === String(userId) ? { allow: true } : forbidden;
   }
 
   // Legacy vault with no recorded owner.

@@ -12,6 +12,7 @@ import { diffRoster } from "./blind/rosterDiff.js";
 import { detectAliasCsvColumns, readAliasCsvRow, mergeAliasRestore, filterRosterRows } from "./blind/rosterMerge.js";
 import { buildNameIndex } from "./blind/translate.js";
 import { findPlaintext } from "./blind/zeroPlaintext.js";
+import { assignPaper, holdAutoConflicts, duplicateAssignments, ALREADY_HAS_PAPER } from "./blind/paperGuard.js";
 import { redactNameZone, terminateRedactor } from "./blind/redact.js";
 import {
   KIND_SCAN, KIND_DOCX, KIND_BB_TEXT, KIND_BB_STUB, KIND_UNKNOWN, KIND_LABELS,
@@ -24,6 +25,7 @@ import LandingPage from "./LandingPage";
 // in this file is untouched). Identity is resolved HERE by reportIdentity and
 // passed in — StudentReport.jsx never looks a name up.
 import { StudentReportModal } from "./StudentReport.jsx";
+import { applyLevelRule, effectiveOverall } from "./levels.js";
 import { generateStudentReportPDF } from "./studentReportPdf.js";
 // Instructor accounts. AuthGate replaces the old shared-password screen; authApi
 // also carries the account-scoped course endpoints used by persistCourses().
@@ -301,18 +303,10 @@ const DIM_META = [
 const ALL_DIMS = { conceptualUnderstanding: true, problemSolving: true, workShown: true, accuracy: true };
 
 // ── Overall mastery: computed, not asked for ────────────────────────────────
-// The DM3A bands are published to students, so the overall level must follow them
-// arithmetically. It did not: on a 10-item quiz a student with 7 of 10 at mastery
-// (70%) was returned as P3 in two consecutive runs, where the scale puts 70% in P2.
-// A stable wrong level is worse than an unstable one — it looks trustworthy. The
-// model still judges each PROBLEM; the roll-up is arithmetic from here on.
-const DM3A_BAND = (pct) => (pct >= 90 ? "P4" : pct >= 80 ? "P3" : pct >= 60 ? "P2" : "P1");
-function computeOverallTier(student) {
-  const graded = (student?.problems || []).filter((p) => p && p.tier && p.tier !== "N/A" && p.tier !== "P0");
-  if (!graded.length) return null;
-  const mastery = graded.filter((p) => p.tier === "P3" || p.tier === "P4").length;
-  return DM3A_BAND(Math.round((mastery / graded.length) * 100));
-}
+// The model judges each PROBLEM and each dimension; the overall level and the
+// accuracy dimension are arithmetic, in src/levels.js. An earlier roll-up banded
+// the share of problems at mastery, which could disagree with the dimensions on
+// the same card (Overall P1 beside P2/P2) — the overall now comes from them.
 // ── Ungraded rows: a sentinel where a mastery level would go ────────────────
 // A submission that was never graded must not carry a P-level. "HEIC"/"DOCX" mean
 // the file could not be read; "ERROR" means the grading request itself failed — an
@@ -403,29 +397,13 @@ function skippedResult(studentName, reason) {
   return row;
 }
 
-// Accuracy is derived the same way, for the same reason. It is BY DEFINITION the
-// share of problems the student got right, so a model judgement of it can — and did
-// — contradict the arithmetic on its own card: 7 of 10 at mastery showed Overall P2
-// next to an ACCURACY tile reading P3, two different colours for one number. The
-// other three dimensions are NOT pure correctness (a student can be accurate with no
-// work shown, or right by a method that doesn't generalise), so those stay with the
-// model. Whether accuracy is enabled is read off `dimensions.accuracy` being present:
-// this runs AFTER applyDimScope, which drops every switched-off key, and presence is
-// the same test each render surface uses to decide whether to draw the tile.
-//
-// Keeps the model's own values as `modelTier` / `dimensionsModel` so a disagreement
-// stays inspectable.
-const applyComputedTier = (list) => (Array.isArray(list) ? list : [list]).map((r) => {
-  if (!r || isUngraded(r)) return r;
-  const tier = computeOverallTier(r);
-  if (!tier) return r; // nothing gradeable — no arithmetic to prefer over the model
-  const out = { ...r, overallTier: tier, modelTier: r.overallTier };
-  if (r.dimensions && r.dimensions.accuracy != null) {
-    out.dimensions = { ...r.dimensions, accuracy: tier };
-    out.dimensionsModel = { ...(r.dimensionsModel || {}), accuracy: r.dimensions.accuracy };
-  }
-  return out;
-});
+// Accuracy is derived too. It is BY DEFINITION the share of problems the student
+// got right, so a model judgement of it can — and did — contradict the arithmetic
+// on its own card. The other three dimensions are NOT pure correctness (a student
+// can be accurate with no work shown), so those stay with the model. Runs AFTER
+// applyDimScope, which drops every switched-off dimension. See src/levels.js.
+const applyComputedTier = (list) => (Array.isArray(list) ? list : [list]).map((r) =>
+  (!r || isUngraded(r) ? r : applyLevelRule(r)));
 
 // ── Bounded-concurrency runner ──────────────────────────────────────────────
 // Grading 19 students one at a time took ~7 minutes of almost entirely idle
@@ -850,6 +828,8 @@ export default function DM3AGraderV5() {
   const [confirmedRoster, setConfirmedRoster] = useState([]); // [{studentName, studentEmail}] — sent to /api/risk/record
   const [studentMapping, setStudentMapping] = useState({});   // result index -> chosen studentEmail ("" = skip)
   const [autoMatched, setAutoMatched] = useState({});         // #33: result index -> true when pre-filled via BB-username join (verify)
+  const [matchConflicts, setMatchConflicts] = useState({});   // result index -> the student two+ papers auto-matched (left unassigned for review)
+  const [pendingReplace, setPendingReplace] = useState(null); // { i, val, others } while "already has a paper" waits for Replace / Cancel
   const [rosterConfirmed, setRosterConfirmed] = useState(false);
   const [trackingNote, setTrackingNote] = useState("");       // non-blocking status after a tracked confirm
 
@@ -1817,8 +1797,10 @@ export default function DM3AGraderV5() {
     setConfirmedRoster([]);
     setRosterConfirmed(false);
     setTrackingNote("");
+    setPendingReplace(null);
     if (!activeCourseCode || activeRoster.length === 0 || results.length === 0) {
       setStudentMapping({});
+      setMatchConflicts({});
       return;
     }
     const norm = (v) => String(v || "").trim().toLowerCase();
@@ -1849,8 +1831,14 @@ export default function DM3AGraderV5() {
         mapping[i] = match ? match.studentEmail : ""; // "" = Skip
       }
     });
-    setStudentMapping(mapping);
+    // One paper per student per assignment (blind/paperGuard.js): when two or more
+    // papers matched the same student, none of them is assigned — they are flagged
+    // for the instructor to review, never merged onto one student.
+    const held = holdAutoConflicts(mapping);
+    for (const i of Object.keys(held.conflicts)) delete auto[i];
+    setStudentMapping(held.mapping);
     setAutoMatched(auto);
+    setMatchConflicts(held.conflicts);
   }, [results, activeCourseCode, activeRoster, activeVaulted, vaultRevision]);
 
   // ── Desync fix: activeRoster is a MIRROR of the unlock state, never a separate
@@ -2024,16 +2012,15 @@ export default function DM3AGraderV5() {
       );
       return;
     }
-    // #32: a roster student mapped to >1 submission loses a grade unless the student
-    // genuinely submitted more than once. Require an explicit override, not a hard block.
-    const usedBy = {};
-    results.forEach((_s, i) => { const v = studentMapping[i]; if (v) (usedBy[v] = usedBy[v] || []).push(i); });
-    const dups = Object.entries(usedBy).filter(([, idxs]) => idxs.length > 1);
+    // One paper per student per assignment (blind/paperGuard.js). The picker
+    // already refuses a second paper; this catches anything that got past it (a
+    // restored session, say). Blocked, not confirmed: recording both would file
+    // another student's paper in this student's history.
+    const dups = duplicateAssignments(studentMapping);
     if (dups.length) {
       const lines = dups.map(([v, idxs]) => `• ${rosterLabelForValue(v)} → Submissions ${idxs.map((j) => j + 1).join(", ")}`).join("\n");
-      if (!window.confirm(`${dups.length} student${dups.length === 1 ? " is" : "s are"} assigned to more than one submission:\n\n${lines}\n\nThis is only correct if the student actually submitted more than once — otherwise a grade will be lost. Record anyway?`)) {
-        return;
-      }
+      window.alert(`${ALREADY_HAS_PAPER}:\n\n${lines}\n\nAssign each student to one paper (choose Replace to move them), then confirm again.`);
+      return;
     }
     // Build the recording roster + payload. Blind (vaulted) courses send
     // ALIAS-ONLY records — no studentName/studentEmail ever leaves the browser.
@@ -2050,6 +2037,7 @@ export default function DM3AGraderV5() {
       payloadResults = chosen.map(({ s, alias }) => ({
         alias,
         overallTier: s.overallTier ?? s.tier,
+        levelVersion: s.levelVersion,
         dimensions: s.dimensions,
         feedback: s.feedback,
       }));
@@ -4035,7 +4023,7 @@ Return a JSON array with exactly ONE student object.`;
   function downloadPDF(student) {
     const ov = overrides[student.studentName] || {};
     const displayName = ov.renamedName || student.studentName;
-    const overall = ov.overall || student.overallTier;
+    const overall = effectiveOverall(student, ov);
     const ungraded = isUngraded(student); // never print a level for an ungraded row
     const tierLabels = { P4: "Mastery", P3: "Approaching Mastery", P2: "Developing", P1: "Beginning" };
     const tierColors = { P4: "#0F6E56", P3: "#185FA5", P2: "#854F0B", P1: "#A32D2D" };
@@ -4132,7 +4120,7 @@ Return a JSON array with exactly ONE student object.`;
       }
       rows.push([
         s.studentName,
-        ov.overall || s.overallTier,
+        effectiveOverall(s, ov),
         ov.conceptual || s.dimensions?.conceptualUnderstanding || "",
         ov.problemSolving || s.dimensions?.problemSolving || "",
         ov.workShown || s.dimensions?.workShown || "",
@@ -4201,7 +4189,7 @@ Return a JSON array with exactly ONE student object.`;
   // defaults to the instructor one, so existing filenames are byte-identical.
   function buildReportFilename(student, index, kind = "Report") {
     const ov = overrides[student.studentName] || {};
-    const tier = ov.overall || student.overallTier;
+    const tier = effectiveOverall(student, ov);
     const id = reportIdentity(student, index);
     const san = (s) => String(s || "").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "") || "NA";
     if (id.resolved) return `${san(id.lastName)}_${san(id.firstName)}_${san(id.alias)}_${kind}.pdf`;
@@ -4224,7 +4212,7 @@ Return a JSON array with exactly ONE student object.`;
     // course — never the source BB filename — unless the real name is opted in.
     const idobj = reportIdentity(student, index);
     const displayName = (includeNameOnReport && idobj.resolved) ? idobj.realName : idobj.safeLabel;
-    const tier = ov.overall || student.overallTier;
+    const tier = effectiveOverall(student, ov);
     const ungraded = isUngraded(student); // never print a level for an ungraded row
     const NAVY = [10, 22, 40];
     const GOLD = [201, 168, 76];
@@ -4408,7 +4396,7 @@ Return a JSON array with exactly ONE student object.`;
       assignment: assignment || "Assignment",
       courseCode: activeCourseCode || subject || "",
       dateGraded: new Date(gradedAt || Date.now()).toLocaleDateString(),
-      overall: ov.overall || student.overallTier,
+      overall: effectiveOverall(student, ov),
       dimensions: dims,
       // The FINAL level for each problem — an instructor override wins over the AI's.
       problems: (student.problems || []).map(p => ({
@@ -5819,11 +5807,13 @@ Return a JSON array with exactly ONE student object.`;
               const autoCount = results.reduce((n, _s, i) => n + ((autoMatched[i] && studentMapping[i]) ? 1 : 0), 0);
               const skipCount = results.length - mappedCount;
               const dupCount = Object.values(results.reduce((acc, _s, i) => { const v = studentMapping[i]; if (v) acc[v] = (acc[v] || 0) + 1; return acc; }, {})).filter((c) => c > 1).length;
+              const heldCount = results.reduce((n, _s, i) => n + ((matchConflicts[i] && !studentMapping[i]) ? 1 : 0), 0);
               return (
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#5A5A55", marginBottom: 12 }}>
                   {mappedCount} of {results.length} students mapped · {skipCount} will be skipped (not tracked).
                   {autoCount > 0 && <span style={{ color: "#0F6E56", display: "block", marginTop: 4 }}>✓ {autoCount} auto-matched from the submission files — verify below.</span>}
-                  {dupCount > 0 && <span style={{ color: "#9f1239", display: "block", marginTop: 4 }}>⚠ {dupCount} student{dupCount === 1 ? " is" : "s are"} assigned to more than one submission — a grade is lost unless they submitted more than once.</span>}
+                  {dupCount > 0 && <span style={{ color: "#9f1239", display: "block", marginTop: 4 }}>⚠ {dupCount} student{dupCount === 1 ? " is" : "s are"} assigned to more than one paper. {ALREADY_HAS_PAPER} — assign each student to one paper before confirming.</span>}
+                  {heldCount > 0 && <span style={{ color: "#9f1239", display: "block", marginTop: 4 }}>⚠ {heldCount} paper{heldCount === 1 ? "" : "s"} matched the same student as another paper, so {heldCount === 1 ? "it was" : "they were"} left unassigned. Review below and assign each student to the right paper.</span>}
                   {autoCount === 0 && (() => {
                     // #39: the identifier read out of the first Blackboard filename. This is
                     // the one fact that distinguishes a mis-parsed filename from a roster
@@ -5872,6 +5862,11 @@ Return a JSON array with exactly ONE student object.`;
                       <span style={{ fontWeight: 700, fontSize: 10, color: "#A32D2D", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
                         title="This detected ID was not found in the course vault — check the handwriting/roster.">⚠ not in vault</span>
                     )}
+                    {/* Two+ papers auto-matched this student: none was assigned (blind/paperGuard.js). */}
+                    {matchConflicts[i] && !studentMapping[i] && (
+                      <span style={{ fontWeight: 700, fontSize: 10, color: "#9f1239", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
+                        title="More than one paper matched this student, so none was assigned. Check the page and assign the right paper.">⚠ matched {rosterLabelForValue(matchConflicts[i])} along with another paper — review</span>
+                    )}
                     {dupIdx.length > 0 && (
                       <span style={{ fontWeight: 700, fontSize: 10, color: "#9f1239", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
                         title="The same roster student is assigned to another submission.">⚠ also → Submission {dupIdx.map((j) => j + 1).join(", ")}</span>
@@ -5879,14 +5874,12 @@ Return a JSON array with exactly ONE student object.`;
                   </div>
                   <select style={styles.input} value={studentMapping[i] ?? ""} onChange={e => {
                     const val = e.target.value;
-                    // #32: warn before creating a duplicate assignment; keep the old value if declined.
-                    if (val) {
-                      const other = results.map((_s, j) => j).find((j) => j !== i && studentMapping[j] === val);
-                      if (other !== undefined && !window.confirm(`${rosterLabelForValue(val)} is already assigned to Submission ${other + 1}. Assign anyway? (Only if this student submitted more than once.)`)) {
-                        return;
-                      }
-                    }
-                    setStudentMapping(m => ({ ...m, [i]: val }));
+                    // One paper per student per assignment (blind/paperGuard.js): a student
+                    // who already has a paper is refused unless the instructor picks Replace.
+                    const res = assignPaper(studentMapping, i, val);
+                    if (!res.ok) { setPendingReplace({ i, val, others: res.conflictWith }); return; }
+                    setPendingReplace(null);
+                    setStudentMapping(res.mapping);
                     setAutoMatched(a => ({ ...a, [i]: false })); // #33: a manual choice is no longer "auto — verify"
                   }}>
                     <option value="">— Skip (don't track) —</option>
@@ -5897,6 +5890,24 @@ Return a JSON array with exactly ONE student object.`;
                     ))}
                   </select>
                 </div>
+                {pendingReplace && pendingReplace.i === i && (
+                  <div role="alert" style={{ marginTop: 6, padding: "8px 10px", background: "#FCEBEB", border: "1px solid #F5BEBE", borderRadius: 6, fontSize: 13, color: "#9f1239" }}>
+                    <strong>{ALREADY_HAS_PAPER}.</strong>{" "}
+                    {rosterLabelForValue(pendingReplace.val)} is assigned to Submission {pendingReplace.others.map((j) => j + 1).join(", ")}.
+                    Replace moves them to this paper and sets Submission {pendingReplace.others.map((j) => j + 1).join(", ")} back to Skip.
+                    <div style={{ marginTop: 6, display: "flex", gap: 8 }}>
+                      <button style={{ fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 4, border: "1px solid #9f1239", background: "#9f1239", color: "#fff", cursor: "pointer" }}
+                        onClick={() => {
+                          const res = assignPaper(studentMapping, i, pendingReplace.val, { replace: true });
+                          setStudentMapping(res.mapping);
+                          setAutoMatched(a => ({ ...a, [i]: false }));
+                          setPendingReplace(null);
+                        }}>Replace</button>
+                      <button style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #C8C6BE", background: "#fff", cursor: "pointer" }}
+                        onClick={() => setPendingReplace(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
                 {expandedThumb === i && thumb && (
                   <div style={{ marginTop: 6, border: "1px solid #E6E4DC", borderRadius: 6, overflow: "hidden", maxWidth: 420 }}>
                     <img src={`data:image/jpeg;base64,${thumb}`} alt={`Submission ${i + 1} — page as graded`} style={{ display: "block", width: "100%" }} />
@@ -6044,7 +6055,7 @@ Return a JSON array with exactly ONE student object.`;
         {/* Student Tabs */}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
           {results.map((s, i) => {
-            const t = overrides[s.studentName]?.overall || s.overallTier;
+            const t = effectiveOverall(s, overrides[s.studentName]);
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
@@ -6113,7 +6124,7 @@ Return a JSON array with exactly ONE student object.`;
             </div>
             <div style={{ textAlign: "right" }}>
               {(() => {
-                const tier = ov.overall || student.overallTier;
+                const tier = effectiveOverall(student, ov);
                 const isUnprocessable = tier === "HEIC" || tier === "DOCX";
                 // A failed request gets no chip at all. Anything chip-shaped in this
                 // slot reads as a grade, whatever the letters inside it say.
@@ -6153,7 +6164,7 @@ Return a JSON array with exactly ONE student object.`;
               {!isUngraded(student) && (
                 <div style={{ marginTop: 6 }}>
                   <select style={{ fontSize: 12, padding: "3px 8px", border: "1px solid #C8C6BE", borderRadius: 4, background: "#FAFAF7" }}
-                    value={ov.overall || student.overallTier}
+                    value={effectiveOverall(student, ov)}
                     onChange={e => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], overall: e.target.value } }))}>
                     {["P4", "P3", "P2", "P1"].map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
@@ -6299,7 +6310,7 @@ Return a JSON array with exactly ONE student object.`;
             return (<>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
                 {["P4", "P3", "P2", "P1"].map(t => {
-                  const count = graded.filter(s => (overrides[s.studentName]?.overall || s.overallTier) === t).length;
+                  const count = graded.filter(s => effectiveOverall(s, overrides[s.studentName]) === t).length;
                   return (
                     <div key={t} style={{ background: tierBg[t], border: `1px solid ${tierBorder[t]}`, borderRadius: 6, padding: "12px", textAlign: "center" }}>
                       <div style={{ color: tierColor[t], fontWeight: 700, fontSize: 22 }}>{count}</div>

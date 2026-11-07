@@ -37,6 +37,8 @@ const adminStatsRoutes = require('./routes/adminStats.js');
 const { requireAdminKey } = require('./lib/adminAuth.js');
 // At-Risk Bridge (Phase 2): server-to-server auth for POST /api/risk/bridge.
 const { requireBridgeKey } = require('./lib/bridgeAuth.js');
+// One paper per student per assignment when recording a results batch.
+const { splitDuplicateAliases } = require('./lib/duplicatePapers.js');
 const { sendTelegramMessage } = require('./services/alertDispatcher.js');
 
 // ── Server-side name-zone redaction (authoritative pass — reliable on every device) ─
@@ -202,6 +204,7 @@ async function recordOneSubmission(ctx, student) {
       assignmentIndex:  ctx.assignmentIndex,
       pScore,
       rubricBreakdown,
+      levelVersion:     student.levelVersion,
       feedbackSummary:  (student.feedback || '').slice(0, 500),
       semesterTag:      ctx.semesterTag,
       source:           ctx.source || 'grader',
@@ -259,7 +262,14 @@ async function maybeRecordSubmissions(ctx, parsed) {
     if (!ctx || !ctx.professorEmail || !ctx.courseCode || !ctx.assignmentName) {
       return summary; // no usable context → no-op
     }
-    const students = Array.isArray(parsed) ? parsed : [parsed];
+    // One paper per student per assignment (lib/duplicatePapers.js): an alias
+    // that appears twice is held back for review, never recorded twice.
+    const { keep: students, duplicates } = splitDuplicateAliases(Array.isArray(parsed) ? parsed : [parsed]);
+    if (duplicates.length) {
+      summary.skipped += duplicates.length;
+      summary.duplicates = duplicates.length;
+      console.warn(`[AT-RISK] ${duplicates.length} result(s) share an alias with another paper — not recorded`);
+    }
     for (const s of students) {
       try {
         const r = await recordOneSubmission(ctx, s);

@@ -27,6 +27,7 @@ const saveSubmission = async (data) => {
     assignmentIndex,
     pScore,
     rubricBreakdown,
+    levelVersion,
     feedbackSummary,
     semesterTag,
     source, // 'grader' (default) | 'checkpoint' — At-Risk Bridge provenance
@@ -63,6 +64,7 @@ const saveSubmission = async (data) => {
     pScore,
     pLabel,
     rubricBreakdown,
+    levelVersion: Number.isInteger(levelVersion) ? levelVersion : null,
     feedbackSummary: feedbackSummary || null,
     semesterTag: semesterTag || null,
     source: source || 'grader',

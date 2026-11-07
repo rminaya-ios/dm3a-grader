@@ -91,9 +91,9 @@ test('B cannot read, overwrite or delete A\'s vault — even with the same cours
   const blob = { salt: 's', iv: 'i', ciphertext: 'c', kdf: 'pbkdf2' };
   assert.equal((await call('PUT', '/api/courses/AONLY101/roster-vault', { who: A, body: { blob } })).status, 200);
 
-  assert.equal((await call('GET', '/api/courses/AONLY101/roster-vault', { who: B })).status, 404);
-  assert.equal((await call('PUT', '/api/courses/AONLY101/roster-vault', { who: B, body: { blob: { x: 1 } } })).status, 404);
-  assert.equal((await call('DELETE', '/api/courses/AONLY101/roster-vault', { who: B })).status, 404);
+  assert.equal((await call('GET', '/api/courses/AONLY101/roster-vault', { who: B })).status, 403);
+  assert.equal((await call('PUT', '/api/courses/AONLY101/roster-vault', { who: B, body: { blob: { x: 1 } } })).status, 403);
+  assert.equal((await call('DELETE', '/api/courses/AONLY101/roster-vault', { who: B })).status, 403);
   assert.equal((await call('GET', '/api/courses/AONLY101/roster-vault')).status, 401);
 
   const mine = await call('GET', '/api/courses/AONLY101/roster-vault', { who: A });
