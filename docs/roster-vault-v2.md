@@ -92,6 +92,12 @@ identical `(1)`) on all 19 students, and `(2)` on none. So **set A is live** and
 a superseded generation. The migration's own match report confirms this independently,
 by comparing the decrypted vault against the cards.
 
+MATH11005 has exactly one card PDF, `math11005-alias-cards.pdf` (lowercase), which had
+no CSV until now. Converted with `scripts/alias-cards-to-csv.js` to
+`MATH11005-alias-cards.csv`: 19 cards, one generation date (8/31/2026), no duplicate
+aliases, and a 19/19 alias match against `MATH11005_alias_restore.csv` with no student on
+only one side. **Unambiguous.**
+
 MATH1010050 has two card files differing on all 26 students, and no equivalent tie-break
 on disk. It needs one student's physical card before anything is switched.
 
