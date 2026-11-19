@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test --test-concurrency=2 --test-timeout=300000 \"test/**/*.test.js\""
   },
   "dependencies": {
     "jspdf": "^4.2.1",

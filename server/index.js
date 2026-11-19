@@ -1130,6 +1130,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/my/courses', myCoursesRoutes);
 // Hub: per-owner Settings shared by every tool (bands, BB points, late policy).
 app.use('/api/my/settings', require('./routes/settings.js'));
+// Hub roster API (roster v2, server-managed encryption — docs/roster-vault-v2.md).
+// The one route family that deliberately accepts names; it seals them with
+// lib/rosterCrypto.js before they reach the database, so piiGuard is not applied.
+app.use('/api/my/roster', require('./routes/roster.js'));
 // Make-up module (docs/makeup-module-spec.md): the instructor's queue and review
 // (signed in), and the public student pages' API (no sign-in; link token only).
 app.use('/api/my/makeup', require('./routes/makeup.js'));

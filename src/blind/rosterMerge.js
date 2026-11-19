@@ -28,6 +28,11 @@ export function nameKey(...parts) {
     .filter((p) => p != null && p !== '')
     .join(' ')
     .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip accents
+    // An apostrophe sits INSIDE a name word ("O'Brien"), so it is removed rather than
+    // treated as a separator — otherwise it would not match a roster that spells it
+    // "OBrien". Straight and curly both. Mirrored in the other copy; cross-checked by
+    // test/aliasGuard.test.js.
+    .replace(/['\u2019\u02BC]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
