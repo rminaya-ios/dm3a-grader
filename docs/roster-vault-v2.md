@@ -81,8 +81,8 @@ the browser.
 |---|---|---|
 | MATH11003 | migrate (passphrase held) | **migrated & verified** 2026-11-19 — 19/19 vs `MATH11003-alias-cards.csv` (set A), confirmed in the browser |
 | MATH11005 | migrate (passphrase held) | **migrated & verified** 2026-11-19 — 19/19 vs `MATH11005-alias-cards.csv`, confirmed in the browser |
-| MATH1010050 | rebuild from cards + Blackboard roster | blocked: two card generations, needs a physical card to pick |
-| MATH0900-017 | rebuild from cards + Blackboard roster | one card generation, unambiguous |
+| MATH1010050 | migrate (passphrase held) | **ready** — card set B identified from live run output, see below |
+| MATH0900-017 | rebuild from cards + Blackboard roster | unambiguous, but the course is not in use; lowest priority |
 
 ### Which card file is live
 
@@ -98,8 +98,24 @@ no CSV until now. Converted with `scripts/alias-cards-to-csv.js` to
 aliases, and a 19/19 alias match against `MATH11005_alias_restore.csv` with no student on
 only one side. **Unambiguous.**
 
-MATH1010050 has two card files differing on all 26 students, and no equivalent tie-break
-on disk. It needs one student's physical card before anything is switched.
+MATH1010050 has two card files differing on all 26 students, both minted on 8 Sep 2026
+(07:21 and 09:31). It has a passphrase after all, so it takes the migrate path, and the
+ambiguity was resolved from disk without a physical card.
+
+**Set B, `MATH1010050-alias-cards-V2pdf.csv`, is live.** The evidence is the app's own
+output: the Oct 28 and Nov 9 run folders in `~/Downloads/DM3A_*MATH1010050*` contain
+`<Last>_<First>_<ALIAS>_Report.pdf` files written from the unlocked vault. Across 22
+students, 22 match set B and 0 match set A, and no student appears under two aliases, so
+the vault was stable across both runs.
+
+`MATH1010050_alias_restore.csv` disagrees — it matches set A 26/26 — but it is dated
+Sep 27 13:39, the afternoon of the incident, and records a state the vault no longer
+holds. **Lesson: a `*_alias_restore.csv` file is not evidence of the live alias set.** It
+is a historical input, and for this course a misleading one. Graded-run output filenames
+are the stronger witness because they are written from the decrypted vault at run time.
+This does not cast doubt on MATH11003 or MATH11005: for those the authoritative check was
+the migration's own report, which compared the decrypted vault against the cards in the
+browser, and both came back clean.
 
 ### What the two migrations established
 
