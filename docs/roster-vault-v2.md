@@ -79,8 +79,8 @@ the browser.
 
 | Course | Path | State |
 |---|---|---|
-| MATH11003 | migrate (passphrase held) | **ready** — card set identified, see below |
-| MATH11005 | migrate (passphrase held) | not started |
+| MATH11003 | migrate (passphrase held) | **migrated & verified** 2026-11-19 — 19/19 vs `MATH11003-alias-cards.csv` (set A), confirmed in the browser |
+| MATH11005 | migrate (passphrase held) | **migrated & verified** 2026-11-19 — 19/19 vs `MATH11005-alias-cards.csv`, confirmed in the browser |
 | MATH1010050 | rebuild from cards + Blackboard roster | blocked: two card generations, needs a physical card to pick |
 | MATH0900-017 | rebuild from cards + Blackboard roster | one card generation, unambiguous |
 
@@ -100,6 +100,17 @@ only one side. **Unambiguous.**
 
 MATH1010050 has two card files differing on all 26 students, and no equivalent tie-break
 on disk. It needs one student's physical card before anything is switched.
+
+### What the two migrations established
+
+Both passphrase-held courses went through the three-step panel on the first attempt with
+a clean report, so the flow needs no changes before the rebuild courses. Neither old
+passphrase vault was touched: they remain on disk and in the browser as the fallback, and
+nothing retires them until all four courses are across and Ralph says so.
+
+Note that `verifiedAt` on the server is set by step 3 only. A green report is not a
+confirmation; the migrated-but-unconfirmed state is deliberate and must not be treated as
+the trustworthy copy.
 
 ## Still to build
 
