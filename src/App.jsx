@@ -47,6 +47,8 @@ const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // offer resume for 24h
 // to "Unknown Student N" with nothing on screen saying why. Only the course CODE
 // is ever written here — never a roster.
 const DM3A_ACTIVE_COURSE_KEY = "dm3a-active-course";
+// #42: projector mode survives a reload — see the state in the component.
+const PROJECTOR_KEY = "dm3a-projector-mode";
 // Assignment weight options: visible label -> stored lowercase value.
 // The backend treats quiz/midterm/exam as high-weight (R4) — values must be exact.
 const ASSIGNMENT_WEIGHTS = [
@@ -802,6 +804,20 @@ export default function DM3AGraderV5() {
   // vault changes — no page reload. A counter rather than relying on the roster array's
   // identity: a write that happens to produce an equal array would otherwise go unseen.
   const [vaultRevision, setVaultRevision] = useState(0);
+  // #42 PROJECTOR MODE. When the instructor's screen is on a projector, a classroom
+  // sees it. Names are legitimately on screen for the instructor's own review, so the
+  // protection cannot be "never show names" — it has to be a switch the instructor
+  // flips before mirroring. ON means every instructor surface shows the alias (or a
+  // neutral "Submission N") in place of the name. Persisted, because a reload in the
+  // middle of class must not silently put the names back up on the wall.
+  const [projectorMode, setProjectorMode] = useState(() => {
+    try { return localStorage.getItem(PROJECTOR_KEY) === "1"; } catch { return false; }
+  });
+  const toggleProjector = () => setProjectorMode((on) => {
+    const next = !on;
+    try { localStorage.setItem(PROJECTOR_KEY, next ? "1" : "0"); } catch { /* storage unavailable — the toggle still applies this session */ }
+    return next;
+  });
   const bumpVault = () => setVaultRevision((n) => n + 1);
   // #40: which courses have a vault ON THE SERVER, regardless of this browser's local
   // `vaulted` flag — that flag is per-device, so a course secured on another machine
@@ -1391,11 +1407,16 @@ export default function DM3AGraderV5() {
   const activeVaultedLocked = activeVaulted && !namesUnlocked;
   // A known alias renders as the real name once unlocked; anything else (a real
   // name from a legacy course, or an unknown value) passes through unchanged.
-  const showName = (value) => (namesUnlocked && nameIndex.isAlias(value) ? nameIndex.toName(value) : value);
+  // #42: projector mode stops the alias→name resolution here, so an alias stays an
+  // alias. A value that is NOT an alias (a legacy course stores real names) has no
+  // alias to fall back to, so the call sites route those through reportIdentity, which
+  // can number the submission instead.
+  const showName = (value) =>
+    (namesUnlocked && !projectorMode && nameIndex.isAlias(value) ? nameIndex.toName(value) : value);
   // "Real Name (ALIAS)" for the results tabs/headers when unlocked; passes the raw
   // value through otherwise (locked → alias; non-blind → the name as-is).
   const showNameWithAlias = (value) =>
-    (namesUnlocked && nameIndex.isAlias(value) ? `${nameIndex.toName(value)} (${value})` : value);
+    (namesUnlocked && !projectorMode && nameIndex.isAlias(value) ? `${nameIndex.toName(value)} (${value})` : value);
 
   // #33: a BB-download batch labels each result "Student_<username>". Recover that
   // username (a JOIN KEY only — never displayed, never sent) so it can be matched
@@ -1431,7 +1452,11 @@ export default function DM3AGraderV5() {
   const rosterLabelForValue = (val) => {
     if (!val) return "";
     const r = (activeRoster || []).find((rr) => (activeVaulted ? rr.alias : rr.studentEmail) === val);
-    return r ? (r.studentName || val) : val;
+    if (!r) return val;
+    // #42: these labels appear in on-screen duplicate warnings, so they follow
+    // projector mode too. The alias still identifies the row for the instructor.
+    if (projectorMode) return r.alias || val;
+    return r.studentName || val;
   };
   // #32: indices (other than `self`) already mapped to the same roster student.
   const duplicateMapIndices = (val, self) =>
@@ -4175,7 +4200,10 @@ Return a JSON array with exactly ONE student object.`;
 
     if (!activeVaulted) {
       const name = ov.renamedName || raw || submissionLabel;
-      return { resolved: false, realName: name, safeLabel: name, alias: "", lastName: "", firstName: "", display: name };
+      // #42: a non-vaulted course has no aliases, so the only safe label is the
+      // submission's position. `realName` is still the name — reports and exports are
+      // handed to one student at a time and are not what a projector shows.
+      return { resolved: false, realName: name, safeLabel: submissionLabel, alias: "", lastName: "", firstName: "", display: projectorMode ? submissionLabel : name };
     }
     const confirmedAlias = (i >= 0 && studentMapping[i]) ? studentMapping[i] : (isBBLabel ? "" : raw);
     const roster = unlockedRosters[activeCourseCode] || [];
@@ -4188,7 +4216,7 @@ Return a JSON array with exactly ONE student object.`;
         else { const p = full.split(/\s+/); lastName = p[p.length - 1] || ""; firstName = p.slice(0, -1).join(" "); }
       }
       const realName = m.studentName || `${firstName} ${lastName}`.trim();
-      const display = namesUnlocked ? `${realName} (${m.alias})` : m.alias;
+      const display = (namesUnlocked && !projectorMode) ? `${realName} (${m.alias})` : m.alias; // #42
       return { resolved: true, realName, safeLabel: m.alias, alias: m.alias, lastName, firstName, display };
     }
     // Vaulted but unmapped: an alias if we somehow have one, else a NEUTRAL label — never `raw`.
@@ -4880,6 +4908,15 @@ Return a JSON array with exactly ONE student object.`;
             <p style={styles.sub}>Dr. Ralph Minaya, Ed.D.</p>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
+            {/* #42: the switch to flip BEFORE mirroring to a projector. Deliberately
+                loud when on — the dangerous mistake is believing it is on when it is not. */}
+            <button onClick={toggleProjector}
+              title={projectorMode ? "Names are hidden on every screen. Click to show them again." : "Hide every student name on screen — use before mirroring to a projector."}
+              style={projectorMode
+                ? { ...styles.btnOutline, background: "#0F6E56", color: "#fff", borderColor: "#0F6E56", fontWeight: 700 }
+                : styles.btnOutline}>
+              {projectorMode ? "🛡 Projector mode ON" : "Projector mode"}
+            </button>
             <button onClick={() => setShowTierGuide(true)} style={styles.btnOutline}>Course Coverage Guide</button>
             <button onClick={() => setShowHelp(prev => !prev)} style={{ ...styles.btnOutline, ...(showHelp ? { background: "#0f2d5a", color: "#f5c842", borderColor: "#0f2d5a" } : {}) }}>
               {showHelp ? "× Close Help" : "? Help"}
@@ -5187,10 +5224,10 @@ Return a JSON array with exactly ONE student object.`;
                         {viewAliases === c.courseCode && unlockedRosters[c.courseCode] && (
                           <div style={{ marginTop: 8, maxHeight: 200, overflowY: "auto", border: "1px solid #E6E4DC", borderRadius: 6 }}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                              <thead><tr><th style={{ textAlign: "left", padding: "4px 8px", background: "#F8F7F4" }}>Alias</th><th style={{ textAlign: "left", padding: "4px 8px", background: "#F8F7F4" }}>Student</th></tr></thead>
+                              <thead><tr><th style={{ textAlign: "left", padding: "4px 8px", background: "#F8F7F4" }}>Alias</th><th style={{ textAlign: "left", padding: "4px 8px", background: "#F8F7F4" }}>{projectorMode ? "Student (hidden — projector mode)" : "Student"}</th></tr></thead>
                               <tbody>
                                 {unlockedRosters[c.courseCode].map((s, si) => (
-                                  <tr key={si}><td style={{ padding: "4px 8px", fontFamily: "monospace", color: "#2860C8", borderTop: "1px solid #EFEEE8" }}>{s.alias}</td><td style={{ padding: "4px 8px", borderTop: "1px solid #EFEEE8" }}>{s.studentName || `${s.firstName || ""} ${s.lastName || ""}`.trim()}</td></tr>
+                                  <tr key={si}><td style={{ padding: "4px 8px", fontFamily: "monospace", color: "#2860C8", borderTop: "1px solid #EFEEE8" }}>{s.alias}</td><td style={{ padding: "4px 8px", borderTop: "1px solid #EFEEE8", color: projectorMode ? "#AAA" : undefined }}>{projectorMode ? "— hidden —" : (s.studentName || `${s.firstName || ""} ${s.lastName || ""}`.trim())}</td></tr>
                                 ))}
                               </tbody>
                             </table>
@@ -5869,7 +5906,7 @@ Return a JSON array with exactly ONE student object.`;
                   )}
                   <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>
                     {/* #28/#32: safe label on a vaulted course — never the source BB filename. */}
-                    {activeVaulted ? reportIdentity(s, i).display : showName(s.studentName)}
+                    {(activeVaulted || projectorMode) ? reportIdentity(s, i).display : showName(s.studentName)}
                     {/* #33: pre-filled via the BB-username join — asks the instructor to verify. */}
                     {autoMatched[i] && studentMapping[i] && (
                       <span style={{ fontWeight: 700, fontSize: 10, color: "#0F6E56", background: "#E7F2EE", border: "1px solid #9FCBBB", borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}
@@ -5903,7 +5940,9 @@ Return a JSON array with exactly ONE student object.`;
                     <option value="">— Skip (don't track) —</option>
                     {activeRoster.map((r, ri) => (
                       <option key={ri} value={activeVaulted ? r.alias : r.studentEmail}>
-                        {activeVaulted ? `${r.studentName} (${r.alias})` : `${r.studentName} — ${r.studentEmail}`}
+                        {projectorMode
+                          ? (activeVaulted ? r.alias : `Student ${ri + 1}`) /* #42 */
+                          : (activeVaulted ? `${r.studentName} (${r.alias})` : `${r.studentName} — ${r.studentEmail}`)}
                       </option>
                     ))}
                   </select>
@@ -5987,7 +6026,7 @@ Return a JSON array with exactly ONE student object.`;
           const listed = stopped ? failed.filter(({ s }) => !s.runSkipped) : failed;
           // #33: on a vaulted course the raw studentName carries the username —
           // show the same safe label the rest of the results screen uses.
-          const safeLabel = (s, i) => activeVaulted ? reportIdentity(s, i).display : showName(s.studentName);
+          const safeLabel = (s, i) => (activeVaulted || projectorMode) ? reportIdentity(s, i).display : showName(s.studentName);
           return (
             <div style={{ background: "#FCEBEB", border: "2px solid #E39A9A", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#7A1F1F" }}>
               {stopped ? (<>
@@ -6021,7 +6060,7 @@ Return a JSON array with exactly ONE student object.`;
               const total = heicFailedFiles.length + docxStudents.length;
               // #33: on a vaulted course the raw studentName/filename carries the username
               // (or a real name in "jane_doe.pdf") — show a safe label / count, never the raw string.
-              const safeLabel = (s, i) => activeVaulted ? reportIdentity(s, i).display : s.studentName;
+              const safeLabel = (s, i) => (activeVaulted || projectorMode) ? reportIdentity(s, i).display : s.studentName;
               return (<>
                 <strong>⚠️ {total} file(s) could not be processed (HEIC/DOCX format not supported).</strong> Ask those students to resubmit as JPG or PDF.
                 <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
@@ -6077,7 +6116,7 @@ Return a JSON array with exactly ONE student object.`;
             return (
               <button key={i} onClick={() => setActiveStudent(i)}
                 style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${activeStudent === i ? "#1A1A18" : "#D8D6CE"}`, background: activeStudent === i ? "#1A1A18" : "#fff", color: activeStudent === i ? "#fff" : "#1A1A18", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                {activeVaulted ? reportIdentity(s, i).display : (overrides[s.studentName]?.renamedName || showName(s.studentName))} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t === "ERROR" ? "not graded ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
+                {(activeVaulted || projectorMode) ? reportIdentity(s, i).display : (overrides[s.studentName]?.renamedName || showName(s.studentName))} <span style={{ marginLeft: 4, ...styles.mastery(t), padding: "1px 6px", fontSize: 11 }}>{t === "HEIC" ? "HEIC ⚠" : t === "DOCX" ? "DOCX ⚠" : t === "ERROR" ? "not graded ⚠" : t}</span>{(() => { const inv = s._inventory || problemInventory[s.studentName]; return inv && inv.some(p => p.legible === "no") ? <span style={{ marginLeft: 4, background: "#FCEBEB", color: "#A32D2D", border: "1px solid #F5BEBE", borderRadius: 3, fontSize: 9, fontWeight: 700, padding: "1px 4px" }}>⚠ illegible</span> : null; })()}
               </button>
             );
           })}
@@ -6103,7 +6142,7 @@ Return a JSON array with exactly ONE student object.`;
                       style={{ ...styles.btn, padding: "4px 12px", fontSize: 12 }}>✓ Save</button>
                   </div>
                 : <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{activeVaulted ? reportIdentity(student, activeStudent).display : (ov.renamedName || showName(student.studentName))}</h2>
+                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{(activeVaulted || projectorMode) ? reportIdentity(student, activeStudent).display : (ov.renamedName || showName(student.studentName))}</h2>
                     {!activeVaulted && (
                     <button
                       onClick={() => setOverrides(prev => ({ ...prev, [student.studentName]: { ...prev[student.studentName], renamedName: ov.renamedName || student.studentName } }))}
