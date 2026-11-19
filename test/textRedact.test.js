@@ -389,3 +389,63 @@ test('identity line: end to end, a BB filename yields an alias and not a usernam
   assert.equal(shown, 'MATH10-7F3K');
   assert.equal(shown.includes(studentId), false, 'the username does not reach the prompt');
 });
+
+// ── Identifiers: username and Student ID are not names, but still identify ──
+// These reached the grading model in the prompt ("Use \"Student_jdoe\" as the
+// studentName in your response") until the gate was widened to cover them.
+import { findRosterIdHits, assertNoRosterIdentifiers } from '../src/blind/textRedact.js';
+
+const ID_ROSTER = [
+  { alias: 'MATH10-AA11', studentName: 'Jane Doe', firstName: 'Jane', lastName: 'Doe', bbUsername: 'jdoe', studentId: '03051898' },
+  { alias: 'MATH10-BB22', studentName: 'Marcus Whitfield', firstName: 'Marcus', lastName: 'Whitfield', bbUsername: 'mwhitfield', studentId: '03060042' },
+];
+
+test('identifiers: the old prompt line would now be blocked', () => {
+  assert.throws(
+    // The context label is the alias, never the username-bearing internal label: this
+    // message is shown to the instructor, so a leak here defeats the gate itself.
+    () => assertNoRosterIdentifiers(['6. Use "Student_jdoe" as the studentName in your response.'], ID_ROSTER, 'MATH10-AA11'),
+    (e) => e.isRedaction === true && /roster identifier/.test(e.message) && /Username/.test(e.message)
+      && !/jdoe/.test(e.message), // the value itself must never reach the message or the logs
+  );
+});
+
+test('identifiers: the replacement prompt line passes', () => {
+  // The alias is what the model is told to use now.
+  assert.equal(assertNoRosterIdentifiers(['6. Use "MATH10-AA11" as the studentName in your response.'], ID_ROSTER), true);
+  assert.equal(assertNoRosterIdentifiers(['6. Use "Submission 3" as the studentName in your response.'], ID_ROSTER), true);
+});
+
+test('identifiers: a Student ID in the payload is blocked', () => {
+  assert.throws(() => assertNoRosterIdentifiers(['Student ID: 03051898'], ID_ROSTER),
+    (e) => e.isRedaction === true && /Student ID/.test(e.message));
+});
+
+test('identifiers: word boundaries — a longer token is not a match', () => {
+  assert.equal(findRosterIdHits('jdoerson submitted', ID_ROSTER).length, 0, 'jdoe inside jdoerson is not the username');
+  assert.equal(findRosterIdHits('030518987', ID_ROSTER).length, 0, 'an ID inside a longer number is not that ID');
+  assert.equal(findRosterIdHits('user jdoe here', ID_ROSTER).length, 1);
+  assert.equal(findRosterIdHits('(03051898)', ID_ROSTER).length, 1, 'punctuation still delimits');
+});
+
+test('identifiers: short values are not searched for, so mathematics survives', () => {
+  // A 4-digit Student ID would match a year in a word problem; a 2-letter username
+  // would match prose. Both are below the floor and deliberately not searched.
+  const shortIds = [{ alias: 'X', bbUsername: 'jo', studentId: '2026' }];
+  assert.equal(findRosterIdHits('In 2026 Jo sold 40 tickets.', shortIds).length, 0);
+  assert.equal(assertNoRosterIdentifiers(['In 2026 Jo sold 40 tickets.'], shortIds), true);
+  // A real-length identifier is still caught.
+  assert.equal(findRosterIdHits('In 2026, 03051898 sold tickets.', ID_ROSTER).length, 1);
+});
+
+test('identifiers: the gate still enforces names as well', () => {
+  assert.throws(() => assertNoRosterIdentifiers(['Submitted by Jane Doe'], ID_ROSTER),
+    (e) => e.isRedaction === true && /roster name/.test(e.message));
+});
+
+test('identifiers: clean payload passes, empty roster is a no-op', () => {
+  assert.equal(assertNoRosterIdentifiers(['The vertex is (2, -3).', 'MATH10-AA11'], ID_ROSTER), true);
+  assert.equal(assertNoRosterIdentifiers(['anything at all'], []), true);
+  assert.equal(findRosterIdHits('', ID_ROSTER).length, 0);
+  assert.equal(findRosterIdHits('text', [{ alias: 'X' }]).length, 0, 'an entry with no ids contributes nothing');
+});

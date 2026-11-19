@@ -29,7 +29,7 @@ export default defineConfig([
   {
     // Node, not the browser: the card-extraction script and the unit tests run under
     // `node`, so they legitimately use process/console/Buffer and Node's test globals.
-    files: ['scripts/**/*.js', 'test/**/*.js'],
+    files: ['scripts/**/*.js', 'test/**/*.js', 'server/**/*.js', 'shared/**/*.js'],
     languageOptions: { globals: globals.node },
   },
 ])

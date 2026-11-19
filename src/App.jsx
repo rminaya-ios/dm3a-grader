@@ -18,7 +18,8 @@ import {
   KIND_SCAN, KIND_DOCX, KIND_BB_TEXT, KIND_BB_STUB, KIND_UNKNOWN, KIND_LABELS,
   isDigitalKind, redactionPathFor, classifyByName, pdfKindFromProfile, parseBBFilename,
   stripDocxXmlToText, parseBBSubmissionTxt, identityLineValue, matchRosterByBBId,
-  redactRosterNames, assertNoRosterNames, requireVault, requireExtractedText,
+  assertNoRosterIdentifiers,
+  redactRosterNames, requireVault, requireExtractedText,
 } from "./blind/textRedact.js";
 import LandingPage from "./LandingPage";
 // Student-facing rendering of an already-graded result (the instructor report
@@ -2869,6 +2870,13 @@ work_present must be true ONLY when classification is HAS_WORK.`;
         groupFiles = groupFiles.slice(0, -1);
       }
       const studentLabel = `Student_${group.studentId}`;
+      // #41: `studentLabel` carries the Blackboard username and is the row's INTERNAL
+      // identity — Confirm Students parses it back out to join the submission to the
+      // vault. It must never go to the model. `promptLabel` is what the prompt says
+      // instead: the student's alias, or a positional label when the vault has no alias
+      // for this submission. A username is directory information; nothing about grading
+      // needs it, and the model is told what to call the student either way.
+      const promptLabel = aliasForBBUsername(group.studentId) || `Submission ${gi + 1}`;
       // #25: a group with only a stub (no gradable attachment) — skip, don't grade blank.
       if (groupFiles.length === 0) return [];
       try {
@@ -3099,7 +3107,7 @@ ${problemScope.trim() ? `The student was assigned the following problems: ${prob
 3. Use the answer key if provided. If not, use your subject expertise.
 4. Apply DM3A P1-P4 mastery scoring — never binary correct/wrong.
 5. Weight process and reasoning heavily.
-6. Use "${studentLabel}" as the studentName in your response.
+6. Use "${promptLabel}" as the studentName in your response.
 Return a JSON array with exactly ONE student object.`;
         // #37: typed submissions enter as text blocks where the scanned pages would have
         // entered as image blocks. The prompt template, the block order and the answer-key
@@ -3137,13 +3145,20 @@ Return a JSON array with exactly ONE student object.`;
         // is frozen (determinism baseline) — a username is not a roster name string.
         const vaultForCheck = doRedact ? (unlockedRosters[activeCourseCode] || []) : [];
         if (vaultForCheck.length) {
-          assertNoRosterNames(
+          // #41: names AND identifiers (Username, Student ID), and the user prompt is now
+          // part of what is checked. It could not be before: instruction 6 carried
+          // "Student_<username>", so checking the prompt would have blocked every run.
+          assertNoRosterIdentifiers(
             [
               ...contentBlocks.filter((b) => b.type === "text").map((b) => b.text),
+              bbUserPrompt,
               rubric, courseContext, problemScope, assignment,
             ].filter(Boolean),
             vaultForCheck,
-            studentLabel,
+            // #41: the context goes into an error the instructor SEES, so it must not be
+            // the username-bearing internal label — that would reintroduce the leak in
+            // the very message raised to prevent it.
+            promptLabel,
           );
         }
         if (textParts.length) {
@@ -3155,11 +3170,14 @@ Return a JSON array with exactly ONE student object.`;
         const jsonStr = jsonMatch ? jsonMatch[1] : cleaned;
         const parsed = JSON.parse(jsonStr);
         const students = Array.isArray(parsed) ? parsed : [parsed];
-        // Ensure studentName is always the BB label — never "Unknown" or empty
-        const UNKNOWN_NAMES = new Set(["unknown", "unknown student", "", "n/a"]);
+        // #41: identity comes from the Blackboard filename, never from the model's
+        // reply. It used to be kept whenever the model returned anything that wasn't
+        // literally "Unknown", so a hallucinated name could become a row's identity —
+        // and now that the prompt says the ALIAS, the echo would be the alias, which
+        // Confirm Students cannot join back to the vault's bbUsername.
         const normalized = students.map(s => ({
           ...s,
-          studentName: (!s.studentName || UNKNOWN_NAMES.has(s.studentName.toLowerCase())) ? studentLabel : s.studentName,
+          studentName: studentLabel,
           _inventory: bbInventory || null
         }));
         if (bbInventory) setProblemInventory(prev => ({ ...prev, [studentLabel]: bbInventory }));

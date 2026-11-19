@@ -354,6 +354,70 @@ export function requireExtractedText(text, fileLabel) {
   return text;
 }
 
+// ── Identifiers that are not names ─────────────────────────────────────────
+// A Blackboard username ("jdoe") and an institutional Student ID ("03051898") single
+// out a student just as surely as a name does, and neither is caught by the name
+// matcher. They were reaching the model in the grading prompt. Checked here alongside
+// the names so one gate covers every way a submission can be traced to a person.
+//
+// LENGTH FLOORS. A short identifier collides with ordinary mathematics: a Student ID of
+// "2026" would match a year in a word problem, and a two-letter username would match
+// prose. So an identifier must be at least MIN_ID_LEN characters, and an all-digit one
+// at least MIN_NUMERIC_ID_LEN, before it is searched for. Real Blackboard usernames and
+// institutional IDs clear both; the floors only exclude values too short to be
+// distinguishable from the work being graded, which is the safer failure for grading
+// and the acknowledged residual gap for privacy.
+const MIN_ID_LEN = 4;
+const MIN_NUMERIC_ID_LEN = 6;
+
+const usableId = (v) => {
+  const t = String(v == null ? '' : v).trim();
+  if (t.length < MIN_ID_LEN) return '';
+  if (/^\d+$/.test(t) && t.length < MIN_NUMERIC_ID_LEN) return '';
+  return t;
+};
+
+// Every roster identifier found in `text`, with the field it came from.
+export function findRosterIdHits(text, roster) {
+  const hay = String(text || '');
+  const hits = [];
+  if (!hay) return hits;
+  for (const entry of roster || []) {
+    for (const [field, raw] of [['Username', entry && entry.bbUsername], ['Student ID', entry && entry.studentId]]) {
+      const id = usableId(raw);
+      if (!id) continue;
+      // Word boundaries so "jdoe" does not match inside "jdoer", and an ID does not
+      // match inside a longer number.
+      const re = new RegExp(`(^|[^A-Za-z0-9])${escapeRe(id)}([^A-Za-z0-9]|$)`, 'gi');
+      let m;
+      while ((m = re.exec(hay)) !== null) {
+        hits.push({ index: m.index, field, alias: (entry && entry.alias) || '' });
+        re.lastIndex = m.index + 1; // overlapping separators must not hide a second hit
+      }
+    }
+  }
+  return hits.sort((a, b) => a.index - b.index);
+}
+
+// The gate the grading paths call: no roster NAME and no roster IDENTIFIER may be in
+// the payload. Throws the same fail-closed, isRedaction-tagged error as the name check,
+// and like it never puts the offending value into the message or the logs.
+export function assertNoRosterIdentifiers(textBlocks, roster, ctx = '') {
+  const blocks = Array.isArray(textBlocks) ? textBlocks : [textBlocks];
+  assertNoRosterNames(blocks, roster, ctx);
+  for (let i = 0; i < blocks.length; i++) {
+    const hits = findRosterIdHits(blocks[i], roster);
+    if (hits.length > 0) {
+      const fields = [...new Set(hits.map((h) => h.field))].join(' and ');
+      throw redactionError(
+        `Blocked before sending: ${hits.length} roster identifier${hits.length === 1 ? '' : 's'} (${fields}) still present in the grading payload` +
+        `${ctx ? ` for ${ctx}` : ''} (text block ${i + 1}). Grading was stopped to protect privacy.`
+      );
+    }
+  }
+  return true;
+}
+
 // REQUIREMENT: the grading model must only ever receive redacted text. Called on the
 // assembled payload, immediately before the request — the last gate, after which
 // nothing else touches the text.
