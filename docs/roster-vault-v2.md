@@ -75,6 +75,26 @@ it keeps the blast radius of a CheckPoint bug away from student names.
 The same applies to attendance and make-up: one roster, read in the browser, joined in
 the browser.
 
+## Migration status
+
+| Course | Path | State |
+|---|---|---|
+| MATH11003 | migrate (passphrase held) | **ready** — card set identified, see below |
+| MATH11005 | migrate (passphrase held) | not started |
+| MATH1010050 | rebuild from cards + Blackboard roster | blocked: two card generations, needs a physical card to pick |
+| MATH0900-017 | rebuild from cards + Blackboard roster | one card generation, unambiguous |
+
+### Which card file is live
+
+MATH11003 has three card PDFs resolving to two alias sets. `MATH11003_alias_restore.csv`
+— the file used in the September recovery — matches `MATH11003-alias-cards.csv` (and the
+identical `(1)`) on all 19 students, and `(2)` on none. So **set A is live** and `(2)` is
+a superseded generation. The migration's own match report confirms this independently,
+by comparing the decrypted vault against the cards.
+
+MATH1010050 has two card files differing on all 26 students, and no equivalent tie-break
+on disk. It needs one student's physical card before anything is switched.
+
 ## Still to build
 
 1. **Hub roster API** — owner-only read/write of the decrypted roster, keyed by course

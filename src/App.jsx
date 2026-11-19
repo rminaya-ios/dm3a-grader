@@ -10,6 +10,8 @@ import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
 import { canOfferTrust, trustDevice, refreshTrustIfPresent, revokeTrust, trustedCourses, unlockTrusted, trustReasonText, TRUST_EXPIRES_LABEL } from "./blind/deviceTrust.js";
 import { diffRoster } from "./blind/rosterDiff.js";
 import { detectAliasCsvColumns, readAliasCsvRow, mergeAliasRestore, filterRosterRows } from "./blind/rosterMerge.js";
+import { buildAliasMatchReport, renderAliasMatchReport } from "./blind/aliasVerify.js";
+import { getRoster, putRoster } from "./blind/rosterApi.js";
 import { buildNameIndex } from "./blind/translate.js";
 import { findPlaintext } from "./blind/zeroPlaintext.js";
 import { assignPaper, holdAutoConflicts, duplicateAssignments, ALREADY_HAS_PAPER } from "./blind/paperGuard.js";
@@ -823,6 +825,8 @@ export default function DM3AGraderV5() {
   // `vaulted` flag — that flag is per-device, so a course secured on another machine
   // looked unsecured here (see the course card).
   const [serverVaultSeen, setServerVaultSeen] = useState({});
+  // #43: the in-progress migration to server-managed encryption, and its match report.
+  const [migration, setMigration] = useState(null);
 
   // ── Finding #16: session persistence + resume + SPA history ────────────────
   const [pendingResume, setPendingResume] = useState(null); // { courseCode, count, savedAt } | null
@@ -972,6 +976,7 @@ export default function DM3AGraderV5() {
     try {
       const { courses: mine } = await authApi.listCourses();
       const withRoster = (mine || []).map((c) => ({
+        id: c.id || "",   // #43: stable Course id — what the roster v2 API is keyed by
         courseCode: c.courseCode,
         professorEmail: c.professorEmail || "",
         studentAccessCode: c.studentAccessCode || "",
@@ -1783,6 +1788,96 @@ export default function DM3AGraderV5() {
       `${plural(existing.length, "student", "students")} in the vault, all columns kept.` +
       (unmatched.length ? ` ${unmatched.length} CSV row(s) did not match anyone and were ignored.` : "") +
       ` Backup key downloaded.`
+    );
+  }
+
+  // ── #43 MIGRATION to server-managed encryption (docs/roster-vault-v2.md) ────
+  // Takes the roster the instructor just unlocked in this browser and stores it under
+  // the new scheme, where the SERVER holds the key. The old passphrase vault is NOT
+  // read, written or deleted by any of this — it stays as the fallback until the match
+  // report has been signed off, so a migration can be abandoned by simply ignoring the
+  // new record.
+  async function migrateRosterToServer(course) {
+    const students = unlockedRosters[course.courseCode];
+    if (!students || !students.length) {
+      openUnlock(course.courseCode, "Enter this course's passphrase once, so it can be re-encrypted under the new scheme.", () => {});
+      return;
+    }
+    if (!course.id) {
+      throw new Error(`${course.courseCode} isn't linked to your account yet, so it has no permanent course id. Sign out and back in to sync your courses, then try again.`);
+    }
+
+    // An alias that already exists on the server must never be overwritten by this —
+    // the API refuses it, but say so here rather than surfacing a raw 409.
+    const already = await getRoster(course.id, { via: "grader" });
+    if (already && already.studentCount) {
+      const proceed = window.confirm(
+        `${course.courseCode} already has a server-managed roster (${already.studentCount} students, stored ${new Date(already.updatedAt).toLocaleString()}).\n\n` +
+        `Sending this one will be REFUSED if it would change any alias already stored there. Continue?`
+      );
+      if (!proceed) throw new Error("Migration cancelled — nothing was changed.");
+    }
+
+    const res = await putRoster(course.id, students, { migratedFrom: `vault:${course.courseCode}`, via: "grader" });
+
+    // Read back and compare alias by alias. A migration that reports success without
+    // re-reading is exactly how an alias set goes missing unnoticed.
+    const back = await getRoster(course.id, { via: "grader" });
+    const sent = students.map((s) => s.alias).join("|");
+    const got = (back && back.students ? back.students : []).map((s) => s.alias).join("|");
+    if (!back || got !== sent) {
+      throw new Error("The migrated roster did not read back identically. The old vault is untouched — do not retire it; this needs looking at.");
+    }
+
+    setMigration({
+      courseCode: course.courseCode,
+      courseId: course.id,
+      count: res.studentCount,
+      keyVersion: res.keyVersion,
+      roster: back.students,
+      report: null,
+      reportText: "",
+    });
+    setVaultNote(
+      `${course.courseCode}: ${res.studentCount} students re-encrypted under server-managed keys (key version ${res.keyVersion}) and read back identically. ` +
+      `The old passphrase vault is untouched. Next: check it against your printed alias cards below.`
+    );
+  }
+
+  // Compare the migrated roster against a printed alias-cards CSV and show the
+  // alias-by-alias report. Nothing is written here — this is the read-only check that
+  // has to pass before the old vault can be retired.
+  async function checkMigrationAgainstCards(file) {
+    if (!migration) return;
+    const Papa = (await import("papaparse")).default;
+    const rows = await new Promise((resolve, reject) => {
+      Papa.parse(file, { header: true, skipEmptyLines: true, complete: (r) => resolve(r.data || []), error: reject });
+    });
+    const fields = rows.length ? Object.keys(rows[0]) : [];
+    const cols = detectAliasCsvColumns(fields);
+    if (!cols) {
+      throw new Error(
+        `Could not read that CSV. It needs an "Alias" column plus a name column — ` +
+        `found: ${fields.length ? fields.join(", ") : "no headers"}. ` +
+        `Use the file produced by scripts/alias-cards-to-csv.js.`
+      );
+    }
+    const cards = rows.map((r) => readAliasCsvRow(r, cols)).filter((c) => c.alias);
+    if (!cards.length) throw new Error("That CSV has headers but no rows with an alias in them.");
+    const report = buildAliasMatchReport(migration.roster, cards, { course: migration.courseCode });
+    setMigration((m) => ({ ...m, report, reportText: renderAliasMatchReport(report), cardFile: file.name }));
+  }
+
+  // The instructor has read the report and says it matches. Records verifiedAt on the
+  // server record and in the audit log. Still does not touch the old vault — retiring
+  // that is a separate, later step.
+  async function confirmMigrationVerified() {
+    if (!migration || !migration.report) return;
+    await putRoster(migration.courseId, migration.roster, { verified: true, via: "grader" });
+    setMigration((m) => ({ ...m, confirmed: true }));
+    setVaultNote(
+      `${migration.courseCode} verified against ${migration.cardFile || "the printed cards"} and marked as confirmed on the server. ` +
+      `The old passphrase vault is still in place; it can be retired once every course has been migrated.`
     );
   }
 
@@ -5198,6 +5293,76 @@ Return a JSON array with exactly ONE student object.`;
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12 }} disabled={vaultBusy} onClick={() => runVault(async () => { const v = await getVault(c.courseCode); if (v) downloadKeyBackup(c.courseCode, v.blob); else setVaultNote("No vault found to back up."); })}>Re-download backup</button>
                           <button type="button" style={{ ...styles.btnOutline, padding: "3px 8px", fontSize: 12, color: "#9f1239", borderColor: "#9f1239" }} disabled={vaultBusy} onClick={() => { if (window.confirm(`Purge the secured roster for ${c.courseCode}? Grade history stays; the encrypted name mapping is removed from the server and this session.`)) runVault(() => purgeCourseVault(c)); }}>Purge vault</button>
                         </div>
+                        {/* #43: migration to server-managed encryption. Only on an UNLOCKED
+                            course, because the roster it sends is the one the passphrase
+                            just decrypted in this browser. */}
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #D8D6CE" }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#185FA5", marginBottom: 4 }}>Server-managed encryption (new)</div>
+                          <div style={{ fontSize: 11.5, color: "#5A5A55", marginBottom: 6 }}>
+                            Moves this course's roster to keys the server holds, so you never type a passphrase again
+                            and a lost one can never orphan your printed alias cards. Your old passphrase vault is
+                            left exactly as it is until you confirm the match below.
+                          </div>
+                          {!unlockedRosters[c.courseCode] ? (
+                            <div style={{ fontSize: 11.5, color: "#854F0B" }}>Unlock this course first — the migration sends the roster this browser just decrypted.</div>
+                          ) : !c.id ? (
+                            <div style={{ fontSize: 11.5, color: "#854F0B" }}>
+                              This course has no permanent id on your account yet. Sign out and back in to sync your courses, then come back.
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                              <button type="button" disabled={vaultBusy}
+                                style={{ ...styles.btn, padding: "5px 12px", fontSize: 12 }}
+                                onClick={() => runVault(() => migrateRosterToServer(c))}>
+                                {migration && migration.courseCode === c.courseCode ? "Re-send roster" : "Migrate to server-managed encryption"}
+                              </button>
+                              {migration && migration.courseCode === c.courseCode && (
+                                <label style={{ ...styles.btnOutline, padding: "5px 12px", fontSize: 12, cursor: "pointer", margin: 0 }}>
+                                  {migration.report ? "Choose a different card file" : "2 · Check against printed cards (CSV)"}
+                                  <input type="file" accept=".csv,text/csv" style={{ display: "none" }}
+                                    onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) runVault(() => checkMigrationAgainstCards(f)); }} />
+                                </label>
+                              )}
+                            </div>
+                          )}
+
+                          {migration && migration.courseCode === c.courseCode && (
+                            <div style={{ marginTop: 8 }}>
+                              <div style={{ fontSize: 11.5, color: "#0F6E56", fontWeight: 600 }}>
+                                ✓ {migration.count} students stored under server-managed keys (key version {migration.keyVersion}) and read back identically.
+                              </div>
+                              {migration.report && (
+                                <>
+                                  <pre style={{ marginTop: 8, marginBottom: 0, maxHeight: 260, overflow: "auto", background: migration.report.safe ? "#E7F2EE" : "#FCEBEB",
+                                    border: `1px solid ${migration.report.safe ? "#9FCBBB" : "#F5BEBE"}`, borderRadius: 6, padding: "8px 10px",
+                                    fontSize: 11.5, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: "ui-monospace, Menlo, monospace", color: "#1A1A18" }}>
+                                    {migration.reportText}
+                                  </pre>
+                                  <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                    {migration.confirmed ? (
+                                      <span style={{ fontSize: 12, fontWeight: 700, color: "#0F6E56" }}>✓ Confirmed — recorded on the server.</span>
+                                    ) : (
+                                      <>
+                                        <button type="button" disabled={vaultBusy || !migration.report.safe}
+                                          title={migration.report.safe ? "" : "The report above found differences — resolve those before confirming."}
+                                          style={{ ...styles.btn, padding: "5px 12px", fontSize: 12, opacity: migration.report.safe ? 1 : 0.45, cursor: migration.report.safe ? "pointer" : "not-allowed" }}
+                                          onClick={() => runVault(() => confirmMigrationVerified())}>
+                                          3 · Confirm this matches my cards
+                                        </button>
+                                        {!migration.report.safe && (
+                                          <span style={{ fontSize: 11.5, color: "#9f1239" }}>
+                                            Differences found — try the other card file for this course before confirming anything.
+                                          </span>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
                         {/* §3.3: automatic name-zone redaction toggle (default ON for vaulted courses). */}
                         <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: "pointer", color: "#5A5A55" }}>
                           <input type="checkbox" checked={c.redactNames !== false} onChange={e => persistCourses(courses.map(x => x.courseCode === c.courseCode ? { ...x, redactNames: e.target.checked } : x))} />
