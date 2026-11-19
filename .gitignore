@@ -33,3 +33,6 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+# Claude Code personal settings (permission grants are per-machine, never shared)
+.claude/settings.local.json
