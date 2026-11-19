@@ -189,3 +189,34 @@ test('filterRosterRows reports every skip with a reason and drops nobody silentl
   assert.equal(filterRosterRows(rows.slice(0, 1), {}).skipped.length, 0);
   assert.equal(filterRosterRows(undefined, {}).kept.length, 0);
 });
+
+// ── Printed card files get the same filter as roster imports ───────────────
+// The real MATH1010050 card file carried two rows that were never students: a withdrawn
+// student (which only the instructor can judge) and the instructor's own preview
+// account. The second kind must be filtered automatically, exactly as it is on import,
+// or a clean migration is blocked by a card belonging to nobody.
+test('a preview-user card row and the instructor row are skipped; real students are kept', () => {
+  const cardRows = [
+    { alias: 'MATH10-ZM7B', name: 'Ayawa Fideline Amezouwoe', first: 'Ayawa Fideline', last: 'Amezouwoe' },
+    { alias: 'MATH10-HN4G', name: 'Asia Mackenzie', first: 'Asia', last: 'Mackenzie' },
+    { alias: 'MATH10-F6G7', name: 'Ralph Minaya_PreviewUser', first: 'Ralph', last: 'Minaya_PreviewUser' },
+    { alias: 'MATH10-ZZZZ', name: 'Ralph Minaya', first: 'Ralph', last: 'Minaya' },
+  ];
+  const { kept, skipped } = filterRosterRows(cardRows, { instructorNames: ['Ralph Minaya'] });
+
+  assert.deepEqual(kept.map((r) => r.alias), ['MATH10-ZM7B', 'MATH10-HN4G'],
+    'a withdrawn student is NOT auto-skipped — only the instructor can account for that');
+  assert.equal(skipped.length, 2);
+  assert.match(skipped[0].reason, /preview/i);
+  assert.match(skipped[1].reason, /instructor/i);
+});
+
+test('the preview filter catches the shapes Blackboard actually writes', () => {
+  for (const name of ['Ralph Minaya_PreviewUser', 'preview user', 'Minaya_previewuser', 'PreviewUser, Test']) {
+    const { kept } = filterRosterRows([{ alias: 'A-1', name }], { instructorNames: [] });
+    assert.equal(kept.length, 0, `should have skipped ${name}`);
+  }
+  // A real surname that merely contains "preview"-ish letters is not skipped.
+  const { kept } = filterRosterRows([{ alias: 'A-1', name: 'Previn Patel' }], { instructorNames: [] });
+  assert.equal(kept.length, 1, 'a real student must not be dropped');
+});

@@ -10,7 +10,7 @@ import { putVault, getVault, deleteVault } from "./blind/vaultApi.js";
 import { canOfferTrust, trustDevice, refreshTrustIfPresent, revokeTrust, trustedCourses, unlockTrusted, trustReasonText, TRUST_EXPIRES_LABEL } from "./blind/deviceTrust.js";
 import { diffRoster } from "./blind/rosterDiff.js";
 import { detectAliasCsvColumns, readAliasCsvRow, mergeAliasRestore, filterRosterRows } from "./blind/rosterMerge.js";
-import { buildAliasMatchReport, renderAliasMatchReport } from "./blind/aliasVerify.js";
+import { buildAliasMatchReport, renderAliasMatchReport, migrationBlockers } from "./blind/aliasVerify.js";
 import { getRoster, putRoster } from "./blind/rosterApi.js";
 import { buildNameIndex } from "./blind/translate.js";
 import { findPlaintext } from "./blind/zeroPlaintext.js";
@@ -827,6 +827,18 @@ export default function DM3AGraderV5() {
   const [serverVaultSeen, setServerVaultSeen] = useState({});
   // #43: the in-progress migration to server-managed encryption, and its match report.
   const [migration, setMigration] = useState(null);
+  // Why confirming is blocked, if it is. Empty array means step 3 may be clicked. An
+  // alias that disagrees with a printed card is never waiveable; a card belonging to
+  // nobody can be accounted for by ticking it below.
+  const migrationBlocked = migration && migration.report
+    ? migrationBlockers(migration.report, migration.acknowledged || [])
+    : [];
+  // Tick/untick a printed card as "this person is no longer in the course".
+  const toggleAcknowledgedCard = (alias) => setMigration((m) => {
+    if (!m) return m;
+    const cur = m.acknowledged || [];
+    return { ...m, acknowledged: cur.includes(alias) ? cur.filter((a) => a !== alias) : [...cur, alias] };
+  });
 
   // ── Finding #16: session persistence + resume + SPA history ────────────────
   const [pendingResume, setPendingResume] = useState(null); // { courseCode, count, savedAt } | null
@@ -1862,10 +1874,22 @@ export default function DM3AGraderV5() {
         `Use the file produced by scripts/alias-cards-to-csv.js.`
       );
     }
-    const cards = rows.map((r) => readAliasCsvRow(r, cols)).filter((c) => c.alias);
-    if (!cards.length) throw new Error("That CSV has headers but no rows with an alias in them.");
+    const parsed = rows.map((r) => readAliasCsvRow(r, cols)).filter((c) => c.alias);
+    if (!parsed.length) throw new Error("That CSV has headers but no rows with an alias in them.");
+    // A printed card file can contain rows that were never students: Blackboard's preview
+    // user, and the instructor's own enrolment used to check the student view. The roster
+    // import already skips those; the card file has to be held to the same rule, or they
+    // surface as cards "belonging to nobody" and block a migration that is in fact clean.
+    // Nothing is dropped silently — skippedCards is shown under the report.
+    const { kept: cards, skipped: skippedCards } = filterRosterRows(parsed, { instructorNames: instructorNames() });
+    if (!cards.length) {
+      throw new Error("Every row in that CSV was a preview user or your own enrolment, so there are no student cards to check against.");
+    }
     const report = buildAliasMatchReport(migration.roster, cards, { course: migration.courseCode });
-    setMigration((m) => ({ ...m, report, reportText: renderAliasMatchReport(report), cardFile: file.name }));
+    setMigration((m) => ({
+      ...m, report, reportText: renderAliasMatchReport(report), cardFile: file.name,
+      skippedCards, acknowledged: [],   // a new report clears any earlier sign-off
+    }));
   }
 
   // The instructor has read the report and says it matches. Records verifiedAt on the
@@ -1873,7 +1897,18 @@ export default function DM3AGraderV5() {
   // that is a separate, later step.
   async function confirmMigrationVerified() {
     if (!migration || !migration.report) return;
-    await putRoster(migration.courseId, migration.roster, { verified: true, via: "grader" });
+    const acknowledged = migration.acknowledged || [];
+    // The button is disabled when this is non-empty, but a disabled button is a courtesy,
+    // not a guarantee — re-check before writing anything.
+    const blockers = migrationBlockers(migration.report, acknowledged);
+    if (blockers.length) throw new Error(`Not confirmed. ${blockers[0]}`);
+    // Aliases and counts only: the audit log is the one place that must never hold a
+    // name, so the server composes the sentence and the browser sends nothing but codes.
+    await putRoster(migration.courseId, migration.roster, {
+      verified: true, via: "grader",
+      acknowledgedAliases: acknowledged,
+      skippedCount: (migration.skippedCards || []).length,
+    });
     setMigration((m) => ({ ...m, confirmed: true }));
     setVaultNote(
       `${migration.courseCode} verified against ${migration.cardFile || "the printed cards"} and marked as confirmed on the server. ` +
@@ -5338,21 +5373,50 @@ Return a JSON array with exactly ONE student object.`;
                                     fontSize: 11.5, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: "ui-monospace, Menlo, monospace", color: "#1A1A18" }}>
                                     {migration.reportText}
                                   </pre>
+                                  {/* Rows the card file had that were never students. Skipped, but
+                                      shown: nothing is dropped out of an instructor's sight. */}
+                                  {(migration.skippedCards || []).length > 0 && (
+                                    <div style={{ marginTop: 6, fontSize: 11.5, color: "#5A5A55" }}>
+                                      Ignored {migration.skippedCards.length} row(s) in that file that were never students:{" "}
+                                      {migration.skippedCards.map((x) => `${x.row.name || [x.row.first, x.row.last].filter(Boolean).join(" ")} (${x.reason})`).join("; ")}
+                                    </div>
+                                  )}
+
+                                  {/* Cards belonging to nobody in the roster. Usually a withdrawal.
+                                      Only the instructor knows, so each one is ticked off by hand. */}
+                                  {!migration.confirmed && (migration.report.cardsNotInRoster || []).length > 0 && (
+                                    <div style={{ marginTop: 8, padding: "8px 10px", background: "#FFF8E6", border: "1px solid #E8D9A8", borderRadius: 6 }}>
+                                      <div style={{ fontSize: 11.5, fontWeight: 700, color: "#854F0B", marginBottom: 4 }}>
+                                        These printed cards belong to nobody in the roster
+                                      </div>
+                                      <div style={{ fontSize: 11.5, color: "#5A5A55", marginBottom: 6 }}>
+                                        Usually someone who withdrew. Tick each one you can account for. If you cannot
+                                        place a card, stop — it may mean a student was dropped from the roster by mistake.
+                                      </div>
+                                      {migration.report.cardsNotInRoster.map((c) => (
+                                        <label key={c.alias} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5, padding: "2px 0", cursor: "pointer" }}>
+                                          <input type="checkbox" disabled={vaultBusy}
+                                            checked={(migration.acknowledged || []).includes(c.alias)}
+                                            onChange={() => toggleAcknowledgedCard(c.alias)} />
+                                          <span>{c.card} <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>({c.alias})</span> — no longer in the course</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  )}
+
                                   <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                                     {migration.confirmed ? (
                                       <span style={{ fontSize: 12, fontWeight: 700, color: "#0F6E56" }}>✓ Confirmed — recorded on the server.</span>
                                     ) : (
                                       <>
-                                        <button type="button" disabled={vaultBusy || !migration.report.safe}
-                                          title={migration.report.safe ? "" : "The report above found differences — resolve those before confirming."}
-                                          style={{ ...styles.btn, padding: "5px 12px", fontSize: 12, opacity: migration.report.safe ? 1 : 0.45, cursor: migration.report.safe ? "pointer" : "not-allowed" }}
+                                        <button type="button" disabled={vaultBusy || migrationBlocked.length > 0}
+                                          title={migrationBlocked.length ? migrationBlocked.join(" ") : ""}
+                                          style={{ ...styles.btn, padding: "5px 12px", fontSize: 12, opacity: migrationBlocked.length ? 0.45 : 1, cursor: migrationBlocked.length ? "not-allowed" : "pointer" }}
                                           onClick={() => runVault(() => confirmMigrationVerified())}>
                                           3 · Confirm this matches my cards
                                         </button>
-                                        {!migration.report.safe && (
-                                          <span style={{ fontSize: 11.5, color: "#9f1239" }}>
-                                            Differences found — try the other card file for this course before confirming anything.
-                                          </span>
+                                        {migrationBlocked.length > 0 && (
+                                          <span style={{ fontSize: 11.5, color: "#9f1239" }}>{migrationBlocked[0]}</span>
                                         )}
                                       </>
                                     )}

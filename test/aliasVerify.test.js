@@ -1,7 +1,7 @@
 // src/blind/aliasVerify.js — the gate that runs before a roster is switched over.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAliasMatchReport, renderAliasMatchReport, assertAliasesPreserved } from '../src/blind/aliasVerify.js';
+import { buildAliasMatchReport, renderAliasMatchReport, assertAliasesPreserved, migrationBlockers } from '../src/blind/aliasVerify.js';
 
 const CARDS = [
   { printedName: 'Ayawa Fideline Amezouwoe', alias: 'MATH10-ZM7B' },
@@ -132,4 +132,62 @@ test('an unchanged roster passes, and empty inputs are safe', () => {
   assert.equal(assertAliasesPreserved(r, r).ok, true);
   assert.equal(assertAliasesPreserved([], []).ok, true);
   assert.equal(assertAliasesPreserved(undefined, undefined).ok, true);
+});
+
+// ── migrationBlockers: what the instructor may wave through ─────────────────
+// Modelled on the real MATH1010050 migration: 24 students matched their cards, and two
+// extra cards belonged to a withdrawn student and to the instructor's own preview account.
+
+const cardsPlusStrays = CARDS.concat([
+  { printedName: 'Asia Mackenzie', alias: 'MATH10-HN4G' },
+  { printedName: 'Ralph Minaya_PreviewUser', alias: 'MATH10-F6G7' },
+]);
+
+test('a clean report blocks on nothing', () => {
+  const r = buildAliasMatchReport(vaultOf(['MATH10-ZM7B', 'MATH10-R5Z2', 'MATH10-VTR3']), CARDS, {});
+  assert.equal(r.safe, true);
+  assert.deepEqual(migrationBlockers(r), []);
+});
+
+test('an unexplained extra card blocks, and acknowledging it unblocks', () => {
+  const r = buildAliasMatchReport(vaultOf(['MATH10-ZM7B', 'MATH10-R5Z2', 'MATH10-VTR3']), cardsPlusStrays, {});
+  assert.equal(r.safe, false, 'the report itself still reports the strays');
+  assert.equal(r.cardsNotInRoster.length, 2);
+
+  const blocked = migrationBlockers(r, []);
+  assert.equal(blocked.length, 1);
+  assert.match(blocked[0], /belong to nobody/);
+
+  // Accounting for only one of the two is not enough.
+  assert.equal(migrationBlockers(r, ['MATH10-HN4G']).length, 1);
+  // Both accounted for: the instructor may confirm.
+  assert.deepEqual(migrationBlockers(r, ['MATH10-HN4G', 'MATH10-F6G7']), []);
+});
+
+test('acknowledgement is case- and space-insensitive, and ignores junk entries', () => {
+  const r = buildAliasMatchReport(vaultOf(['MATH10-ZM7B', 'MATH10-R5Z2', 'MATH10-VTR3']), cardsPlusStrays, {});
+  assert.deepEqual(migrationBlockers(r, ['  math10-hn4g ', 'MATH10-F6G7', '', null]), []);
+});
+
+test('a DIFFERING alias can never be waved through, whatever is acknowledged', () => {
+  // The student holds MATH10-ZM7B; the roster would hand them someone else's code.
+  const r = buildAliasMatchReport(vaultOf(['MATH10-WRONG', 'MATH10-R5Z2', 'MATH10-VTR3']), CARDS, {});
+  const blocked = migrationBlockers(r, ['MATH10-ZM7B', 'MATH10-WRONG', 'MATH10-R5Z2', 'MATH10-VTR3']);
+  assert.ok(blocked.length >= 1);
+  assert.match(blocked[0], /different alias than the card they hold/);
+});
+
+test('duplicate aliases block, and a report matching nobody blocks', () => {
+  const dupeRoster = vaultOf(['MATH10-ZM7B', 'MATH10-ZM7B', 'MATH10-VTR3']);
+  assert.ok(migrationBlockers(buildAliasMatchReport(dupeRoster, CARDS, {})).some((b) => /two students/.test(b)));
+
+  const nothingMatches = buildAliasMatchReport(vaultOf(['X-1', 'X-2', 'X-3']), [{ printedName: 'Nobody At All', alias: 'Z-9' }], {});
+  const blocked = migrationBlockers(nothingMatches, ['Z-9']);
+  assert.ok(blocked.some((b) => /nothing to confirm/.test(b)), `expected a "nothing to confirm" blocker, got ${JSON.stringify(blocked)}`);
+});
+
+test('missing and malformed reports do not crash the gate', () => {
+  assert.ok(migrationBlockers(null).length >= 1, 'no report means nothing to confirm');
+  assert.ok(migrationBlockers({}).length >= 1);
+  assert.deepEqual(migrationBlockers({ agree: [{}] }), []);
 });

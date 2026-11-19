@@ -51,10 +51,18 @@ export async function getRoster(courseId, { via } = {}) {
 
 // Replace the roster. The server REFUSES (409) if this would change or remove an alias
 // that has already been issued, and the error carries the offending students.
-export function putRoster(courseId, students, { migratedFrom, verified, via } = {}) {
+export function putRoster(courseId, students, { migratedFrom, verified, acknowledgedAliases, skippedCount, via } = {}) {
   return call(`/${encodeURIComponent(courseId)}`, {
     method: 'PUT',
-    body: { students, ...(migratedFrom ? { migratedFrom } : {}), ...(verified ? { verified: true } : {}) },
+    body: {
+      students,
+      ...(migratedFrom ? { migratedFrom } : {}),
+      ...(verified ? { verified: true } : {}),
+      // Aliases and counts only, never prose: the server writes the audit sentence
+      // itself, so no student name can reach the log even by accident.
+      ...((acknowledgedAliases || []).length ? { acknowledgedAliases } : {}),
+      ...(skippedCount ? { skippedCount } : {}),
+    },
     via,
   });
 }

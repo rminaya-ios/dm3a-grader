@@ -36,6 +36,10 @@ const { checkAliasesPreserved, duplicateAliases } = require('../lib/aliasGuard.j
 const router = express.Router();
 router.use(requireAuth);
 
+// An alias as this app mints them: a course prefix, a hyphen, then code letters. Used to
+// keep anything that is not an alias out of the audit log.
+const ALIAS_SHAPE = /^[A-Z0-9]{1,12}-[A-Z0-9]{2,10}$/;
+const MAX_ACK_ALIASES = 50;
 const MAX_STUDENTS = 2000;         // a class, not a database export
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const AUDIT_PAGE = 100;
@@ -179,10 +183,31 @@ router.put('/:courseId', async (req, res) => {
       { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
     );
 
+    // The instructor's sign-off is its own action in the log, and it records which
+    // printed cards were waved through. The browser sends ALIASES and COUNTS, never
+    // prose: free text would let a bug — or a caller — put a student name in the one
+    // place that must never hold one. Anything that is not alias-shaped is dropped, and
+    // the server composes the sentence itself.
+    const verified = req.body.verified === true;
+    const ackAliases = (Array.isArray(req.body.acknowledgedAliases) ? req.body.acknowledgedAliases : [])
+      .map((a) => String(a == null ? '' : a).trim().toUpperCase())
+      .filter((a) => ALIAS_SHAPE.test(a))
+      .slice(0, MAX_ACK_ALIASES);
+    const skippedCount = Number.isInteger(req.body.skippedCount) && req.body.skippedCount > 0
+      ? Math.min(req.body.skippedCount, 999) : 0;
+    const extraNote = [
+      ackAliases.length ? `${ackAliases.length} card(s) accounted for as no longer in the course: ${ackAliases.join(', ')}` : '',
+      skippedCount ? `${skippedCount} non-student card row(s) skipped` : '',
+    ].filter(Boolean).join('; ');
     await RosterAudit.record({
       ownerId, courseId: course._id, courseCode: course.courseCode,
-      action: existing ? 'write' : 'migrate', via: viaOf(req), count: students.length,
-      note: existing ? `${students.length} students` : 'first roster for this course',
+      action: verified ? 'verify' : (existing ? 'write' : 'migrate'),
+      via: viaOf(req), count: students.length,
+      note: [
+        existing ? `${students.length} students` : 'first roster for this course',
+        verified ? 'verified against printed cards' : '',
+        extraNote,
+      ].filter(Boolean).join('; ').slice(0, 300),
     });
 
     res.json({ success: true, courseId: String(course._id), studentCount: students.length, keyVersion: sealed.keyVersion });

@@ -217,3 +217,72 @@ test('the audit log never records a student name, whatever is stored', async () 
     assert.equal(raw.includes(secret), false, `"${secret}" in the audit log`);
   }
 });
+
+// ── The instructor's sign-off ──────────────────────────────────────────────
+// Modelled on the real MATH1010050 migration, where two printed cards belonged to a
+// withdrawn student and to the instructor's own preview account. The browser records
+// what it waved through; the server must log it as its own action, and must still hold
+// no names.
+test('rehearsal 10: confirming a migration is logged as a verify, with aliases but no names', async () => {
+  const got = await call('GET', `/api/my/roster/${COURSE_ID}`, { who: OWNER });
+  assert.equal(got.status, 200);
+
+  const put = await call('PUT', `/api/my/roster/${COURSE_ID}`, {
+    who: OWNER,
+    body: {
+      students: got.data.students,
+      verified: true,
+      acknowledgedAliases: ['DEMO10-HN4G', 'demo10-f6g7'],
+      skippedCount: 1,
+    },
+  });
+  assert.equal(put.status, 200);
+
+  const stored = await Roster.findOne({ courseId: COURSE_ID }).lean();
+  assert.ok(stored.verifiedAt, 'the sign-off is recorded on the roster record');
+
+  const audit = await call('GET', `/api/my/roster/${COURSE_ID}/audit`, { who: OWNER });
+  const verifies = audit.data.entries.filter((e) => e.action === 'verify');
+  assert.equal(verifies.length, 1, 'the sign-off is its own action, not just another write');
+  assert.match(verifies[0].note, /verified against printed cards/);
+  assert.match(verifies[0].note, /DEMO10-HN4G/, 'the aliases waved through are on the record');
+
+  const raw = JSON.stringify(audit.data);
+  for (const secret of ['Ada', 'Testwell', 'atestwell', '09000001']) {
+    assert.ok(!raw.includes(secret), `audit log leaked ${secret}`);
+  }
+});
+
+test('rehearsal 11: a name cannot be smuggled into the audit log through the sign-off', async () => {
+  const got = await call('GET', `/api/my/roster/${COURSE_ID}`, { who: OWNER });
+  const put = await call('PUT', `/api/my/roster/${COURSE_ID}`, {
+    who: OWNER,
+    body: {
+      students: got.data.students,
+      verified: true,
+      // A caller trying to write prose, a name, and a flood of entries into the log.
+      acknowledgedAliases: [
+        'Ada Testwell withdrew',
+        'atestwell',
+        '09000001',
+        'DEMO10-OK42',
+        ...Array.from({ length: 200 }, (_, i) => `DEMO10-X${i}`),
+      ],
+      skippedCount: 10 ** 9,
+    },
+  });
+  assert.equal(put.status, 200);
+
+  const audit = await call('GET', `/api/my/roster/${COURSE_ID}/audit`, { who: OWNER });
+  const note = audit.data.entries.filter((e) => e.action === 'verify')[0].note;
+  assert.ok(note.length <= 300, `note should be capped, was ${note.length}`);
+  assert.ok(note.includes('DEMO10-OK42'), 'a real alias is kept');
+  for (const junk of ['Ada', 'Testwell', 'withdrew', 'atestwell', '09000001']) {
+    assert.ok(!note.includes(junk), `audit note kept non-alias text: ${junk}`);
+  }
+
+  const raw = JSON.stringify(audit.data);
+  for (const secret of ['Ada', 'Testwell', 'atestwell', '09000001']) {
+    assert.ok(!raw.includes(secret), `audit log leaked ${secret}`);
+  }
+});

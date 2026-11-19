@@ -155,6 +155,44 @@ export function renderAliasMatchReport(report) {
   return out.join('\n');
 }
 
+// ── What may be waved through, and what may not ────────────────────────────
+// Confirming a migration is a human decision, but only some disagreements are a human's
+// to make. An alias that DIFFERS from the card a student already holds can never be
+// waved through: that is the permanence invariant, and a student reading a code off
+// paper would land on someone else's work. A card belonging to NOBODY in the roster is a
+// different thing — usually a student who withdrew, or an account that was never a
+// student — and only the instructor knows which. Those can be acknowledged one at a
+// time, by alias, and each acknowledgement is recorded in the audit log.
+//
+// Returns the reasons confirming is blocked. Empty array means it may proceed.
+export function migrationBlockers(report, acknowledgedAliases = []) {
+  const r = report || {};
+  const norm = (a) => String(a == null ? '' : a).trim().toUpperCase();
+  const ack = new Set((acknowledgedAliases || []).map(norm).filter(Boolean));
+  const out = [];
+
+  if ((r.differ || []).length) {
+    out.push(`${r.differ.length} student(s) would get a different alias than the card they hold. This can never be confirmed — find the card file that matches.`);
+  }
+  if ((r.ambiguous || []).length) {
+    out.push(`${r.ambiguous.length} card(s) could not be matched to exactly one student.`);
+  }
+  if ((r.duplicateRosterAliases || []).length) {
+    out.push(`The same alias belongs to two students in the roster: ${r.duplicateRosterAliases.join(', ')}.`);
+  }
+  if ((r.duplicateCardAliases || []).length) {
+    out.push(`The same alias appears on two printed cards: ${r.duplicateCardAliases.join(', ')}.`);
+  }
+  const unexplained = (r.cardsNotInRoster || []).filter((c) => !ack.has(norm(c && c.alias)));
+  if (unexplained.length) {
+    out.push(`${unexplained.length} printed card(s) belong to nobody in this roster and have not been accounted for.`);
+  }
+  if (!(r.agree || []).length) {
+    out.push('No card matched any student, so there is nothing to confirm.');
+  }
+  return out;
+}
+
 // ── The invariant ──────────────────────────────────────────────────────────
 // Aliases are permanent once issued. New students get new aliases; a student who leaves
 // is marked inactive, never deleted mid-term. No code path may change an alias that
