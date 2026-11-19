@@ -70,6 +70,11 @@ const corsOptions = {
            'https://dm3agrader.com',
            'https://www.dm3agrader.com',
            'https://app.dm3agrader.com', // the hub (same Vercel project, second domain)
+           // CheckPoint reads the secured roster straight from the instructor's
+           // browser (never from its own server, which must hold no names). Same
+           // site, different origin, so the dm3a_session cookie rides along only
+           // because this origin is named here AND credentials is true below.
+           'https://checkpoint.dm3agrader.com',
            'http://localhost:5173'],
   // PUT/PATCH/DELETE for the roster-vault routes; x-admin-key for the admin
   // dashboard. Missing x-admin-key here is what broke the /admin gate — the

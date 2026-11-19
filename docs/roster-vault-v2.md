@@ -153,6 +153,23 @@ written first and a test immediately showed it would let a student name into the
 place that must never hold one. The server composes the sentence and discards anything
 that is not alias-shaped.
 
+### CheckPoint reads this roster
+
+CheckPoint (`~/dm3a-checkpoint`) now reads names from this API instead of its own
+uploaded vault. The call is made by the instructor's BROWSER, straight to
+`api.dm3agrader.com`, with `?via=checkpoint`; CheckPoint's own server is not in the path
+and still holds no key and no name.
+
+This works because the `dm3a_session` cookie is scoped to `.dm3agrader.com` with
+SameSite=Lax, so `checkpoint.dm3agrader.com` → `api.dm3agrader.com` is same-SITE though
+cross-ORIGIN. The cookie therefore rides along — but only because that origin is on the
+CORS allow-list in `server/index.js` AND `credentials: true` is set. **Removing that
+origin silently breaks CheckPoint's names**, and the symptom in the browser is an
+unreachable-network message rather than a permissions one.
+
+Courses are matched by `courseCode`, case- and space-insensitively, and CheckPoint
+refuses a zero or ambiguous match rather than guessing.
+
 ## Still to build
 
 1. **Hub roster API** — owner-only read/write of the decrypted roster, keyed by course

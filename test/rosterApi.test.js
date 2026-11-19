@@ -286,3 +286,43 @@ test('rehearsal 11: a name cannot be smuggled into the audit log through the sig
     assert.ok(!raw.includes(secret), `audit log leaked ${secret}`);
   }
 });
+
+// ── CheckPoint reading the roster ──────────────────────────────────────────
+// CheckPoint never holds ROSTER_KEK and never stores names: the instructor's signed-in
+// browser reads them straight from here. These are the properties that makes that safe.
+test('rehearsal 12: a CheckPoint read is owner-only and logged as via=checkpoint', async () => {
+  const before = (await call('GET', `/api/my/roster/${COURSE_ID}/audit`, { who: OWNER })).data.entries.length;
+
+  const mine = await call('GET', `/api/my/roster/${COURSE_ID}?via=checkpoint`, { who: OWNER });
+  assert.equal(mine.status, 200);
+  assert.ok(mine.data.students.length > 0, 'the owner gets the names');
+
+  // Another instructor, signed in, asking for a course that is not theirs.
+  const theirs = await call('GET', `/api/my/roster/${COURSE_ID}?via=checkpoint`, { who: OTHER });
+  assert.equal(theirs.status, 404, 'a course that is not yours is indistinguishable from one that does not exist');
+  assert.ok(!JSON.stringify(theirs.data).includes('Testwell'), 'and leaks no name on the way out');
+
+  // Signed out entirely.
+  const anon = await call('GET', `/api/my/roster/${COURSE_ID}?via=checkpoint`);
+  assert.equal(anon.status, 401);
+
+  const audit = await call('GET', `/api/my/roster/${COURSE_ID}/audit`, { who: OWNER });
+  const cp = audit.data.entries.filter((e) => e.via === 'checkpoint' && e.action === 'view');
+  assert.ok(cp.length >= 1, 'the CheckPoint read is in the log, tagged with the tool');
+  assert.equal(cp[0].count, mine.data.students.length, 'the log records how many names were handed over');
+  assert.ok(audit.data.entries.length > before, 'reading names always adds to the log');
+
+  const raw = JSON.stringify(audit.data);
+  for (const secret of ['Ada', 'Testwell', 'atestwell', '09000001']) {
+    assert.ok(!raw.includes(secret), `audit log leaked ${secret}`);
+  }
+});
+
+test('rehearsal 13: the via tag is sanitised, so it cannot smuggle anything into the log', async () => {
+  await call('GET', `/api/my/roster/${COURSE_ID}?via=${encodeURIComponent('checkpoint; Ada Testwell <script>')}`, { who: OWNER });
+  const audit = await call('GET', `/api/my/roster/${COURSE_ID}/audit`, { who: OWNER });
+  const raw = JSON.stringify(audit.data);
+  for (const secret of ['Ada', 'Testwell', '<script>']) {
+    assert.ok(!raw.includes(secret), `audit log kept ${secret} from the via tag`);
+  }
+});
